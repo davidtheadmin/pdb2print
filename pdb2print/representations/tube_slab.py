@@ -94,17 +94,29 @@ def _base_frame(res_name, res):
 
 
 def build(chain, params: PrintParams):
-    """Return a watertight trimesh of the tube-and-slab model for ``chain``."""
+    """Return a watertight trimesh of the tube-and-slab model for ``chain``.
+
+    Tube, slabs and connector struts are all rasterised into one occupancy
+    field and meshed together, so the nucleotide comes out as a *single
+    connected body* — which must be true before any min-wall re-voxelisation,
+    or a disconnected slab would be re-severed and then pruned as an orphan.
+    """
     s = params.scale_mm_per_angstrom
     tube_r = params.nucleic_radius_mm
     slab_t = params.slab_thickness_mm
+    spacing = params.grid_spacing_mm
+    # A connector thinner than a voxel can rasterise with gaps and fail to fuse;
+    # never let it drop below one voxel wide.
+    conn_r = max(params.connector_radius_mm, spacing)
 
     residues = list(_residue_iter(chain.atoms))
     backbone = np.array([_backbone_point(res) for _, res in residues]) * s
 
-    # Base slabs: (center_mm, axes 3x3, half_extents_mm)
+    # Base slabs, each paired with its residue's backbone point (which lies on
+    # the tube) so we can join them with a connector strut.
+    # Entry: (center_mm, axes 3x3, half_extents_mm, backbone_point_mm)
     slabs = []
-    for res_name, res in residues:
+    for (res_name, res), bp in zip(residues, backbone):
         frame = _base_frame(res_name, res)
         if frame is None:
             continue
@@ -113,23 +125,19 @@ def build(chain, params: PrintParams):
         third = np.cross(normal, long_axis)
         third /= (np.linalg.norm(third) or 1.0)
         axes = np.array([long_axis, third, normal])
-        # Slab footprint: a base is roughly 4.5 x 3.0 angstrom; scale to mm.
-        half = np.array([4.5, 3.0, slab_t / s * 0.5]) * 0.5 * params.slab_scale * s
-        # Keep the through-plane half-extent exactly slab_t/2 in mm.
-        half[2] = slab_t * 0.5
-        slabs.append((center_mm, axes, half))
+        # Slab footprint: a base is roughly 4.5 x 3.0 angstrom, scaled to mm.
+        half = np.array([4.5, 3.0, 1.0]) * 0.5 * params.slab_scale * s
+        half[2] = slab_t * 0.5   # through-plane thickness is exactly slab_t
+        slabs.append((center_mm, axes, half, bp))
 
-    # Bounding box over everything, then rasterise.
+    # Bounding box over tube, slabs and connectors, then rasterise.
     all_pts = [backbone]
-    for center_mm, _, half in slabs:
+    for center_mm, _, half, bp in slabs:
         reach = float(np.linalg.norm(half))
-        all_pts.append(center_mm + reach)
-        all_pts.append(center_mm - reach)
-    pts = np.vstack(all_pts)
+        all_pts += [center_mm + reach, center_mm - reach, bp]
 
-    spacing = params.grid_spacing_mm
     pad = max(tube_r, slab_t) + 2.0 * spacing
-    grid = Grid.covering(pts, spacing=spacing, pad=pad)
+    grid = Grid.covering(np.vstack(all_pts), spacing=spacing, pad=pad)
     field = np.zeros(grid.shape, dtype=np.float32)
 
     # Backbone tube.
@@ -138,8 +146,10 @@ def build(chain, params: PrintParams):
         for i in range(len(spline) - 1):
             rasterize_capsule(field, grid, spline[i], spline[i + 1], tube_r)
 
-    # Base slabs (and a short connector so a base can't float off the tube).
-    for center_mm, axes, half in slabs:
+    # Base slabs, each fused to the tube by a connector strut running from the
+    # backbone point (on the tube) to the slab centre (inside the slab).
+    for center_mm, axes, half, bp in slabs:
         rasterize_box(field, grid, center_mm, axes, half)
+        rasterize_capsule(field, grid, bp, center_mm, conn_r)
 
     return field_to_mesh(field, grid, level=0.5)

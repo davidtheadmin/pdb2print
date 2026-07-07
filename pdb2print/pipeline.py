@@ -57,9 +57,13 @@ def build_all(source: str, params: PrintParams,
         base = 0.15 + 0.8 * (i / n)
         report(base, f"Meshing {chain.label()} ({i + 1}/{n})…")
         try:
+            # Order matters: the chain is built as a single connected body
+            # (tube+slabs+connectors), THEN min-wall re-voxelises it, THEN we
+            # repair.  Min-wall is skipped for representations that decline it
+            # (surfaces).  Repair keeps all sizeable components as a safety net.
             mesh = geometry.generate_chain_mesh(chain, params)
-            mesh = meshops.repair(mesh)
             mesh = meshops.enforce_min_wall(mesh, params)
+            mesh = meshops.repair(mesh)
             out.built.append((chain, mesh))
         except Exception as exc:  # keep going; report the bad chain
             out.warnings.append(f"Skipped {chain.label()}: {exc}")
