@@ -49,7 +49,7 @@ class PrintParams:
     """All user-tunable parameters for one export."""
 
     # --- global ---------------------------------------------------------
-    scale_mm_per_angstrom: float = 0.5   # overall size control
+    scale_mm_per_angstrom: float = 1.5   # overall size control
     grid_spacing_mm: float = 0.5         # marching-cubes voxel size (explicit!)
     min_wall_mm: float = 1.0             # enforced minimum feature thickness
     min_wall_mode: MinWallMode = MinWallMode.UNIFORM
@@ -69,6 +69,7 @@ class PrintParams:
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale
     slab_thickness_mm: float = 1.2       # base-slab thickness
     slab_scale: float = 1.0              # scale factor on the in-plane slab size
+    connector_radius_mm: float = 0.6     # strut fusing each base slab to the tube
     spline_samples_per_residue: int = 6  # backbone smoothness
 
     def representation_for(self, mtype: MoleculeType) -> Representation:
@@ -108,3 +109,24 @@ CHAIN_PALETTE = [
 
 def color_for_index(i: int):
     return CHAIN_PALETTE[i % len(CHAIN_PALETTE)]
+
+
+# Representations that are already thick everywhere by construction and must NOT
+# receive a min-wall pass — running one would inflate and roughen them (a
+# Gaussian metaball surface, unlike a thin backbone tube, needs no thickening).
+MIN_WALL_EXEMPT = frozenset({Representation.SURFACE})
+
+
+def needs_min_wall(representation) -> bool:
+    """True if a representation should get the min-wall thickening pass.
+
+    Accepts a :class:`Representation` or its string value (mesh metadata stores
+    the value).  Surface declines; tube-slab and future thin representations
+    keep it.  Unknown values default to keeping min-wall (safe side).
+    """
+    if isinstance(representation, str):
+        try:
+            representation = Representation(representation)
+        except ValueError:
+            return True
+    return representation not in MIN_WALL_EXEMPT

@@ -39,21 +39,27 @@ def test_tiny_surface_is_watertight():
         assert len(mesh.faces) > 0
 
 
-def test_min_wall_thickens_geometry():
-    """A larger min-wall must not shrink the solid volume."""
-    params_thin = _fast_params(min_wall_mm=0.4)
-    params_thick = _fast_params(min_wall_mm=2.0)
+def test_min_wall_thickens_when_representation_opts_in():
+    """A representation that keeps min-wall gets thicker with a larger target."""
+    params = _fast_params(min_wall_mm=2.0)
     chain = chains_mod.split_chains(_load(TINY_PDB))[0]
+    base = meshops.repair(geometry.generate_chain_mesh(chain, params))
+    # Tag as a representation that keeps min-wall to exercise the pass (the
+    # tiny fixture is protein-only, whose surface would otherwise decline it).
+    tagged = base.copy()
+    tagged.metadata["representation"] = Representation.TUBE_SLAB.value
+    thick = meshops.enforce_min_wall(tagged, params)
+    assert thick.volume > base.volume * 1.05
 
-    m_thin = meshops.enforce_min_wall(
-        meshops.repair(geometry.generate_chain_mesh(chain, params_thin)),
-        params_thin,
-    )
-    m_thick = meshops.enforce_min_wall(
-        meshops.repair(geometry.generate_chain_mesh(chain, params_thick)),
-        params_thick,
-    )
-    assert m_thick.volume >= m_thin.volume * 0.95
+
+def test_surface_declines_min_wall():
+    """A Gaussian surface must be returned unchanged by the min-wall pass."""
+    params = _fast_params(min_wall_mm=2.0)
+    chain = chains_mod.split_chains(_load(TINY_PDB))[0]
+    base = meshops.repair(geometry.generate_chain_mesh(chain, params))
+    assert base.metadata.get("representation") == Representation.SURFACE.value
+    same = meshops.enforce_min_wall(base, params)
+    assert same.volume == pytest.approx(base.volume)
 
 
 def test_exports_write_files(tmp_path):

@@ -98,7 +98,7 @@ def build_ui():
                 )
 
                 gr.Markdown("### Print parameters")
-                scale = gr.Slider(0.1, 2.0, value=0.5, step=0.05,
+                scale = gr.Slider(0.2, 6.0, value=1.5, step=0.1,
                                   label="Scale (mm per Å)")
                 grid_spacing = gr.Slider(0.2, 1.5, value=0.5, step=0.05,
                                          label="Grid spacing (mm) — mesh resolution")

@@ -11,17 +11,30 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
-from .config import PrintParams, MinWallMode
+from .config import PrintParams, MinWallMode, needs_min_wall
+
+
+# Connected components smaller than this fraction of the largest are treated as
+# noise and dropped; anything above it is kept.  Intentional geometry (e.g. base
+# slabs, ~5% of a tube) survives, but true specks do not.
+DEFAULT_MIN_COMPONENT_FRAC = 0.02
 
 
 # --------------------------------------------------------------------------
 # Repair
 # --------------------------------------------------------------------------
-def repair(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+def repair(mesh: trimesh.Trimesh,
+           min_component_frac: float = DEFAULT_MIN_COMPONENT_FRAC) -> trimesh.Trimesh:
     """Make ``mesh`` watertight, manifold and consistently oriented.
 
     Marching-cubes output is already closed; this cleans up degeneracies and,
     if pymeshlab is available, runs a stronger non-manifold repair pass.
+
+    Multiple connected components are kept as long as each is at least
+    ``min_component_frac`` of the largest — so intentional geometry (base slabs,
+    multi-domain chains) is never silently discarded, while tiny stray specks
+    still are.  (Previously this kept only the single largest component, which
+    was silently deleting disconnected base slabs.)
     """
     mesh.remove_duplicate_faces() if hasattr(mesh, "remove_duplicate_faces") else None
     mesh.update_faces(mesh.unique_faces())
@@ -33,11 +46,15 @@ def repair(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     if not mesh.is_watertight:
         mesh = _pymeshlab_repair(mesh)
 
-    # Keep only the largest connected component if repair left islands.
     if mesh.body_count > 1:
         parts = mesh.split(only_watertight=False)
         if len(parts) > 0:
-            mesh = max(parts, key=lambda m: m.volume if m.is_volume else m.area)
+            sizes = np.array([
+                abs(p.volume) if p.is_volume else p.area for p in parts
+            ])
+            keep = [p for p, sz in zip(parts, sizes)
+                    if sz >= sizes.max() * min_component_frac]
+            mesh = keep[0] if len(keep) == 1 else trimesh.util.concatenate(keep)
     mesh.fix_normals()
     return mesh
 
@@ -78,7 +95,14 @@ def enforce_min_wall(mesh: trimesh.Trimesh, params: PrintParams) -> trimesh.Trim
     selective mode thickens only regions measured to be too thin; if that path
     fails for any reason it falls back to the uniform offset, which is always
     available.  (See project note: ship the reliable fallback, refine later.)
+
+    The pass is representation-scoped: meshes whose representation declines
+    min-wall (e.g. Gaussian surfaces, already thick everywhere) are returned
+    untouched, so they keep their crisp, un-inflated shape.
     """
+    rep = mesh.metadata.get("representation")
+    if rep is not None and not needs_min_wall(rep):
+        return mesh
     if params.min_wall_mm <= 0:
         return mesh
 
