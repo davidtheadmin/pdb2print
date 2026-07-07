@@ -1,0 +1,18 @@
+# Core geometry pipeline
+numpy>=1.24
+scipy>=1.10
+scikit-image>=0.21
+trimesh>=4.0
+biotite>=0.40
+
+# Mesh repair (heavy non-manifold fixes); pipeline degrades gracefully without it
+pymeshlab>=2023.12
+
+# 3MF writing (Prusa's own library; maps cleanly into PrusaSlicer)
+lib3mf>=2.3.0
+
+# GLB export helper for the preview
+pygltflib>=1.16
+
+# Web UI (not imported by the pdb2print package itself)
+gradio>=4.44
