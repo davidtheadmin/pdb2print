@@ -31,6 +31,26 @@ class Representation(str, Enum):
     TUBE_SLAB = "tube_slab"    # backbone tube + base slabs (nucleic acids)
 
 
+class BaseStyle(str, Enum):
+    """How each nucleotide base (the ladder "rung") is rendered.
+
+    All styles are built from exact analytic primitives, fused to the backbone
+    by a connector strut, and grown to satisfy ``min_wall_mm`` before the union
+    so every one is watertight and printable.
+    """
+
+    SLAB = "slab"          # flat oriented box on the base plane (original)
+    ROD = "rod"            # rounded cylinder rung — chunky, very printable
+    MOLECULE = "molecule"  # ball-and-stick of the base's ring atoms
+
+
+class BackboneStyle(str, Enum):
+    """How the sugar-phosphate backbone is rendered."""
+
+    TUBE = "tube"          # smooth swept capsule tube (original)
+    MOLECULE = "molecule"  # ball-and-stick of the backbone/sugar atoms
+
+
 class MoleculeType(str, Enum):
     PROTEIN = "protein"
     NUCLEIC = "nucleic"
@@ -70,10 +90,18 @@ class PrintParams:
 
     # --- tube-and-slab tuning ------------------------------------------
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale
-    slab_thickness_mm: float = 1.2       # base-slab thickness
-    slab_scale: float = 1.0              # scale factor on the in-plane slab size
-    connector_radius_mm: float = 0.6     # strut fusing each base slab to the tube
+    slab_thickness_mm: float = 1.2       # base-slab (or rod) thickness
+    slab_scale: float = 1.0              # scale factor on the in-plane base size
+    connector_radius_mm: float = 0.6     # strut fusing each base to the backbone
     spline_samples_per_residue: int = 6  # backbone smoothness
+
+    # --- nucleic base / backbone style ---------------------------------
+    base_style: BaseStyle = BaseStyle.SLAB
+    backbone_style: BackboneStyle = BackboneStyle.TUBE
+    #: Sphere radius (mm) for atoms in the "molecule" base/backbone styles.
+    atom_radius_mm: float = 1.0
+    #: Cylinder radius (mm) for the bonds ("sticks") in the molecule styles.
+    bond_radius_mm: float = 0.5
 
     def representation_for(self, mtype: MoleculeType) -> Representation:
         if mtype == MoleculeType.PROTEIN:

@@ -55,6 +55,12 @@ def capsule(a, b, radius: float, segments: int = _SEGMENTS) -> Manifold:
     return Manifold.batch_boolean(parts, m3d.OpType.Add)
 
 
+def sphere(center, radius: float, segments: int = _SEGMENTS) -> Manifold:
+    """A sphere of ``radius`` centred at ``center`` (used for ball-and-stick)."""
+    center = np.asarray(center, float)
+    return Manifold.sphere(radius, segments).translate(tuple(center))
+
+
 def oriented_box(center, axes, half_extents) -> Manifold:
     """An oriented box.
 
