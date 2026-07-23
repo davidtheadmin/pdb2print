@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pdb2print</title>
+<script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<style>
+  :root {
+    --bg:#0e0f11; --s1:#17191c; --s2:#1d2024; --border:#2a2e33;
+    --text:#e6e8ea; --text2:#9aa0a6; --muted:#6b7178;
+    --accent:#2f9e6f; --accent-d:#1f6b4a; --red:#b3453f;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-d); }
+
+  /* ---- top bar ---- */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 18px;
+    border-bottom: 0.5px solid var(--border);
+    flex: none;
+  }
+  .wordmark {
+    font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+    color: var(--text); margin-right: 6px; white-space: nowrap;
+  }
+  .wordmark .dot { color: var(--accent); }
+  .id-field {
+    flex: 1; max-width: 420px; min-width: 120px;
+    background: var(--s2); border: 0.5px solid var(--border);
+    border-radius: 8px; color: var(--text);
+    padding: 8px 12px; font-size: 13px; font-family: inherit;
+    outline: none;
+  }
+  .id-field:focus { border-color: var(--accent); }
+  .id-field::placeholder { color: var(--muted); }
+  .spacer { flex: 1; }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; flex: none;
+    background: var(--s2); border: 0.5px solid var(--border);
+    border-radius: 8px; color: var(--text2); cursor: pointer;
+    transition: border-color .12s, color .12s;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--text); }
+  .icon-btn.has-file { border-color: var(--accent); color: var(--accent); }
+  .btn-generate {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 8px; padding: 8px 18px; font-size: 13px; font-weight: 600;
+    font-family: inherit; cursor: pointer; flex: none;
+    transition: background .12s;
+  }
+  .btn-generate:hover:not(:disabled) { background: var(--accent-d); }
+  .btn-generate:disabled { opacity: .7; cursor: default; }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+    animation: spin .7s linear infinite; display: none;
+  }
+  .btn-generate.busy .spinner { display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- split ---- */
+  .split {
+    flex: 1; display: grid; grid-template-columns: 1.5fr 1fr;
+    gap: 16px; padding: 16px 18px; min-height: 0;
+  }
+
+  /* ---- preview (hero) ---- */
+  .hero { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .viewer-wrap {
+    position: relative; flex: 1; min-height: 0;
+    background: var(--s1); border: 0.5px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+  }
+  model-viewer {
+    width: 100%; height: 100%;
+    --poster-color: transparent;
+    background: radial-gradient(120% 120% at 50% 20%, #1a1d21 0%, #101113 75%);
+  }
+  .viewer-empty {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 10px;
+    color: var(--muted); text-align: center; padding: 24px; pointer-events: none;
+  }
+  .viewer-empty svg { opacity: .5; }
+  .legend {
+    position: absolute; left: 12px; bottom: 12px;
+    display: flex; flex-wrap: wrap; gap: 6px; max-width: 65%;
+  }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(23,25,28,.82); backdrop-filter: blur(6px);
+    border: 0.5px solid var(--border); border-radius: 999px;
+    padding: 4px 10px 4px 8px; font-size: 11px; color: var(--text2);
+  }
+  .pill .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .downloads {
+    position: absolute; right: 12px; bottom: 12px;
+    display: flex; gap: 6px;
+  }
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(23,25,28,.82); backdrop-filter: blur(6px);
+    border: 0.5px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; font-size: 12px; color: var(--text); font-weight: 500;
+    cursor: pointer; text-decoration: none; transition: border-color .12s;
+  }
+  .dl-btn:hover { border-color: var(--accent); color: var(--text); }
+  .dl-btn[aria-disabled="true"] {
+    opacity: .38; pointer-events: none;
+  }
+  .report {
+    flex: none; max-height: 148px; overflow: auto;
+    background: var(--s1); border: 0.5px solid var(--border);
+    border-radius: 12px; padding: 12px 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px; line-height: 1.55; color: var(--text2);
+    white-space: pre-wrap;
+  }
+  .report .err { color: var(--red); }
+
+  /* ---- settings ---- */
+  .settings {
+    display: flex; flex-direction: column; gap: 14px;
+    overflow: auto; min-height: 0; padding-right: 2px;
+  }
+  .card {
+    background: var(--s1); border: 0.5px solid var(--border);
+    border-radius: 14px; padding: 14px 16px;
+  }
+  .eyebrow {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--text2); font-weight: 600; margin: 0 0 12px;
+  }
+  .field-label {
+    font-size: 12px; color: var(--text2); margin: 0 0 6px;
+  }
+  .field + .field { margin-top: 12px; }
+  .rep-slot:not(:empty) { margin-top: 14px; }
+  .rep-detail { border-top: 0.5px solid var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+  .rep-detail .field + .field { margin-top: 0; }
+  .rep-note { font-size: 12px; color: var(--muted); margin: 14px 0 0; border-top: 0.5px solid var(--border); padding-top: 12px; }
+
+  /* segmented toggle */
+  .seg {
+    display: flex; background: var(--s2);
+    border: 0.5px solid var(--border); border-radius: 9px; overflow: hidden;
+  }
+  .seg button {
+    flex: 1; padding: 8px 8px; font-size: 12px; font-family: inherit;
+    color: var(--text2); background: transparent; border: none;
+    border-left: 0.5px solid var(--border); cursor: pointer;
+    transition: background .12s, color .12s; white-space: nowrap;
+  }
+  .seg button:first-child { border-left: none; }
+  .seg button.active { background: var(--accent); color: #fff; font-weight: 500; }
+  .seg button:not(.active):hover { color: var(--text); }
+
+  /* preset chips */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    padding: 6px 14px; border-radius: 999px; font-size: 12px; font-family: inherit;
+    background: var(--s2); color: var(--text2);
+    border: 0.5px solid var(--border); cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.active { border-color: var(--accent); color: var(--accent); background: rgba(47,158,111,.1); }
+
+  /* slider */
+  .slider-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+  .slider-row .name { font-size: 12px; color: var(--text2); }
+  .slider-row .val { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+    background: var(--s2); border-radius: 999px; outline: none; margin: 4px 0 2px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--accent); cursor: pointer;
+    border: 2px solid var(--s1);
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+    cursor: pointer; border: 2px solid var(--s1);
+  }
+
+  /* disclosure */
+  .disclosure { margin-top: 14px; border-top: 0.5px solid var(--border); padding-top: 12px; }
+  .disclosure > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 7px;
+    font-size: 12px; color: var(--text2); user-select: none;
+  }
+  .disclosure > summary::-webkit-details-marker { display: none; }
+  .disclosure > summary .caret { transition: transform .15s; }
+  .disclosure[open] > summary .caret { transform: rotate(90deg); }
+  .disclosure > summary:hover { color: var(--text); }
+  .drawer { padding-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+  .ball-stick {
+    border-left: 2px solid var(--border); padding-left: 14px;
+    display: none; flex-direction: column; gap: 14px;
+  }
+  .ball-stick.show { display: flex; }
+  .ball-stick .bs-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); font-weight: 600;
+  }
+
+  .examples { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .examples .ex-label { font-size: 11px; color: var(--muted); margin-right: 2px; }
+  .ex {
+    padding: 4px 10px; border-radius: 6px; font-size: 12px; font-family: ui-monospace, monospace;
+    background: var(--s2); color: var(--text2); border: 0.5px solid var(--border); cursor: pointer;
+  }
+  .ex:hover { border-color: var(--accent); color: var(--text); }
+</style>
+</head>
+<body>
+  <header class="topbar">
+    <span class="wordmark">pdb2print<span class="dot">.</span></span>
+    <input id="pdb-id" class="id-field" type="text" value="1UBQ" placeholder="PDB ID, e.g. 1ZAA" spellcheck="false" autocomplete="off">
+    <button id="upload-btn" class="icon-btn" title="Upload a structure file">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg>
+    </button>
+    <input id="file-input" type="file" accept=".pdb,.ent,.cif,.mmcif,.bcif" hidden>
+    <div class="spacer"></div>
+    <button id="generate" class="btn-generate">
+      <span class="spinner"></span>
+      <span class="btn-label">Generate</span>
+    </button>
+  </header>
+
+  <main class="split">
+    <!-- hero: 3D preview -->
+    <section class="hero">
+      <div class="viewer-wrap">
+        <model-viewer id="viewer" camera-controls touch-action="pan-y" interaction-prompt="none" shadow-intensity="0" exposure="1.1" style="display:none"></model-viewer>
+        <div id="viewer-empty" class="viewer-empty">
+          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+          <div>Enter a PDB ID and press Generate<br>to build a printable model.</div>
+        </div>
+        <div id="legend" class="legend"></div>
+        <div class="downloads">
+          <a id="dl-3mf" class="dl-btn" aria-disabled="true" download>3MF</a>
+          <a id="dl-stl" class="dl-btn" aria-disabled="true" download>STL</a>
+        </div>
+      </div>
+      <pre id="report" class="report">No model built yet.</pre>
+    </section>
+
+    <!-- settings -->
+    <aside class="settings">
+      <!-- Protein -->
+      <div class="card">
+        <p class="eyebrow">Protein</p>
+        <div class="field">
+          <p class="field-label">Representation</p>
+          <div class="seg" data-group="protein_rep">
+            <button data-value="surface" class="active">Surface</button>
+            <button data-value="tube_slab">Tube-slab</button>
+          </div>
+        </div>
+        <div class="rep-slot" data-mol="protein"></div>
+      </div>
+
+      <!-- DNA / RNA -->
+      <div class="card">
+        <p class="eyebrow">DNA / RNA</p>
+        <div class="field">
+          <p class="field-label">Representation</p>
+          <div class="seg" data-group="nucleic_rep">
+            <button data-value="surface">Surface</button>
+            <button data-value="tube_slab" class="active">Tube-slab</button>
+          </div>
+        </div>
+        <div class="rep-slot" data-mol="nucleic"></div>
+      </div>
+
+      <!-- Tube-slab controls: relocated under whichever molecule uses tube-slab -->
+      <div id="tubeslab" class="rep-detail" hidden>
+        <div class="field">
+          <p class="field-label">Backbone</p>
+          <div class="seg" data-group="backbone_style">
+            <button data-value="tube" class="active">Tube</button>
+            <button data-value="molecule">Molecule</button>
+          </div>
+        </div>
+        <div class="field">
+          <p class="field-label">Base (rung)</p>
+          <div class="seg" data-group="base_style">
+            <button data-value="slab" class="active">Slab</button>
+            <button data-value="rod">Rod</button>
+            <button data-value="molecule">Molecule</button>
+          </div>
+        </div>
+        <details class="disclosure" id="advanced">
+          <summary>
+            <svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            Advanced dimensions
+          </summary>
+          <div class="drawer">
+            <div class="field" data-slider="nucleic_radius">
+              <div class="slider-row"><span class="name">Tube radius (mm)</span><span class="val"></span></div>
+              <input type="range" min="0.4" max="8.0" step="0.1" value="1.2">
+            </div>
+            <div class="field" data-slider="slab_thickness">
+              <div class="slider-row"><span class="name">Base thickness (mm)</span><span class="val"></span></div>
+              <input type="range" min="0.4" max="8.0" step="0.1" value="1.2">
+            </div>
+            <div class="field" data-slider="base_width">
+              <div class="slider-row"><span class="name">Base width scale</span><span class="val"></span></div>
+              <input type="range" min="0.3" max="3.0" step="0.05" value="1.0">
+            </div>
+            <div class="field" data-slider="connector_radius">
+              <div class="slider-row"><span class="name">Connector radius (mm)</span><span class="val"></span></div>
+              <input type="range" min="0.2" max="8.0" step="0.1" value="0.6">
+            </div>
+
+            <div class="ball-stick" id="ball-stick">
+              <span class="bs-label">Ball-and-stick sizing</span>
+              <div class="field" data-slider="atom_radius">
+                <div class="slider-row"><span class="name">Atom radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.3" max="8.0" step="0.1" value="1.0">
+              </div>
+              <div class="field" data-slider="bond_radius">
+                <div class="slider-row"><span class="name">Bond radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.2" max="8.0" step="0.1" value="0.5">
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Surface controls: relocated under whichever molecule uses surface -->
+      <div id="surface" class="rep-detail" hidden>
+        <details class="disclosure" id="advanced-surface">
+          <summary>
+            <svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            Advanced dimensions
+          </summary>
+          <div class="drawer">
+            <div class="field" data-slider="probe_radius">
+              <div class="slider-row"><span class="name">Probe radius (Å)</span><span class="val"></span></div>
+              <input type="range" min="0.0" max="3.0" step="0.1" value="1.4">
+            </div>
+            <div class="field" data-slider="surface_padding">
+              <div class="slider-row"><span class="name">Surface padding (Å)</span><span class="val"></span></div>
+              <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Print (global) -->
+      <div class="card">
+        <p class="eyebrow">Print</p>
+
+        <div class="field">
+          <p class="field-label">Preset</p>
+          <div class="chips" id="presets">
+            <button class="chip active" data-preset="Balanced">Balanced</button>
+            <button class="chip" data-preset="Chunky">Chunky</button>
+            <button class="chip" data-preset="Fine detail">Fine detail</button>
+          </div>
+        </div>
+
+        <div class="field" data-slider="scale">
+          <div class="slider-row"><span class="name">Scale (mm/Å)</span><span class="val"></span></div>
+          <input type="range" min="0.2" max="6.0" step="0.1" value="1.5">
+        </div>
+        <div class="field" data-slider="min_wall">
+          <div class="slider-row"><span class="name">Min wall (mm)</span><span class="val"></span></div>
+          <input type="range" min="0.0" max="5.0" step="0.1" value="1.0">
+        </div>
+
+        <details class="disclosure" id="advanced-global">
+          <summary>
+            <svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+            Advanced
+          </summary>
+          <div class="drawer">
+            <div class="field" data-slider="grid_spacing">
+              <div class="slider-row"><span class="name">Grid spacing (mm)</span><span class="val"></span></div>
+              <input type="range" min="0.2" max="1.5" step="0.05" value="0.5">
+            </div>
+            <div class="field">
+              <p class="field-label">Min-wall mode</p>
+              <div class="seg" data-group="min_wall_mode">
+                <button data-value="uniform" class="active">Uniform</button>
+                <button data-value="selective">Selective</button>
+              </div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- examples -->
+      <div class="examples">
+        <span class="ex-label">Examples</span>
+        <button class="ex" data-ex="1UBQ">1UBQ</button>
+        <button class="ex" data-ex="1BNA">1BNA</button>
+        <button class="ex" data-ex="1ZAA">1ZAA</button>
+        <button class="ex" data-ex="1TUP">1TUP</button>
+        <button class="ex" data-ex="2HHB">2HHB</button>
+      </div>
+    </aside>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+
+  // preset tuple order:
+  // grid_spacing, min_wall, nucleic_radius, slab_thickness, base_width,
+  // connector_radius, atom_radius, bond_radius
+  const PRESETS = {
+    "Balanced":    [0.5, 1.0, 1.2, 1.2, 1.0, 0.6, 1.0, 0.50],
+    "Chunky":      [0.5, 1.5, 2.2, 2.2, 1.4, 1.4, 1.8, 1.10],
+    "Fine detail": [0.3, 0.8, 0.9, 0.9, 0.9, 0.6, 0.8, 0.45],
+  };
+  const PRESET_KEYS = ["grid_spacing","min_wall","nucleic_radius","slab_thickness",
+                       "base_width","connector_radius","atom_radius","bond_radius"];
+
+  const $ = (s, r=document) => r.querySelector(s);
+  const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+
+  // ---- sliders: live readout ----
+  const sliders = {};
+  $$('[data-slider]').forEach(f => {
+    const key = f.dataset.slider;
+    const input = $('input', f);
+    const val = $('.val', f);
+    sliders[key] = input;
+    const fmt = () => {
+      const step = parseFloat(input.step);
+      const dp = (step < 0.1) ? 2 : (step < 1 ? 1 : 0);
+      val.textContent = parseFloat(input.value).toFixed(dp);
+    };
+    input.addEventListener('input', () => { fmt(); markPresetDirty(); });
+    fmt();
+  });
+
+  // ---- segmented toggles ----
+  const groups = {};
+  $$('.seg[data-group]').forEach(seg => {
+    const name = seg.dataset.group;
+    groups[name] = () => ($('button.active', seg) || {}).dataset?.value;
+    seg.addEventListener('click', e => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      $$('button', seg).forEach(b => b.classList.toggle('active', b === btn));
+      if (name === 'base_style' || name === 'backbone_style') updateBallStick();
+      if (name === 'protein_rep' || name === 'nucleic_rep') placeTubeslab();
+    });
+  });
+
+  // ---- ball-and-stick visibility ----
+  function updateBallStick() {
+    const on = groups.base_style() === 'molecule' || groups.backbone_style() === 'molecule';
+    $('#ball-stick').classList.toggle('show', on);
+  }
+  updateBallStick();
+
+  // ---- move rep-specific controls under whichever molecule uses them ----
+  const tubeslab = $('#tubeslab');
+  const surface = $('#surface');
+  const notes = { protein: null, nucleic: null };
+  function assign(el, mol) {
+    if (mol) { $(`.rep-slot[data-mol="${mol}"]`).appendChild(el); el.hidden = false; }
+    else el.hidden = true;
+  }
+  function placeControls() {
+    const reps = { protein: groups.protein_rep(), nucleic: groups.nucleic_rep() };
+    const tsTarget = reps.nucleic === 'tube_slab' ? 'nucleic'
+                   : reps.protein === 'tube_slab' ? 'protein' : null;
+    const sfTarget = reps.protein === 'surface' ? 'protein'
+                   : reps.nucleic === 'surface' ? 'nucleic' : null;
+    assign(tubeslab, tsTarget);
+    assign(surface, sfTarget);
+    ['protein', 'nucleic'].forEach(mol => {
+      const host = reps[mol] === 'tube_slab' ? tsTarget : sfTarget;
+      if (!notes[mol]) {
+        notes[mol] = document.createElement('p');
+        notes[mol].className = 'rep-note';
+      }
+      const note = notes[mol];
+      if (host && host !== mol) {
+        const other = host === 'protein' ? 'Protein' : 'DNA / RNA';
+        const kind = reps[mol] === 'tube_slab' ? 'tube-slab' : 'surface';
+        note.textContent = `Shares the ${kind} dimensions set under ${other}.`;
+        $(`.rep-slot[data-mol="${mol}"]`).appendChild(note);
+      } else if (note.parentNode) note.remove();
+    });
+  }
+  placeControls();
+
+  // ---- presets ----
+  let activePreset = 'Balanced';
+  function applyPreset(name) {
+    const vals = PRESETS[name];
+    if (!vals) return;
+    PRESET_KEYS.forEach((k, i) => {
+      if (sliders[k]) {
+        sliders[k].value = vals[i];
+        sliders[k].dispatchEvent(new Event('input'));
+      }
+    });
+    activePreset = name;
+    syncChips();
+  }
+  function syncChips() {
+    $$('#presets .chip').forEach(c => c.classList.toggle('active', c.dataset.preset === activePreset));
+  }
+  function markPresetDirty() {
+    // if current values no longer match the active preset, clear highlight
+    const vals = PRESETS[activePreset];
+    if (!vals) return;
+    const matches = PRESET_KEYS.every((k, i) =>
+      Math.abs(parseFloat(sliders[k].value) - vals[i]) < 1e-6);
+    if (!matches) { activePreset = null; syncChips(); }
+  }
+  $$('#presets .chip').forEach(chip => {
+    chip.addEventListener('click', () => applyPreset(chip.dataset.preset));
+  });
+
+  // ---- examples ----
+  $$('.ex').forEach(b => b.addEventListener('click', () => {
+    $('#pdb-id').value = b.dataset.ex;
+    clearFile();
+  }));
+
+  // ---- upload ----
+  const fileInput = $('#file-input');
+  const uploadBtn = $('#upload-btn');
+  uploadBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) {
+      uploadBtn.classList.add('has-file');
+      uploadBtn.title = 'Using file: ' + fileInput.files[0].name;
+    } else clearFile();
+  });
+  function clearFile() {
+    fileInput.value = '';
+    uploadBtn.classList.remove('has-file');
+    uploadBtn.title = 'Upload a structure file';
+  }
+
+  // ---- downloads / legend helpers ----
+  function setDownload(el, url) {
+    if (url) { el.href = url; el.setAttribute('aria-disabled', 'false'); }
+    else { el.removeAttribute('href'); el.setAttribute('aria-disabled', 'true'); }
+  }
+  function renderLegend(chains) {
+    const box = $('#legend');
+    box.innerHTML = '';
+    (chains || []).forEach(c => {
+      const pill = document.createElement('span');
+      pill.className = 'pill';
+      pill.innerHTML = `<span class="swatch" style="background:${c.color}"></span>Chain ${c.id}`;
+      box.appendChild(pill);
+    });
+  }
+  function setReport(text, isError) {
+    const r = $('#report');
+    r.textContent = text || '';
+    r.classList.toggle('err', !!isError);
+  }
+
+  // ---- generate ----
+  const genBtn = $('#generate');
+  const btnLabel = $('.btn-label', genBtn);
+
+  function collectForm() {
+    const fd = new FormData();
+    const id = $('#pdb-id').value.trim();
+    if (fileInput.files.length) fd.append('file', fileInput.files[0]);
+    if (id) fd.append('pdb_id', id);
+    fd.append('scale', sliders.scale.value);
+    fd.append('grid_spacing', sliders.grid_spacing.value);
+    fd.append('min_wall', sliders.min_wall.value);
+    fd.append('min_wall_mode', groups.min_wall_mode());
+    fd.append('protein_rep', groups.protein_rep());
+    fd.append('nucleic_rep', groups.nucleic_rep());
+    fd.append('backbone_style', groups.backbone_style());
+    fd.append('base_style', groups.base_style());
+    fd.append('nucleic_radius', sliders.nucleic_radius.value);
+    fd.append('slab_thickness', sliders.slab_thickness.value);
+    fd.append('base_width', sliders.base_width.value);
+    fd.append('connector_radius', sliders.connector_radius.value);
+    fd.append('atom_radius', sliders.atom_radius.value);
+    fd.append('bond_radius', sliders.bond_radius.value);
+    fd.append('probe_radius', sliders.probe_radius.value);
+    fd.append('surface_padding', sliders.surface_padding.value);
+    return fd;
+  }
+
+  async function generate() {
+    if (genBtn.disabled) return;
+    if (!$('#pdb-id').value.trim() && !fileInput.files.length) {
+      setReport('Enter a PDB ID or upload a .pdb/.cif file.', true);
+      return;
+    }
+    genBtn.disabled = true;
+    genBtn.classList.add('busy');
+    btnLabel.textContent = 'Building…';
+    setReport('Building model — this can take a minute…', false);
+
+    try {
+      const res = await fetch('/api/generate', { method: 'POST', body: collectForm() });
+      const data = await res.json();
+
+      if (data.glb_url) {
+        const v = $('#viewer');
+        v.style.display = 'block';
+        $('#viewer-empty').style.display = 'none';
+        v.setAttribute('src', data.glb_url);
+      }
+      renderLegend(data.chains);
+      setDownload($('#dl-3mf'), data.threemf_url);
+      setDownload($('#dl-stl'), data.stl_url);
+
+      let text = data.report || '';
+      if (data.warning) text += (text ? '\n\n' : '') + '⚠ ' + data.warning;
+      setReport(text, !data.ok || !!data.warning);
+    } catch (err) {
+      setReport('Request failed: ' + err.message, true);
+    } finally {
+      genBtn.disabled = false;
+      genBtn.classList.remove('busy');
+      btnLabel.textContent = 'Generate';
+    }
+  }
+
+  genBtn.addEventListener('click', generate);
+  $('#pdb-id').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
+})();
+</script>
+</body>
+</html>
