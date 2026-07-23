@@ -30,6 +30,15 @@ def write_3mf(built: List[BuiltChain], path: str) -> str:
     Falls back to a GLB with the same basename if lib3mf is unavailable, so the
     pipeline still yields a coloured multi-object file.
     """
+    # Hard watertight gate (defence in depth): the pipeline already gates each
+    # chain, but never let a non-manifold object into a 3MF regardless of caller.
+    broken = [chain.label() for chain, mesh in built if not mesh.is_watertight]
+    if broken:
+        raise RuntimeError(
+            "Refusing to write 3MF: non-watertight chain(s) "
+            + ", ".join(broken) + ". Slicers reject non-manifold geometry."
+        )
+
     try:
         import lib3mf
     except Exception:

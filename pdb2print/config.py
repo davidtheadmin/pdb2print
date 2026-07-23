@@ -58,12 +58,15 @@ class PrintParams:
     protein_representation: Representation = Representation.SURFACE
     nucleic_representation: Representation = Representation.TUBE_SLAB
 
-    # --- surface (metaball) tuning -------------------------------------
-    #: Gaussian spread as a multiple of each atom's van der Waals radius.
-    surface_blobbiness: float = 1.0
-    #: Extra radius added to atoms before meshing (angstrom, pre-scale) — a
-    #: small value fuses neighbouring atoms into a smooth printable shell.
-    surface_atom_padding_ang: float = 0.4
+    # --- surface (solvent-excluded surface) tuning ---------------------
+    #: Rolling-probe radius (ångström, pre-scale).  1.4 Å is the standard water
+    #: probe and is what ChimeraX uses for its molecular surface; it sets how
+    #: deep a crevice the surface reproduces.
+    probe_radius_ang: float = 1.4
+    #: Extra radius added to each atom before the surface is computed (ångström,
+    #: pre-scale).  0 gives a true van-der-Waals-based SES; a small positive
+    #: value smooths hairline gaps for a more print-robust shell.
+    surface_atom_padding_ang: float = 0.0
 
     # --- tube-and-slab tuning ------------------------------------------
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale
@@ -111,18 +114,25 @@ def color_for_index(i: int):
     return CHAIN_PALETTE[i % len(CHAIN_PALETTE)]
 
 
-# Representations that are already thick everywhere by construction and must NOT
-# receive a min-wall pass — running one would inflate and roughen them (a
-# Gaussian metaball surface, unlike a thin backbone tube, needs no thickening).
-MIN_WALL_EXEMPT = frozenset({Representation.SURFACE})
+# Representations that must NOT receive the voxel ``enforce_min_wall`` pass.
+# Both current representations already own their wall thickness *at build time*:
+#   • SURFACE   — a solvent-excluded surface is thick everywhere by construction.
+#   • TUBE_SLAB — min-wall is now a parametric offset applied to the analytic
+#     primitives before the mesh boolean (see ``tube_slab.build``), so its tube,
+#     slabs and connectors are already ≥ min-wall.  Re-voxelising either here
+#     would only reintroduce the grid stairstep we moved off of.
+# The pass therefore stays in ``meshops`` only as a fallback for hypothetical
+# future representations that build a thin shell and cannot self-thicken.
+MIN_WALL_EXEMPT = frozenset({Representation.SURFACE, Representation.TUBE_SLAB})
 
 
 def needs_min_wall(representation) -> bool:
-    """True if a representation should get the min-wall thickening pass.
+    """True if a representation needs the voxel ``enforce_min_wall`` pass.
 
     Accepts a :class:`Representation` or its string value (mesh metadata stores
-    the value).  Surface declines; tube-slab and future thin representations
-    keep it.  Unknown values default to keeping min-wall (safe side).
+    the value).  Both current representations apply their own wall thickness at
+    build time and so decline the pass; unknown values default to keeping it
+    (safe side).
     """
     if isinstance(representation, str):
         try:

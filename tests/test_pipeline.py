@@ -39,17 +39,26 @@ def test_tiny_surface_is_watertight():
         assert len(mesh.faces) > 0
 
 
-def test_min_wall_thickens_when_representation_opts_in():
-    """A representation that keeps min-wall gets thicker with a larger target."""
-    params = _fast_params(min_wall_mm=2.0)
+def test_min_wall_thickens_tube_slab_parametrically():
+    """A larger min-wall grows the tube-slab primitives before the mesh boolean.
+
+    min-wall is now a parametric offset inside ``tube_slab.build`` (not a voxel
+    post-pass), so a bigger target must yield a thicker, higher-volume solid.
+    The tiny fixture is protein-only, so we force the tube-slab representation
+    onto it and use a thin base radius so the wall target actually dominates.
+    """
+    from pdb2print.representations import tube_slab
     chain = chains_mod.split_chains(_load(TINY_PDB))[0]
-    base = meshops.repair(geometry.generate_chain_mesh(chain, params))
-    # Tag as a representation that keeps min-wall to exercise the pass (the
-    # tiny fixture is protein-only, whose surface would otherwise decline it).
-    tagged = base.copy()
-    tagged.metadata["representation"] = Representation.TUBE_SLAB.value
-    thick = meshops.enforce_min_wall(tagged, params)
-    assert thick.volume > base.volume * 1.05
+
+    def solid(min_wall):
+        p = _fast_params(min_wall_mm=min_wall, nucleic_radius_mm=0.4,
+                         connector_radius_mm=0.2)
+        return meshops.repair(tube_slab.build(chain, p))
+
+    thin = solid(0.4)
+    thick = solid(2.0)
+    assert thin.is_watertight and thick.is_watertight
+    assert thick.volume > thin.volume * 1.1
 
 
 def test_surface_declines_min_wall():

@@ -2,12 +2,17 @@
 
 Backbone = a smooth tube swept along a spline through the phosphate/backbone
 trace.  Bases = oriented slabs placed on each nucleotide's base plane, which is
-fitted from that base's ring atoms using a standard reference-atom set.  Both
-are rasterised into one occupancy field and meshed together, so the union is
-watertight without any CSG.
+fitted from that base's ring atoms using a standard reference-atom set.
 
-This is the pure-Python equivalent of ChimeraX's ``nucleotides tube/slab`` —
-kept dependency-free so it ports to the planned WASM build.
+Tube, slabs and connector struts are built as *exact analytic primitives*
+(capsules and oriented boxes) and fused with a single guaranteed-watertight
+mesh boolean via the manifold kernel — no voxel grid, so no stairstep.  The same
+kernel backs the planned client-side WASM build, so this is not throwaway work.
+
+Minimum wall thickness is a **parametric offset**: the tube radius, slab
+thickness and connector radius are each grown to satisfy ``min_wall_mm`` *before*
+the union, rather than by re-voxelising the finished mesh.  Because we control
+the primitives, this is exact and adds no grid texture.
 """
 
 from __future__ import annotations
@@ -15,9 +20,8 @@ from __future__ import annotations
 import numpy as np
 
 from ..config import PrintParams
-from ._common import (
-    Grid, field_to_mesh, catmull_rom, rasterize_capsule, rasterize_box,
-)
+from ._common import catmull_rom
+from . import _manifold
 
 
 # Ring atoms that define each base's plane and in-plane orientation.
@@ -93,29 +97,50 @@ def _base_frame(res_name, res):
     return center, normal / np.linalg.norm(normal), in_plane
 
 
+def _min_wall_dims(params: PrintParams):
+    """Effective (tube_radius, slab_thickness, connector_radius) after min-wall.
+
+    A solid tube/strut of radius ``r`` is ``2r`` thick and a slab is ``slab_t``
+    thick, so the minimum-wall guarantee becomes ``r ≥ min_wall/2`` and
+    ``slab_t ≥ min_wall`` — a parametric growth of the primitives we control.
+    """
+    tube_r = params.nucleic_radius_mm
+    slab_t = params.slab_thickness_mm
+    conn_r = params.connector_radius_mm
+    if params.min_wall_mm > 0:
+        tube_r = max(tube_r, params.min_wall_mm / 2.0)
+        slab_t = max(slab_t, params.min_wall_mm)
+        conn_r = max(conn_r, params.min_wall_mm / 2.0)
+    return tube_r, slab_t, conn_r
+
+
 def build(chain, params: PrintParams):
     """Return a watertight trimesh of the tube-and-slab model for ``chain``.
 
-    Tube, slabs and connector struts are all rasterised into one occupancy
-    field and meshed together, so the nucleotide comes out as a *single
-    connected body* — which must be true before any min-wall re-voxelisation,
-    or a disconnected slab would be re-severed and then pruned as an orphan.
+    Tube, base slabs and connector struts are exact analytic primitives fused by
+    one manifold boolean union, so the nucleotide comes out as a single
+    watertight body with no grid texture.  Minimum wall thickness is applied as a
+    parametric offset on those primitives (see :func:`_min_wall_dims`).
     """
     s = params.scale_mm_per_angstrom
-    tube_r = params.nucleic_radius_mm
-    slab_t = params.slab_thickness_mm
-    spacing = params.grid_spacing_mm
-    # A connector thinner than a voxel can rasterise with gaps and fail to fuse;
-    # never let it drop below one voxel wide.
-    conn_r = max(params.connector_radius_mm, spacing)
+    tube_r, slab_t, conn_r = _min_wall_dims(params)
 
     residues = list(_residue_iter(chain.atoms))
     backbone = np.array([_backbone_point(res) for _, res in residues]) * s
 
-    # Base slabs, each paired with its residue's backbone point (which lies on
-    # the tube) so we can join them with a connector strut.
-    # Entry: (center_mm, axes 3x3, half_extents_mm, backbone_point_mm)
-    slabs = []
+    solids = []
+
+    # Backbone tube: a capsule per spline segment (consecutive capsules overlap,
+    # so the union is a single smooth watertight tube).
+    if len(backbone) >= 2:
+        spline = catmull_rom(backbone, params.spline_samples_per_residue)
+        for i in range(len(spline) - 1):
+            solids.append(_manifold.capsule(spline[i], spline[i + 1], tube_r))
+    elif len(backbone) == 1:
+        solids.append(_manifold.capsule(backbone[0], backbone[0], tube_r))
+
+    # Base slabs, each fused to the tube by a connector strut running from the
+    # backbone point (on the tube) to the slab centre (inside the slab).
     for (res_name, res), bp in zip(residues, backbone):
         frame = _base_frame(res_name, res)
         if frame is None:
@@ -125,31 +150,12 @@ def build(chain, params: PrintParams):
         third = np.cross(normal, long_axis)
         third /= (np.linalg.norm(third) or 1.0)
         axes = np.array([long_axis, third, normal])
-        # Slab footprint: a base is roughly 4.5 x 3.0 angstrom, scaled to mm.
+        # Slab footprint: a base is roughly 4.5 x 3.0 angstrom, scaled to mm;
+        # through-plane thickness is exactly slab_t.
         half = np.array([4.5, 3.0, 1.0]) * 0.5 * params.slab_scale * s
-        half[2] = slab_t * 0.5   # through-plane thickness is exactly slab_t
-        slabs.append((center_mm, axes, half, bp))
+        half[2] = slab_t * 0.5
+        solids.append(_manifold.oriented_box(center_mm, axes, half))
+        solids.append(_manifold.capsule(bp, center_mm, conn_r))
 
-    # Bounding box over tube, slabs and connectors, then rasterise.
-    all_pts = [backbone]
-    for center_mm, _, half, bp in slabs:
-        reach = float(np.linalg.norm(half))
-        all_pts += [center_mm + reach, center_mm - reach, bp]
-
-    pad = max(tube_r, slab_t) + 2.0 * spacing
-    grid = Grid.covering(np.vstack(all_pts), spacing=spacing, pad=pad)
-    field = np.zeros(grid.shape, dtype=np.float32)
-
-    # Backbone tube.
-    if len(backbone) >= 2:
-        spline = catmull_rom(backbone, params.spline_samples_per_residue)
-        for i in range(len(spline) - 1):
-            rasterize_capsule(field, grid, spline[i], spline[i + 1], tube_r)
-
-    # Base slabs, each fused to the tube by a connector strut running from the
-    # backbone point (on the tube) to the slab centre (inside the slab).
-    for center_mm, axes, half, bp in slabs:
-        rasterize_box(field, grid, center_mm, axes, half)
-        rasterize_capsule(field, grid, bp, center_mm, conn_r)
-
-    return field_to_mesh(field, grid, level=0.5)
+    fused = _manifold.union(solids)
+    return _manifold.to_trimesh(fused)

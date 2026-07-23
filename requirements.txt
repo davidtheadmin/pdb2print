@@ -5,6 +5,10 @@ scikit-image>=0.21
 trimesh>=4.0
 biotite>=0.40
 
+# Guaranteed-watertight mesh booleans/offsets (analytic tube-slab; same kernel
+# as the planned client-side WASM build). Required by the nucleic-acid path.
+manifold3d>=3.0
+
 # Mesh repair (heavy non-manifold fixes); pipeline degrades gracefully without it
 pymeshlab>=2023.12
 
