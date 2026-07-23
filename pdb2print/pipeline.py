@@ -52,21 +52,37 @@ def build_all(source: str, params: PrintParams,
         raise ValueError("No protein or nucleic-acid chains found in the input.")
 
     out = BuildReport()
+    not_watertight = []
     n = len(chain_list)
     for i, chain in enumerate(chain_list):
         base = 0.15 + 0.8 * (i / n)
         report(base, f"Meshing {chain.label()} ({i + 1}/{n})…")
         try:
-            # Order matters: the chain is built as a single connected body
-            # (tube+slabs+connectors), THEN min-wall re-voxelises it, THEN we
-            # repair.  Min-wall is skipped for representations that decline it
-            # (surfaces).  Repair keeps all sizeable components as a safety net.
+            # Each representation now owns its wall thickness at build time
+            # (surface: thick by construction; tube-slab: parametric offset on
+            # its primitives), so enforce_min_wall is a no-op for both and only
+            # exists as a fallback for future thin representations.  Repair keeps
+            # all sizeable components as a safety net.
             mesh = geometry.generate_chain_mesh(chain, params)
             mesh = meshops.enforce_min_wall(mesh, params)
             mesh = meshops.repair(mesh)
-            out.built.append((chain, mesh))
         except Exception as exc:  # keep going; report the bad chain
             out.warnings.append(f"Skipped {chain.label()}: {exc}")
+            continue
+        out.built.append((chain, mesh))
+        if not mesh.is_watertight:
+            not_watertight.append(chain.label())
+
+    # Hard watertight gate: a non-watertight mesh must never reach the 3MF
+    # exporter (slicers reject non-manifold geometry), so fail loudly here
+    # rather than silently shipping a broken object.
+    if not_watertight:
+        raise RuntimeError(
+            "Watertight gate failed — these chain(s) meshed but are not "
+            "watertight/manifold: " + ", ".join(not_watertight)
+            + ". Refusing to export. Try a finer grid spacing or report this "
+            "structure as a bug."
+        )
 
     if not out.built:
         raise ValueError("Every chain failed to mesh. See warnings.\n"
