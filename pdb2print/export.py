@@ -55,7 +55,7 @@ def write_3mf(built: List[BuiltChain], path: str) -> str:
 
     for i, (chain, mesh) in enumerate(built):
         mesh_obj = model.AddMeshObject()
-        mesh_obj.SetName(chain.label())
+        mesh_obj.SetName(chain.object_name())
 
         vertices = []
         for v in mesh.vertices:
@@ -109,8 +109,37 @@ def write_stl_zip(built: List[BuiltChain], path: str) -> str:
 # --------------------------------------------------------------------------
 # GLB (interactive preview)
 # --------------------------------------------------------------------------
-def build_scene(built: List[BuiltChain]) -> trimesh.Scene:
-    """Assemble a coloured trimesh.Scene (one node per chain) for preview."""
+# Bright magnet-marker colour for the preview (stands out from any chain colour).
+_MAGNET_MARKER_RGBA = np.array([255, 0, 230, 255], dtype=np.uint8)
+
+
+def _marker_geoms(markers):
+    """Bright placeholder solids showing where magnets sit (preview only)."""
+    geoms = []
+    for mk in markers or []:
+        center = np.asarray(mk["center"], float)
+        axis = np.asarray(mk["axis"], float)
+        height = 2.0 * float(mk["thickness"])
+        transform = trimesh.geometry.align_vectors([0.0, 0.0, 1.0], axis)
+        transform[:3, 3] = center
+        if mk.get("shape") == "square":
+            d = float(mk["diameter"])
+            g = trimesh.creation.box(extents=(d, d, height), transform=transform)
+        else:
+            g = trimesh.creation.cylinder(
+                radius=float(mk["diameter"]) / 2.0, height=height, transform=transform)
+        g.visual = trimesh.visual.ColorVisuals(mesh=g, face_colors=_MAGNET_MARKER_RGBA)
+        geoms.append(g)
+    return geoms
+
+
+def build_scene(built: List[BuiltChain], markers=None) -> trimesh.Scene:
+    """Assemble a coloured trimesh.Scene (one node per chain) for preview.
+
+    ``markers`` (magnet placements from the connections pass) are added as bright
+    highlight solids so the user can see where magnets will sit — preview only,
+    never part of the printable 3MF/STL.
+    """
     scene = trimesh.Scene()
     for i, (chain, mesh) in enumerate(built):
         m = mesh.copy()
@@ -118,11 +147,14 @@ def build_scene(built: List[BuiltChain]) -> trimesh.Scene:
         rgba = (np.array([r, g, b, 1.0]) * 255).astype(np.uint8)
         m.visual = trimesh.visual.ColorVisuals(mesh=m, face_colors=rgba)
         scene.add_geometry(m, node_name=chain.label(), geom_name=chain.label())
+    for k, geom in enumerate(_marker_geoms(markers)):
+        name = f"magnet_{k}"
+        scene.add_geometry(geom, node_name=name, geom_name=name)
     return scene
 
 
-def write_glb(built: List[BuiltChain], path: str) -> str:
-    """Export a coloured GLB (used by the Gradio Model3D preview)."""
-    scene = build_scene(built)
+def write_glb(built: List[BuiltChain], path: str, markers=None) -> str:
+    """Export a coloured GLB (used by the preview), with optional magnet markers."""
+    scene = build_scene(built, markers=markers)
     scene.export(path)
     return path

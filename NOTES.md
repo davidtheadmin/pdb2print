@@ -4,6 +4,91 @@ Context for a fresh session. Covers architecture, the geometry pipeline as it
 actually works today, the bugs fixed so far, and known limitations that are
 *inherent to the approach* (not bugs). See `README.md` for user-facing docs.
 
+## v2 — connectors + UX (this session)
+
+Four features from `docs/FEATURE_BRIEF_connectors_and_ux.md` Part 2, built by
+*extending* the geometry core (never rewriting it) with every object kept
+watertight:
+
+- **A. Subunit names.** New `pdb2print/names.py` parses per-chain molecule names
+  from PDB `COMPND` (multi-`MOL_ID` blocks; robust to a missing `;` before a
+  `MOL_ID`) and mmCIF `_entity`/`_entity_poly`. `io.load_with_names()` returns
+  `(atoms, {chain_id: name})`; `Chain` gains `name` + `display_name()` (falls
+  back to "Chain X"); API `chains[]` and the viewer legend show it.
+- **B. Progress streaming.** `POST /api/generate` now returns
+  `text/event-stream` — `event: progress {frac,msg}` lines then one
+  `event: result {…}` with the unchanged JSON shape. The build runs in a worker
+  thread; `build_all`'s existing `progress` callback is pumped through an
+  `asyncio` queue. Validation errors still return plain JSON (4xx), so the
+  client tells them apart by content-type. Frontend shows a progress bar + live
+  message.
+- **C. Downloads** moved to the top bar; disabled until a result exists, then
+  accent-green with a one-shot pulse (3MF/STL independent).
+- **D. Connector / joinery system.** New `pdb2print/connections.py` runs *after*
+  per-chain meshing (behind `PrintParams.connections`, a `ConnectionParams`).
+  Same manifold3d kernel as the representations. **Deliberately small option
+  set** (reworked from a larger first cut per user feedback): two independent
+  switches —
+  - **connect** joins chains whose surfaces come within `contact_threshold_mm`.
+    - **magnets**: one tool (round cylinder or square block, Ø `connector_diameter`
+      × `2·magnet_thickness`) centred on the *gap midpoint* is subtracted from
+      *both* parts, so each keeps a seat from which its magnet protrudes to meet
+      the other in the middle (verified by an axis occupancy trace).  Requires
+      `2·thickness > gap`, else the joint is reported skipped ("increase magnet
+      thickness").
+    - **inflate** (default): `_rebuild_inflated` re-meshes each contacting chain
+      slightly larger at *build* time — protein via `surface_atom_padding_ang`,
+      DNA via the tube/base radii — so neighbours swell until their surfaces
+      overlap and weld, no strut, no re-mesh artefact.  Growth is `gap/2 + weld`
+      per side, capped at 1.2 mm (wide gaps should use bridge).
+    - **bridge**: a short `connector_diameter` cylinder across the gap.
+  - **basepair_connect** ties the two strands of a DNA duplex at every base pair.
+    Pairing is **register-based** (`_pair_bases`): it evaluates every antiparallel
+    / parallel diagonal and keeps the register with the most in-cutoff pairs —
+    this locks onto the true Watson–Crick partner at the helix ends (a greedy
+    nearest-neighbour swaps them for the diagonal neighbour) and the
+    `basepair_max_dist_ang` cutoff leaves an unwound bubble open instead of
+    mis-pairing it. Rod/slab rungs are *continued at their own radius to the
+    midline* so opposing rungs meet as one smooth bar; molecule bases get thin
+    bond-like spokes.
+
+  Detection is automatic (nearest surface gap); the earlier per-pair checklist /
+  `/api/detect` / overrides were removed for simplicity. **Watertight
+  guarantee:** every boolean goes through `_commit`, which accepts the result
+  only if it is still one connected body — so a pocket that would blow through a
+  thin backbone is skipped (min-wall honoured) rather than shipping a broken
+  object, and the pipeline re-gates watertightness after the pass.
+
+Kernel additions in `representations/_manifold.py`: `frustum` (flat/tapered
+cone, for chamfers & pegs), `from_trimesh` (re-enter the kernel), `difference`.
+`tube_slab.base_centroids_mm()` exposes base centroids for base-pair pairing.
+
+**Magnet placement (`connections._magnet_sites`).** Candidate contact points are
+scored by *support* — how many same-facing contact points fall within a
+magnet-sized radius — so magnets seat in the meaty part of an interface, not on
+a thin surface spike; below `_MIN_MAGNET_FOOTPRINT` supporting contacts the seat
+is abandoned and logged. The magnet is placed on the meaty seed's own
+nearest-point line (centre = its midpoint, axis = that line). Positions are
+returned as `connection_markers` and drawn as bright magenta solids in the GLB
+preview only.
+
+**KNOWN ISSUE / TODO — magnet axis on curved interfaces.** When a protein wraps
+against curved DNA, the nearest-point line at a single contact can be off from
+the true interface normal (the magnet looks ~perpendicular to how it should
+sit). Two attempted fixes made other interfaces *worse* and were reverted:
+(a) averaging the point-to-point directions fans around the curve and tilts;
+(b) a local plane fit is ambiguous on a narrow contact strip. A better approach
+to try later: estimate each side's *surface normal* at the contact (from the two
+meshes' local faces) and use their average, or fit an oriented plane constrained
+to point across the gap — validated against a real 1TUP build (needs the full
+file, which the sandbox web-fetch truncates).
+
+Tests: `tests/test_features.py` (23 tests) covers names, every join type/seat,
+base-pair methods, per-pair override, the watertight gate, SSE, and detect.
+Offline fixtures `tests/data/1bna.pdb`, `1zaa.pdb`, and `mini_complex.pdb` (1BNA
+DNA + a poly-ALA peptide in contact — a synthetic stand-in for the 1ZAA protein,
+whose chain the sandbox web-fetch truncates, as the brief notes).
+
 ## Architecture
 
 Geometry core lives in the `pdb2print/` package and has **no web-framework

@@ -61,6 +61,22 @@ def sphere(center, radius: float, segments: int = _SEGMENTS) -> Manifold:
     return Manifold.sphere(radius, segments).translate(tuple(center))
 
 
+def frustum(a, b, r_a: float, r_b: float, segments: int = _SEGMENTS) -> Manifold:
+    """A flat-ended (truncated) cone from ``a`` (radius ``r_a``) to ``b`` (radius ``r_b``).
+
+    With ``r_a == r_b`` this is a plain flat-ended cylinder; a differing pair
+    gives the chamfered mouths and tapered pegs the connector system needs.
+    """
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    length = float(np.linalg.norm(b - a))
+    if length < 1e-9:
+        length = 1e-6
+    cyl = Manifold.cylinder(length, r_a, r_b, segments, center=True)
+    transform = np.column_stack([_rot_z_to(b - a), 0.5 * (a + b)])
+    return cyl.transform(transform.tolist())
+
+
 def oriented_box(center, axes, half_extents) -> Manifold:
     """An oriented box.
 
@@ -87,6 +103,11 @@ def union(manifolds) -> Manifold:
     return Manifold.batch_boolean(parts, m3d.OpType.Add)
 
 
+def difference(a: Manifold, b: Manifold) -> Manifold:
+    """Boolean subtraction ``a - b`` (watertight by construction)."""
+    return a - b
+
+
 def to_trimesh(manifold: Manifold) -> trimesh.Trimesh:
     """Convert a :class:`Manifold` to a :class:`trimesh.Trimesh` (print-mm space)."""
     if manifold.is_empty():
@@ -98,3 +119,15 @@ def to_trimesh(manifold: Manifold) -> trimesh.Trimesh:
     # downstream repair() will merge_vertices/fix_normals before the watertight
     # gate, so no cleanup is needed here.
     return trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+
+
+def from_trimesh(mesh: trimesh.Trimesh) -> Manifold:
+    """Convert a (watertight) :class:`trimesh.Trimesh` back into a :class:`Manifold`.
+
+    Used by the connections pass to re-enter the manifold kernel and apply
+    booleans (adding bridges/pegs, subtracting pockets) to an already-built
+    per-chain mesh, so the result stays watertight by construction.
+    """
+    verts = np.ascontiguousarray(mesh.vertices, dtype=np.float32)
+    faces = np.ascontiguousarray(mesh.faces, dtype=np.uint32)
+    return Manifold(m3d.Mesh(vert_properties=verts, tri_verts=faces))

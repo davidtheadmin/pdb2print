@@ -13,13 +13,14 @@ import trimesh
 
 from .config import PrintParams, Representation
 from .chains import Chain
-from .representations import surface, tube_slab
+from .representations import surface, tube_slab, cartoon
 
 
 # representation -> builder callable(chain, params) -> trimesh.Trimesh
 _BUILDERS = {
     Representation.SURFACE: surface.build,
     Representation.TUBE_SLAB: tube_slab.build,
+    Representation.CARTOON: cartoon.build,
 }
 
 

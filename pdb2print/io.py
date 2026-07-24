@@ -67,13 +67,36 @@ def load_file(path: str) -> struc.AtomArray:
 
 def load_any(source: str) -> struc.AtomArray:
     """Accept either a PDB ID or a path and return a cleaned AtomArray."""
+    return load_with_names(source)[0]
+
+
+def resolve_source(source: str) -> str:
+    """Return a local file path for ``source`` (fetching a PDB ID if needed)."""
     if os.path.exists(source):
-        return load_file(source)
+        return source
     if looks_like_pdb_id(source):
-        return load_file(fetch_pdb_id(source))
+        return fetch_pdb_id(source)
     raise ValueError(
         f"'{source}' is neither an existing file nor a 4-character PDB ID."
     )
+
+
+def load_with_names(source: str):
+    """Load ``source`` and parse per-chain subunit names from its header.
+
+    Returns ``(atoms, names)`` where ``names`` maps chain id -> subunit name
+    (possibly empty).  Parsing names from the same on-disk file avoids a second
+    RCSB fetch and keeps header metadata that biotite drops from the AtomArray.
+    """
+    from .names import chain_names
+
+    path = resolve_source(source)
+    atoms = load_file(path)
+    try:
+        names = chain_names(path)
+    except Exception:
+        names = {}
+    return atoms, names
 
 
 def _clean(atoms: struc.AtomArray) -> struc.AtomArray:

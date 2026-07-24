@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
-from . import io, chains as chains_mod, geometry, meshops
+from . import io, chains as chains_mod, geometry, meshops, connections
 from .config import PrintParams
 from .export import BuiltChain
 
@@ -19,6 +19,10 @@ from .export import BuiltChain
 class BuildReport:
     built: List[BuiltChain] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    #: Applied connectors (each a plain dict from ``connections.apply``).
+    connections: List[dict] = field(default_factory=list)
+    #: Magnet marker placements (center/axis/size) for the preview highlight.
+    connection_markers: List[dict] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [f"Built {len(self.built)} chain(s):"]
@@ -44,12 +48,16 @@ def build_all(source: str, params: PrintParams,
             progress(frac, msg)
 
     report(0.05, "Loading structure…")
-    atoms = io.load_any(source)
+    atoms, names = io.load_with_names(source)
 
     report(0.15, "Identifying chains…")
     chain_list = chains_mod.split_chains(atoms)
     if not chain_list:
         raise ValueError("No protein or nucleic-acid chains found in the input.")
+    # Attach the subunit name parsed from the header (falls back to the chain id
+    # at display time); geometry never depends on it.
+    for chain in chain_list:
+        chain.name = names.get(chain.chain_id)
 
     out = BuildReport()
     not_watertight = []
@@ -87,5 +95,23 @@ def build_all(source: str, params: PrintParams,
     if not out.built:
         raise ValueError("Every chain failed to mesh. See warnings.\n"
                          + "\n".join(out.warnings))
+
+    # Connector / joinery pass (behind params): modifies the per-chain meshes so
+    # chosen pairs are fused / pocketed / pegged, keeping each object watertight.
+    if params.connections.enabled():
+        report(0.9, "Connecting objects…")
+        try:
+            out.built, out.connections, out.connection_markers = \
+                connections.apply(out.built, params)
+        except Exception as exc:  # never let the connector pass sink a good build
+            out.warnings.append(f"Connections skipped: {exc}")
+        # Re-gate: a connector must never break watertightness.
+        broke = [c.label() for c, m in out.built if not m.is_watertight]
+        if broke:
+            raise RuntimeError(
+                "Watertight gate failed after the connections pass for: "
+                + ", ".join(broke) + ". Refusing to export."
+            )
+
     report(1.0, "Done.")
     return out

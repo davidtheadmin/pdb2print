@@ -29,6 +29,7 @@ class Representation(str, Enum):
 
     SURFACE = "surface"        # Gaussian metaball molecular surface
     TUBE_SLAB = "tube_slab"    # backbone tube + base slabs (nucleic acids)
+    CARTOON = "cartoon"        # secondary-structure cartoon (helices + sheets)
 
 
 class BaseStyle(str, Enum):
@@ -64,6 +65,70 @@ class MinWallMode(str, Enum):
     SELECTIVE = "selective"
 
 
+class NoMagnetMethod(str, Enum):
+    """How chains are joined when magnets are *off*."""
+
+    INFLATE = "inflate"   # grow both surfaces at the contact until they merge
+    BRIDGE = "bridge"     # a short cylinder spanning the gap (peg/strut)
+
+
+class MagnetShape(str, Enum):
+    """Magnet cross-section for the subtracted pocket."""
+
+    ROUND = "round"       # cylindrical disc magnet
+    SQUARE = "square"     # square/block magnet
+
+
+@dataclass
+class ConnectionParams:
+    """The (deliberately small) set of options for the connections pass.
+
+    Two independent switches:
+
+    * ``connect`` joins chains that touch (protein↔protein, protein↔DNA).  With
+      ``use_magnets`` it subtracts a magnet pocket from each side; without, it
+      either ``INFLATE``s the surfaces together or drops a ``BRIDGE`` cylinder.
+      A single ``connector_diameter_mm`` sizes the magnet or the bridge.
+    * ``basepair_connect`` ties the two strands of a DNA duplex together at each
+      base pair (geometry-driven; complementary bases paired by centroid, with a
+      distance cutoff so an unwound bubble is left open).
+    """
+
+    # --- chain-to-chain joins ------------------------------------------
+    connect: bool = False
+    use_magnets: bool = False
+    no_magnet_method: NoMagnetMethod = NoMagnetMethod.INFLATE
+    #: Magnet Ø (magnets on) or bridge Ø (bridge); inflate sizes from the gap.
+    connector_diameter_mm: float = 4.0
+    #: Per-magnet thickness = the pocket depth on each side.
+    magnet_thickness_mm: float = 2.0
+    magnet_shape: MagnetShape = MagnetShape.ROUND
+    #: How many magnets per protein↔protein interface (spread across the contact
+    #: patch).
+    magnet_count: int = 1
+    #: How many magnets per DNA↔protein interface.  These contact patches are
+    #: usually smaller than protein↔protein ones, so this is exposed separately
+    #: and defaults to a single magnet.
+    dna_magnet_count: int = 1
+
+    # --- DNA base-pair connect -----------------------------------------
+    basepair_connect: bool = False
+
+    # --- internal (not exposed in the UI) ------------------------------
+    #: Max surface gap (mm) for two chains to count as "in contact".
+    contact_threshold_mm: float = 3.0
+    #: Max base-centroid distance (ångström, pre-scale) still treated as a real
+    #: Watson–Crick pair — beyond this the strands have genuinely separated (an
+    #: unwound bubble / melted end) and are left unconnected.  A paired B-DNA
+    #: step sits ~6–7 Å; this is set generously so only a real separation stops
+    #: the connection.
+    basepair_max_dist_ang: float = 13.0
+
+    def enabled(self) -> bool:
+        """True if any connection work is requested."""
+        return self.connect or self.basepair_connect
+
+
 @dataclass
 class PrintParams:
     """All user-tunable parameters for one export."""
@@ -90,6 +155,12 @@ class PrintParams:
 
     # --- tube-and-slab tuning ------------------------------------------
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale
+    #: Backbone tube radius for the *protein* "tubes" representation, kept
+    #: separate from the nucleic tube so the two can be sized independently.
+    protein_tube_radius_mm: float = 1.2
+    #: Overall chunkiness of the protein "cartoon" representation: the helix
+    #: cylinder radius and (scaled) the sheet-plank thickness.
+    cartoon_thickness_mm: float = 2.0
     slab_thickness_mm: float = 1.2       # base-slab (or rod) thickness
     slab_scale: float = 1.0              # scale factor on the in-plane base size
     connector_radius_mm: float = 0.6     # strut fusing each base to the backbone
@@ -102,6 +173,9 @@ class PrintParams:
     atom_radius_mm: float = 1.0
     #: Cylinder radius (mm) for the bonds ("sticks") in the molecule styles.
     bond_radius_mm: float = 0.5
+
+    # --- connector / joinery system ------------------------------------
+    connections: ConnectionParams = field(default_factory=ConnectionParams)
 
     def representation_for(self, mtype: MoleculeType) -> Representation:
         if mtype == MoleculeType.PROTEIN:
@@ -151,7 +225,9 @@ def color_for_index(i: int):
 #     would only reintroduce the grid stairstep we moved off of.
 # The pass therefore stays in ``meshops`` only as a fallback for hypothetical
 # future representations that build a thin shell and cannot self-thicken.
-MIN_WALL_EXEMPT = frozenset({Representation.SURFACE, Representation.TUBE_SLAB})
+MIN_WALL_EXEMPT = frozenset({
+    Representation.SURFACE, Representation.TUBE_SLAB, Representation.CARTOON,
+})
 
 
 def needs_min_wall(representation) -> bool:
