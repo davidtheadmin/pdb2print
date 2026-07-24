@@ -10,17 +10,20 @@ export files, and returns their URLs. Run with::
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import shutil
 import tempfile
 import uuid
 
 from fastapi import FastAPI, Form, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from pdb2print.config import (
     PrintParams, Representation, MinWallMode, BaseStyle, BackboneStyle,
+    ConnectionParams, NoMagnetMethod, MagnetShape,
     color_for_index,
 )
 from pdb2print.pipeline import build_all
@@ -50,6 +53,115 @@ def index() -> FileResponse:
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 
+def _error_payload(message: str) -> dict:
+    """The standard failure JSON shape (matches the streamed result event)."""
+    return {"ok": False, "warning": message, "report": message,
+            "glb_url": None, "threemf_url": None, "stl_url": None, "chains": []}
+
+
+def _bool(x) -> bool:
+    """Parse a permissive form boolean ("true"/"1"/"on"/"yes")."""
+    return str(x).strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _map_connections(fields: dict) -> ConnectionParams:
+    """Build a :class:`ConnectionParams` from the (small) connection form fields."""
+    return ConnectionParams(
+        connect=_bool(fields.get("connect", False)),
+        use_magnets=_bool(fields.get("use_magnets", False)),
+        no_magnet_method=NoMagnetMethod(fields.get("no_magnet_method", "inflate")),
+        connector_diameter_mm=float(fields.get("connector_diameter", 4.0)),
+        magnet_thickness_mm=float(fields.get("magnet_thickness", 2.0)),
+        magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
+        magnet_count=int(float(fields.get("magnet_count", 1))),
+        dna_magnet_count=int(float(fields.get("dna_magnet_count", 1))),
+        basepair_connect=_bool(fields.get("basepair_connect", False)),
+    )
+
+
+def _map_params(fields: dict) -> PrintParams:
+    """Map raw HTTP form fields to a :class:`PrintParams` (may raise ValueError)."""
+    return PrintParams(
+        scale_mm_per_angstrom=float(fields["scale"]),
+        grid_spacing_mm=float(fields["grid_spacing"]),
+        min_wall_mm=float(fields["min_wall"]),
+        min_wall_mode=MinWallMode(fields["min_wall_mode"]),
+        protein_representation=Representation(fields["protein_rep"]),
+        nucleic_representation=Representation(fields["nucleic_rep"]),
+        backbone_style=BackboneStyle(fields["backbone_style"]),
+        base_style=BaseStyle(fields["base_style"]),
+        nucleic_radius_mm=float(fields["nucleic_radius"]),
+        protein_tube_radius_mm=float(fields.get("protein_tube_radius", 1.2)),
+        cartoon_thickness_mm=float(fields.get("cartoon_thickness", 2.0)),
+        slab_thickness_mm=float(fields["slab_thickness"]),
+        slab_scale=float(fields["base_width"]),
+        connector_radius_mm=float(fields["connector_radius"]),
+        atom_radius_mm=float(fields["atom_radius"]),
+        bond_radius_mm=float(fields["bond_radius"]),
+        probe_radius_ang=float(fields["probe_radius"]),
+        surface_atom_padding_ang=float(fields["surface_padding"]),
+        connections=_map_connections(fields),
+    )
+
+
+def _run_and_export(source: str, params: PrintParams, progress) -> dict:
+    """Blocking build + export; returns the result JSON dict (never raises).
+
+    ``progress(frac, msg)`` is forwarded straight into ``build_all`` and reused
+    for the export phase, so the SSE stream keeps ticking after meshing too.
+    """
+    try:
+        report = build_all(source, params, progress=progress)
+    except Exception as exc:  # watertight-gate RuntimeError, ValueError, etc.
+        return _error_payload(str(exc))
+
+    progress(0.96, "Writing export files…")
+    token = uuid.uuid4().hex
+    out_dir = os.path.join(OUTPUT_ROOT, token)
+    os.makedirs(out_dir, exist_ok=True)
+
+    export.write_glb(report.built, os.path.join(out_dir, "out.glb"),
+                     markers=report.connection_markers)
+    export.write_stl_zip(report.built, os.path.join(out_dir, "out_stl.zip"))
+
+    threemf_url = None
+    warning = None
+    try:
+        export.write_3mf(report.built, os.path.join(out_dir, "out.3mf"))
+        threemf_url = f"/files/{token}/out.3mf"
+    except RuntimeError as exc:
+        # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
+        warning = str(exc)
+
+    chains = [
+        {"id": chain.chain_id, "name": chain.name,
+         "color": _rgb_to_hex(color_for_index(i))}
+        for i, (chain, _mesh) in enumerate(report.built)
+    ]
+
+    # Overall printed bounding box (mm) across every built chain, plus the scale
+    # that produced it, so the UI can show the size live as the scale changes.
+    size_mm = None
+    if report.built:
+        mins = [min(m.bounds[0][k] for _, m in report.built) for k in range(3)]
+        maxs = [max(m.bounds[1][k] for _, m in report.built) for k in range(3)]
+        size_mm = [float(maxs[k] - mins[k]) for k in range(3)]
+
+    progress(1.0, "Done.")
+    return {
+        "ok": True,
+        "warning": warning,
+        "report": report.summary(),
+        "glb_url": f"/files/{token}/out.glb",
+        "threemf_url": threemf_url,
+        "stl_url": f"/files/{token}/out_stl.zip",
+        "chains": chains,
+        "connections": report.connections,
+        "size_mm": size_mm,
+        "scale_used": params.scale_mm_per_angstrom,
+    }
+
+
 @app.post("/api/generate")
 async def generate(
     pdb_id: str = Form(""),
@@ -62,6 +174,8 @@ async def generate(
     backbone_style: str = Form("tube"),
     base_style: str = Form("slab"),
     nucleic_radius: float = Form(1.2),
+    protein_tube_radius: float = Form(1.2),
+    cartoon_thickness: float = Form(2.0),
     slab_thickness: float = Form(1.2),
     base_width: float = Form(1.0),
     connector_radius: float = Form(0.6),
@@ -69,8 +183,27 @@ async def generate(
     bond_radius: float = Form(0.5),
     probe_radius: float = Form(1.4),
     surface_padding: float = Form(0.0),
+    # --- connector / joinery system ---
+    connect: str = Form("false"),
+    use_magnets: str = Form("false"),
+    no_magnet_method: str = Form("inflate"),
+    connector_diameter: float = Form(4.0),
+    magnet_thickness: float = Form(2.0),
+    magnet_shape: str = Form("round"),
+    magnet_count: int = Form(1),
+    dna_magnet_count: int = Form(1),
+    basepair_connect: str = Form("false"),
     file: UploadFile | None = None,
 ):
+    """Build a model and stream progress as Server-Sent Events.
+
+    The response is ``text/event-stream``: zero or more ``event: progress`` lines
+    (``{frac, msg}``) followed by a single ``event: result`` line carrying the
+    same JSON shape the endpoint returned before streaming. Validation problems
+    (bad file type, missing source, unparseable params) short-circuit to a plain
+    JSON error with a 4xx status, so the client can tell the two apart by
+    content-type.
+    """
     # 1. resolve source: uploaded file OR a PDB-ID string
     source = None
     tmp_upload_dir = None
@@ -78,11 +211,8 @@ async def generate(
         ext = os.path.splitext(file.filename)[1].lower()
         if ext not in UPLOAD_EXTS:
             return JSONResponse(
-                {"ok": False, "warning": None,
-                 "report": f"Unsupported file type '{ext}'. "
-                           f"Accepted: {', '.join(sorted(UPLOAD_EXTS))}.",
-                 "glb_url": None, "threemf_url": None, "stl_url": None,
-                 "chains": []},
+                _error_payload(f"Unsupported file type '{ext}'. "
+                               f"Accepted: {', '.join(sorted(UPLOAD_EXTS))}."),
                 status_code=400,
             )
         tmp_upload_dir = tempfile.mkdtemp(prefix="pdb2print_up_")
@@ -94,87 +224,69 @@ async def generate(
 
     if not source:
         return JSONResponse(
-            {"ok": False, "warning": None,
-             "report": "Enter a PDB ID or upload a .pdb/.cif file.",
-             "glb_url": None, "threemf_url": None, "stl_url": None, "chains": []},
+            _error_payload("Enter a PDB ID or upload a .pdb/.cif file."),
             status_code=400,
         )
 
     # 2. map fields -> PrintParams
     try:
-        params = PrintParams(
-            scale_mm_per_angstrom=float(scale),
-            grid_spacing_mm=float(grid_spacing),
-            min_wall_mm=float(min_wall),
-            min_wall_mode=MinWallMode(min_wall_mode),
-            protein_representation=Representation(protein_rep),
-            nucleic_representation=Representation(nucleic_rep),
-            backbone_style=BackboneStyle(backbone_style),
-            base_style=BaseStyle(base_style),
-            nucleic_radius_mm=float(nucleic_radius),
-            slab_thickness_mm=float(slab_thickness),
-            slab_scale=float(base_width),
-            connector_radius_mm=float(connector_radius),
-            atom_radius_mm=float(atom_radius),
-            bond_radius_mm=float(bond_radius),
-            probe_radius_ang=float(probe_radius),
-            surface_atom_padding_ang=float(surface_padding),
-        )
+        params = _map_params({
+            "scale": scale, "grid_spacing": grid_spacing, "min_wall": min_wall,
+            "min_wall_mode": min_wall_mode, "protein_rep": protein_rep,
+            "nucleic_rep": nucleic_rep, "backbone_style": backbone_style,
+            "base_style": base_style, "nucleic_radius": nucleic_radius,
+            "protein_tube_radius": protein_tube_radius,
+            "cartoon_thickness": cartoon_thickness,
+            "slab_thickness": slab_thickness, "base_width": base_width,
+            "connector_radius": connector_radius, "atom_radius": atom_radius,
+            "bond_radius": bond_radius, "probe_radius": probe_radius,
+            "surface_padding": surface_padding,
+            "connect": connect, "use_magnets": use_magnets,
+            "no_magnet_method": no_magnet_method,
+            "connector_diameter": connector_diameter,
+            "magnet_thickness": magnet_thickness, "magnet_shape": magnet_shape,
+            "magnet_count": magnet_count, "dna_magnet_count": dna_magnet_count,
+            "basepair_connect": basepair_connect,
+        })
     except (ValueError, TypeError) as exc:
-        return JSONResponse(
-            {"ok": False, "warning": None, "report": f"Invalid parameter: {exc}",
-             "glb_url": None, "threemf_url": None, "stl_url": None, "chains": []},
-            status_code=400,
-        )
-
-    # 3. run the pipeline (may raise on watertight-gate failure)
-    try:
-        report = build_all(source, params)
-    except Exception as exc:  # RuntimeError (watertight gate), ValueError, etc.
-        return JSONResponse(
-            {"ok": False, "warning": str(exc), "report": str(exc),
-             "glb_url": None, "threemf_url": None, "stl_url": None, "chains": []},
-            status_code=200,
-        )
-    finally:
         if tmp_upload_dir:
             shutil.rmtree(tmp_upload_dir, ignore_errors=True)
+        return JSONResponse(
+            _error_payload(f"Invalid parameter: {exc}"), status_code=400,
+        )
 
-    # 4. write outputs into a served sub-directory
-    token = uuid.uuid4().hex
-    out_dir = os.path.join(OUTPUT_ROOT, token)
-    os.makedirs(out_dir, exist_ok=True)
+    # 3. stream progress while the (blocking) build runs in a worker thread.
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
 
-    glb_path = os.path.join(out_dir, "out.glb")
-    stl_path = os.path.join(out_dir, "out_stl.zip")
-    export.write_glb(report.built, glb_path)
-    export.write_stl_zip(report.built, stl_path)
+        def progress(frac, msg):
+            loop.call_soon_threadsafe(
+                queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
-    threemf_url = None
-    warning = None
-    threemf_path = os.path.join(out_dir, "out.3mf")
-    try:
-        export.write_3mf(report.built, threemf_path)
-        threemf_url = f"/files/{token}/out.3mf"
-    except RuntimeError as exc:
-        # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
-        warning = str(exc)
+        def work():
+            try:
+                result = _run_and_export(source, params, progress)
+            except Exception as exc:  # defensive: _run_and_export shouldn't raise
+                result = _error_payload(str(exc))
+            finally:
+                if tmp_upload_dir:
+                    shutil.rmtree(tmp_upload_dir, ignore_errors=True)
+            loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
+            loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
-    chains = [
-        {"id": chain.chain_id, "color": _rgb_to_hex(color_for_index(i))}
-        for i, (chain, _mesh) in enumerate(report.built)
-    ]
+        loop.run_in_executor(None, work)
+        while True:
+            kind, data = await queue.get()
+            if kind == "__done__":
+                break
+            yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
 
-    # 5. respond
-    return JSONResponse({
-        "ok": True,
-        "warning": warning,
-        "report": report.summary(),
-        "glb_url": f"/files/{token}/out.glb",
-        "threemf_url": threemf_url,
-        "stl_url": f"/files/{token}/out_stl.zip",
-        "chains": chains,
-    })
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # Serve the rest of the front-end assets (kept last so /api and / win first).

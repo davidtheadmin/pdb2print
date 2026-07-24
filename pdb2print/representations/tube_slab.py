@@ -200,11 +200,13 @@ def _backbone_solids(residues, backbone_mm, params, s, tube_r, atom_r, bond_r):
     return solids
 
 
-def _base_solids(res_name, res, bp, params, s, slab_t, conn_r, atom_r, bond_r):
+def _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
+                 atom_r, bond_r):
     """Build the solids for one base in the chosen style, tied to ``bp``.
 
     ``bp`` is the residue's backbone trace point (mm).  Returns ``[]`` if the
-    base plane cannot be fitted.
+    base plane cannot be fitted.  Every style connects to the backbone with a
+    single integral element (no separate thin strut) so the model reads clean.
     """
     frame = _base_frame(res_name, res)
     if frame is None:
@@ -214,27 +216,28 @@ def _base_solids(res_name, res, bp, params, s, slab_t, conn_r, atom_r, bond_r):
     glyco_mm = glyco * s
 
     if params.base_style == BaseStyle.MOLECULE:
-        # Ball-and-stick of the ring atoms, tied to the backbone at the
-        # glycosidic atom.
+        # Ball-and-stick of the ring atoms, tied to the backbone by a single
+        # bond-thickness link at the glycosidic atom — reads as a real bond,
+        # not a strut.
         ring = _ring_atoms(res_name, res)
         if not ring:
             return []
         solids = _ball_and_stick(ring, s, atom_r, bond_r)
-        solids.append(_manifold.capsule(bp, glyco_mm, conn_r))
+        solids.append(_manifold.capsule(bp, glyco_mm, bond_r))
         return solids
 
     if params.base_style == BaseStyle.ROD:
-        # A cylinder rung along the base long axis, radius from slab thickness.
-        rod_r = max(slab_t * 0.5, conn_r)
-        half_len = 4.5 * 0.5 * params.slab_scale * s
-        tip = center_mm + long_axis * half_len
-        tail = center_mm - long_axis * half_len
-        return [
-            _manifold.capsule(tail, tip, rod_r),
-            _manifold.capsule(bp, center_mm, conn_r),
-        ]
+        # Clean ladder rung: ONE tube from the backbone straight to the base
+        # centroid (points toward the helix axis), slightly thinner than the
+        # backbone tube.  No separate connector — the rung *is* the link.
+        rung_r = tube_r * 0.7
+        if params.min_wall_mm > 0:
+            rung_r = max(rung_r, params.min_wall_mm / 2.0)
+        return [_manifold.capsule(bp, center_mm, rung_r)]
 
-    # Default: flat oriented slab on the base plane.
+    # Default: flat oriented slab on the base plane, fused to the backbone with
+    # a connector grown to the slab's own thickness so it blends in rather than
+    # spiking.
     third = np.cross(normal, long_axis)
     third /= (np.linalg.norm(third) or 1.0)
     axes = np.array([long_axis, third, normal])
@@ -242,10 +245,38 @@ def _base_solids(res_name, res, bp, params, s, slab_t, conn_r, atom_r, bond_r):
     # through-plane thickness is exactly slab_t.
     half = np.array([4.5, 3.0, 1.0]) * 0.5 * params.slab_scale * s
     half[2] = slab_t * 0.5
+    slab_conn = max(conn_r, slab_t * 0.45)
     return [
         _manifold.oriented_box(center_mm, axes, half),
-        _manifold.capsule(bp, center_mm, conn_r),
+        _manifold.capsule(bp, center_mm, slab_conn),
     ]
+
+
+def base_anchors_mm(chain, params: PrintParams):
+    """Per-residue (backbone_point, base_centroid) anchors, in print-mm space.
+
+    Both are returned aligned so the connections pass can pair bases by centroid
+    yet start each base-pair link from the *backbone* point — which is always on
+    the strand mesh (the tube passes through it), so the link never floats free
+    of the body and every pair connects.  Residues whose base plane can not be
+    fitted are skipped, so ``k`` may be < the residue count.
+    """
+    s = params.scale_mm_per_angstrom
+    bpts, cens = [], []
+    for res_name, res in _residue_iter(chain.atoms):
+        frame = _base_frame(res_name, res)
+        if frame is None:
+            continue
+        cens.append(frame[0] * s)
+        bpts.append(_backbone_point(res) * s)
+    if not cens:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    return np.array(bpts), np.array(cens)
+
+
+def base_centroids_mm(chain, params: PrintParams):
+    """Per-residue base-ring centroids for a nucleic chain, in print-mm space."""
+    return base_anchors_mm(chain, params)[1]
 
 
 def build(chain, params: PrintParams):
@@ -260,6 +291,14 @@ def build(chain, params: PrintParams):
     s = params.scale_mm_per_angstrom
     tube_r, slab_t, conn_r, atom_r, bond_r = _min_wall_dims(params)
 
+    # A protein chain rendered as "tubes" has no bases, only a backbone tube; it
+    # gets its own radius so it can be sized independently of the nucleic tube.
+    from ..config import MoleculeType
+    if chain.mtype == MoleculeType.PROTEIN:
+        tube_r = params.protein_tube_radius_mm
+        if params.min_wall_mm > 0:
+            tube_r = max(tube_r, params.min_wall_mm / 2.0)
+
     residues = list(_residue_iter(chain.atoms))
     backbone_mm = np.array([_backbone_point(res) for _, res in residues]) * s
 
@@ -269,7 +308,8 @@ def build(chain, params: PrintParams):
 
     for (res_name, res), bp in zip(residues, backbone_mm):
         solids.extend(
-            _base_solids(res_name, res, bp, params, s, slab_t, conn_r, atom_r, bond_r)
+            _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
+                         atom_r, bond_r)
         )
 
     fused = _manifold.union(solids)

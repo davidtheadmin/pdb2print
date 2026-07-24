@@ -35,7 +35,18 @@ def repair(mesh: trimesh.Trimesh,
     multi-domain chains) is never silently discarded, while tiny stray specks
     still are.  (Previously this kept only the single largest component, which
     was silently deleting disconnected base slabs.)
+
+    Fast path: analytic representations (tube-slab, SES surface) come out of the
+    manifold/marching-cubes kernel already watertight and single-bodied.  The
+    cleanup below (notably ``merge_vertices``) can weld near-coincident vertices
+    at overlapping-primitive seams and *pinch* such a mesh into a non-manifold,
+    so a mesh that is already watertight and single-bodied is returned untouched
+    apart from normal orientation.
     """
+    mesh.fix_normals()
+    if mesh.is_watertight and mesh.body_count == 1:
+        return mesh
+
     mesh.remove_duplicate_faces() if hasattr(mesh, "remove_duplicate_faces") else None
     mesh.update_faces(mesh.unique_faces())
     mesh.update_faces(mesh.nondegenerate_faces())
