@@ -37,15 +37,21 @@ def repair(mesh: trimesh.Trimesh,
     was silently deleting disconnected base slabs.)
 
     Fast path: analytic representations (tube-slab, SES surface) come out of the
-    manifold/marching-cubes kernel already watertight and single-bodied.  The
-    cleanup below (notably ``merge_vertices``) can weld near-coincident vertices
-    at overlapping-primitive seams and *pinch* such a mesh into a non-manifold,
-    so a mesh that is already watertight and single-bodied is returned untouched
-    apart from normal orientation.
+    manifold/marching-cubes kernel already watertight.  The cleanup below
+    (notably ``merge_vertices``) can weld near-coincident vertices at
+    overlapping-primitive seams and *pinch* such a mesh into a non-manifold, so
+    an already-watertight mesh skips it entirely.
+
+    That fast path covers the multi-body case too, and must.  A chain can arrive
+    here watertight in several pieces — the interference pass has to cut a loop
+    that a DNA duplex genuinely threads through — and sending that through the
+    cleanup destroyed it: the mesh went in watertight and came out not, which
+    then tripped the export gate.  Dropping specks needs only split and
+    concatenate, both of which preserve watertightness.
     """
     mesh.fix_normals()
-    if mesh.is_watertight and mesh.body_count == 1:
-        return mesh
+    if mesh.is_watertight:
+        return mesh if mesh.body_count == 1 else _drop_specks(mesh, min_component_frac)
 
     mesh.remove_duplicate_faces() if hasattr(mesh, "remove_duplicate_faces") else None
     mesh.update_faces(mesh.unique_faces())
@@ -58,16 +64,28 @@ def repair(mesh: trimesh.Trimesh,
         mesh = _pymeshlab_repair(mesh)
 
     if mesh.body_count > 1:
-        parts = mesh.split(only_watertight=False)
-        if len(parts) > 0:
-            sizes = np.array([
-                abs(p.volume) if p.is_volume else p.area for p in parts
-            ])
-            keep = [p for p, sz in zip(parts, sizes)
-                    if sz >= sizes.max() * min_component_frac]
-            mesh = keep[0] if len(keep) == 1 else trimesh.util.concatenate(keep)
+        mesh = _drop_specks(mesh, min_component_frac)
     mesh.fix_normals()
     return mesh
+
+
+def _drop_specks(mesh: trimesh.Trimesh, min_component_frac: float) -> trimesh.Trimesh:
+    """Keep every component at least ``min_component_frac`` of the largest.
+
+    Split and concatenate only — no vertex welding — so a watertight input stays
+    watertight.
+    """
+    parts = mesh.split(only_watertight=False)
+    if len(parts) == 0:
+        return mesh
+    sizes = np.array([abs(p.volume) if p.is_volume else p.area for p in parts])
+    keep = [p for p, sz in zip(parts, sizes)
+            if sz >= sizes.max() * min_component_frac]
+    if not keep:
+        return mesh
+    out = keep[0] if len(keep) == 1 else trimesh.util.concatenate(keep)
+    out.fix_normals()
+    return out
 
 
 def _pymeshlab_repair(mesh: trimesh.Trimesh) -> trimesh.Trimesh:

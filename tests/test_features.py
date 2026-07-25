@@ -301,11 +301,90 @@ def test_mass_axis_beats_the_contact_line_on_a_tilted_interface():
     mb = cx._manifold.from_trimesh(b)
 
     center = np.array([5.25, 2.0, 0.0])
-    _va, ca = cx._local_mass(ma, center, 6.0)
-    _vb, cb = cx._local_mass(mb, center, 6.0)
+    # The local solid is cut once and then reused for mass, centroid and the
+    # embedding tests, so the probe radius is applied here rather than inside.
+    _va, ca = cx._local_mass(cx._local_solid(ma, center, 6.0), center)
+    _vb, cb = cx._local_mass(cx._local_solid(mb, center, 6.0), center)
     assert ca is not None and cb is not None
     mass_axis = cx._unit(cb - ca)
     assert mass_axis[0] > 0.7, mass_axis        # dominated by +x, the real normal
+
+
+def test_embedding_measures_how_buried_a_socket_would_be():
+    """The anti-'sticking out' measure, against geometry with known answers.
+
+    ``fill`` cannot serve this purpose: it starts at each part's own surface, so
+    the stub of collar spanning the half-gap — the piece with nothing behind it —
+    is excluded from it by construction.  ``_embedding`` is taken on the collar as
+    built, from the mid-plane, so that stub counts against it.
+    """
+    import numpy as np
+    import trimesh
+    from pdb2print import connections as cx
+
+    r, depth = 3.6, 3.7
+    block = cx._manifold.from_trimesh(trimesh.creation.box(extents=(40, 40, 40)))
+    down, up = np.array([0.0, 0.0, -1.0]), np.array([0.0, 0.0, 1.0])
+    blob = lambda c: cx._local_solid(block, np.asarray(c, float), 8.0)
+
+    face = np.array([0.0, 0.0, 20.0])
+    assert cx._embedding(blob(face), face, down, r, depth) > 0.99   # buried
+    assert cx._embedding(blob(face), face, up, r, depth) < 0.01     # in open air
+
+    # Started 1 mm off the face: that millimetre of collar is unsupported.
+    off = np.array([0.0, 0.0, 21.0])
+    assert 0.65 < cx._embedding(blob(off), off, down, r, depth) < 0.80
+
+    # Half over the edge of the block: half the collar hangs in the air.
+    edge = np.array([20.0, 0.0, 20.0])
+    assert 0.40 < cx._embedding(blob(edge), edge, down, r, depth) < 0.60
+
+    # A rod thinner than the socket can only ever bury the area ratio of it.
+    rod = cx._manifold.from_trimesh(
+        trimesh.creation.cylinder(radius=1.5, height=40))
+    here = np.zeros(3)
+    thin = cx._embedding(cx._local_solid(rod, here, 8.0), here, down, r, depth)
+    assert 0.10 < thin < 0.25, thin
+
+    assert cx._embedding(None, face, down, r, depth) == 0.0   # nothing here
+
+
+def test_embedding_is_maximised_by_the_true_surface_normal():
+    """Why it is a sound *orientation* signal, not just a seat score.
+
+    The axis search scores candidates on counts of obstructing surface points,
+    which says nothing about how deeply the collar buries itself — so a tilt that
+    leaves half the socket in open air scored level with one that sinks it in.
+    Embedding peaks, smoothly and symmetrically, exactly on the real normal.
+    """
+    import numpy as np
+    import trimesh
+    from pdb2print import connections as cx
+
+    tilt = np.radians(30.0)
+    rot = np.array([[np.cos(tilt), 0, np.sin(tilt)],
+                    [0, 1, 0],
+                    [-np.sin(tilt), 0, np.cos(tilt)]])
+    box = trimesh.creation.box(extents=(40, 40, 40))
+    box.apply_transform(np.block([[rot, np.zeros((3, 1))],
+                                  [np.zeros((1, 3)), np.ones((1, 1))]]))
+    face = rot @ np.array([0.0, 0.0, 20.0])
+    inward = -(rot @ np.array([0.0, 0.0, 1.0]))
+    blob = cx._local_solid(cx._manifold.from_trimesh(box), face, 8.0)
+
+    scores = {}
+    for deg in (-40, -20, -10, 0, 10, 20, 40):
+        th = np.radians(deg)
+        spin = np.array([[np.cos(th), 0, np.sin(th)],
+                         [0, 1, 0],
+                         [-np.sin(th), 0, np.cos(th)]])
+        scores[deg] = cx._embedding(blob, face, spin @ inward, 3.6, 3.7)
+
+    assert max(scores, key=scores.get) == 0, scores      # peaks on the normal
+    assert scores[0] > 0.99
+    for deg in (10, 20, 40):                             # and falls off either way
+        assert scores[deg] < scores[0]
+        assert scores[-deg] < scores[0]
 
 
 def _rod_and_slab():
@@ -343,6 +422,54 @@ def test_patch_pca_tells_a_strip_from_a_disc():
     disc = np.column_stack([rng.uniform(-4, 4, 200), rng.uniform(-4, 4, 200),
                             np.zeros(200)])
     assert cx._patch_long_axis(disc)[1] < 2.0  # round patch: no long direction
+
+
+def test_edge_offset_is_zero_for_a_centred_patch_and_large_on_the_rim():
+    """The anti-edge probe: lopsided support reads as a large lateral offset."""
+    import numpy as np
+    from pdb2print import connections as cx
+
+    axis = np.array([0.0, 0.0, 1.0])
+    center = np.zeros(3)
+    rng = np.random.default_rng(2)
+    # A disc of contact centred on the seat, in the plane perpendicular to axis.
+    ring = np.column_stack([rng.uniform(-3, 3, 400), rng.uniform(-3, 3, 400),
+                            np.zeros(400)])
+    assert cx._edge_offset(ring, center, axis) < 0.4      # interior: ~centred
+
+    # The same disc but the seat sits at its edge — all support to one side.
+    off_center = np.array([3.0, 0.0, 0.0])
+    assert cx._edge_offset(ring, off_center, axis) > 2.0  # rim: lopsided
+
+    # The offset ignores the along-axis component: sliding the patch up the axis
+    # must not change it (the joint faces still meet on the mid-plane).
+    lifted = ring + np.array([0.0, 0.0, 5.0])
+    assert cx._edge_offset(lifted, center, axis) < 0.4
+
+
+def test_recenter_walks_a_rim_seat_inward_without_moving_along_the_axis():
+    """The optional pull-inward: motion is in the mating plane only, and bounded."""
+    import numpy as np
+    from pdb2print import connections as cx
+
+    axis = np.array([0.0, 0.0, 1.0])
+    rng = np.random.default_rng(3)
+    patch = np.column_stack([rng.uniform(-3, 3, 400), rng.uniform(-3, 3, 400),
+                             np.zeros(400)])
+    seat = cx.Seat(center=np.array([3.0, 0.0, 0.0]), axis=axis, gap=1.0,
+                   footprint=20, patch=patch)
+
+    before = cx._edge_offset(seat.patch, seat.center, seat.axis)
+    cx._recenter_into_patch(seat, frac=0.5, max_shift=3.6)
+    after = cx._edge_offset(seat.patch, seat.center, seat.axis)
+
+    assert after < before                      # walked toward the interior
+    assert abs(seat.center[2]) < 1e-9          # never moved along the axis
+    # frac=0 is a no-op.
+    held = cx.Seat(center=np.array([3.0, 0.0, 0.0]), axis=axis, gap=1.0,
+                   footprint=20, patch=patch)
+    cx._recenter_into_patch(held, frac=0.0, max_shift=3.6)
+    assert np.allclose(held.center, [3.0, 0.0, 0.0])
 
 
 def test_rod_shaped_blob_does_not_swing_the_axis_90_degrees():
@@ -552,3 +679,219 @@ def test_generate_validation_error_is_json_not_stream():
     assert r.status_code == 400
     assert "application/json" in r.headers.get("content-type", "")
     assert r.json()["ok"] is False
+
+
+# --------------------------------------------------------------------------
+# Feature E — parts that actually fit: interference resolution
+# --------------------------------------------------------------------------
+#
+# Chains are meshed independently, so at a binding interface both solids claim
+# the same volume.  The pass that fixes that is also what makes magnets land in
+# the right place, so the two are tested together here.
+
+import numpy as np
+
+from pdb2print import interference
+from pdb2print.chains import Chain
+from pdb2print.config import (
+    InterferenceRule, MoleculeType, PROBE_RADIUS_MIN_ANG, resolve_surface_grid,
+)
+from pdb2print.representations import _manifold
+
+OVERLAP = os.path.join(D, "overlap_complex.pdb")
+
+
+def _fake(chain_id, mtype):
+    """A Chain carrying only what the interference pass looks at."""
+    return Chain(chain_id=chain_id, atoms=None, mtype=mtype)
+
+
+def _two_overlapping_balls(r_a=6.0, r_b=4.0, offset=7.0):
+    """Two solids sharing a lens of volume, big one first."""
+    return (_manifold.sphere(np.zeros(3), r_a, 48),
+            _manifold.sphere(np.array([offset, 0.0, 0.0]), r_b, 48))
+
+
+def _shared(mans):
+    return interference.residual_overlap(mans)
+
+
+def test_dilate_grows_a_solid_by_the_requested_amount():
+    """The translate-union stand-in for a Minkowski sum must not undershoot.
+
+    The clearance is a guarantee, so what matters is the *thinnest* direction,
+    not the average one.
+    """
+    r, grow = 5.0, 0.3
+    ball = _manifold.sphere(np.zeros(3), r, 64)
+    grown = interference.dilate(ball, grow)
+    # Compare effective radii by volume; the union of translates can only add.
+    r_grown = (3.0 * abs(_manifold.volume(grown)) / (4.0 * np.pi)) ** (1.0 / 3.0)
+    assert r_grown >= r + grow * 0.9
+    assert r_grown <= r + grow * 1.35        # and does not run away either
+
+
+def test_probe_radius_does_not_change_the_size_of_the_part():
+    """The misconception this whole feature exists to correct.
+
+    ``EDT(atoms grown by p) − p`` cancels on a convex patch, so turning the
+    probe radius down does *not* shrink a chain and cannot stop two chains
+    colliding — it only carves into concave pockets.  If this test ever fails,
+    the probe radius has become a size knob and the guidance in the UI is wrong.
+    """
+    from pdb2print.representations import surface
+    atoms, _names = io.load_with_names(BNA)
+    chain = chains_mod.split_chains(atoms)[0]
+
+    def extent(probe):
+        p = PrintParams(scale_mm_per_angstrom=0.6, grid_spacing_mm=0.9,
+                        probe_radius_ang=probe)
+        m = surface.build(chain, p)
+        return m.bounds[1] - m.bounds[0]
+
+    small, large = extent(1.4), extent(2.0)
+    # A 43% bigger probe must not move the outer surface by more than a voxel.
+    assert np.allclose(small, large, atol=1.0), (small, large)
+
+
+def test_probe_radius_is_clamped_to_the_water_probe():
+    """Below 1.4 Å the surface sheds pieces, so the slider floor is enforced."""
+    low = resolve_surface_grid(PrintParams(probe_radius_ang=1.0))
+    assert low.probe_ang == pytest.approx(PROBE_RADIUS_MIN_ANG)
+    assert low.notes and "1.40" in low.notes[0]
+    # The known-good default must pass through completely untouched.
+    default = resolve_surface_grid(PrintParams())
+    assert default.probe_ang == pytest.approx(1.4)
+    assert default.spacing_mm == pytest.approx(0.5)
+    assert default.notes == []
+
+
+def test_auto_rule_carves_the_protein_and_spares_the_nucleic():
+    """DNA sits in a groove, so the protein is the one that gives way."""
+    dna, protein = _two_overlapping_balls()
+    chains = [_fake("A", MoleculeType.NUCLEIC), _fake("P", MoleculeType.PROTEIN)]
+    before = [_manifold.volume(dna), _manifold.volume(protein)]
+    out, overlaps, notes = interference.resolve(
+        [dna, protein], chains, PrintParams(), None)
+    after = [_manifold.volume(m) for m in out]
+
+    assert overlaps and notes
+    assert after[0] == pytest.approx(before[0], rel=1e-6)   # DNA untouched
+    assert after[1] < before[1] * 0.999                     # protein carved
+    assert _shared(out) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_auto_rule_keeps_the_larger_of_two_same_type_chains():
+    big, small = _two_overlapping_balls()
+    chains = [_fake("A", MoleculeType.PROTEIN), _fake("B", MoleculeType.PROTEIN)]
+    before = [_manifold.volume(big), _manifold.volume(small)]
+    out, _ov, _n = interference.resolve([big, small], chains, PrintParams(), None)
+    after = [_manifold.volume(m) for m in out]
+    assert after[0] == pytest.approx(before[0], rel=1e-6)
+    assert after[1] < before[1] * 0.999
+
+
+def test_symmetric_rule_trims_both_parts():
+    a, b = _two_overlapping_balls()
+    chains = [_fake("A", MoleculeType.NUCLEIC), _fake("P", MoleculeType.PROTEIN)]
+    before = [_manifold.volume(a), _manifold.volume(b)]
+    out, _ov, _n = interference.resolve(
+        [a, b], chains, PrintParams(resolve_interference=InterferenceRule.SYMMETRIC),
+        None)
+    after = [_manifold.volume(m) for m in out]
+    assert after[0] < before[0] * 0.999
+    assert after[1] < before[1] * 0.999
+    assert _shared(out) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_none_rule_leaves_the_overlap_alone():
+    a, b = _two_overlapping_balls()
+    chains = [_fake("A", MoleculeType.NUCLEIC), _fake("P", MoleculeType.PROTEIN)]
+    out, overlaps, notes = interference.resolve(
+        [a, b], chains, PrintParams(resolve_interference=InterferenceRule.NONE), None)
+    assert overlaps == [] and notes == []
+    assert _shared(out) > 1.0
+
+
+def test_carve_leaves_a_real_clearance_not_a_zero_fit():
+    """Parts must not merely stop overlapping — they need room to be assembled."""
+    dna, protein = _two_overlapping_balls()
+    chains = [_fake("A", MoleculeType.NUCLEIC), _fake("P", MoleculeType.PROTEIN)]
+    gap = 0.4
+    out, _ov, _n = interference.resolve(
+        [dna, protein], chains, PrintParams(fit_clearance_mm=gap), None)
+    # Growing the untouched part by *less* than the clearance must still not
+    # reach the carved one; growing it by more must.
+    assert _shared([interference.dilate(out[0], gap * 0.5), out[1]]) \
+        == pytest.approx(0.0, abs=1e-6)
+    assert _shared([interference.dilate(out[0], gap * 2.0), out[1]]) > 0.0
+
+
+def test_overlapping_chains_are_made_printable_end_to_end():
+    """The whole point: nothing exported may share space with anything else."""
+    report = build_all(OVERLAP, _params())
+    assert all(m.is_watertight for _c, m in report.built)
+    mans = [_manifold.from_trimesh(m) for _c, m in report.built]
+    assert _shared(mans) == pytest.approx(0.0, abs=1e-3)
+    assert any("Interference at" in w for w in report.warnings)
+
+
+def test_fit_runs_with_connections_switched_off():
+    """Two parts that are merely printed and handed over still have to fit."""
+    loose = build_all(OVERLAP, _params())
+    stuck = build_all(OVERLAP, PrintParams(
+        scale_mm_per_angstrom=0.6, grid_spacing_mm=0.9, min_wall_mm=1.0,
+        base_style=BaseStyle.ROD, backbone_style=BackboneStyle.TUBE,
+        resolve_interference=InterferenceRule.NONE))
+    assert loose.connections == [] and stuck.connections == []
+    assert _shared([_manifold.from_trimesh(m) for _c, m in stuck.built]) > 1.0
+    assert _shared([_manifold.from_trimesh(m) for _c, m in loose.built]) \
+        == pytest.approx(0.0, abs=1e-3)
+
+
+def test_magnets_seat_where_the_parts_were_interpenetrating():
+    """The natural joint position, which the old nearest-point search could not find.
+
+    An unsigned vertex distance reads a deeply buried point as *far away*, so the
+    deepest contact scored worst and the seed axis flipped sign across the rim —
+    which is what tilted a magnet.  Seats taken from the interference lobe use
+    the lens's thin principal axis instead, and must win.
+    """
+    report = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    marks = report.connection_markers
+    assert marks, "no magnets placed at all"
+
+    # Interfaces that were interpenetrating are seated from the lobe, and the
+    # lobe's axis is kept rather than being talked out of it by the veto.
+    from_lobe = [m for m in marks if m["overlap_mm3"] > 0.0]
+    assert from_lobe, "no magnet found the interference at all"
+    assert all(m["axis_source"] == "overlap" for m in from_lobe)
+
+    # And the raw nearest-point line — the noisy quantity that tilted a magnet
+    # whenever the surfaces crossed — is never what a seated joint falls back on.
+    assert not [m for m in marks if m["axis_source"] == "contact"]
+
+    # Connectors are added after the fit pass, so a collar driven through a thin
+    # backbone can leave interference the closing sweep will not cut out (that
+    # would sever the part).  Whatever survives has to be *reported*, not
+    # silently shipped — a build that claims to fit and does not is the failure
+    # this whole feature exists to prevent.
+    mans = [_manifold.from_trimesh(m) for _c, m in report.built]
+    left = _shared(mans)
+    if left > 1e-3:
+        assert any("still share" in w for w in report.warnings), (
+            f"{left:.1f} mm³ of interference shipped without a warning")
+
+
+def test_basepair_rungs_meet_without_sharing_space():
+    """Opposing rungs must read as one bar and still come apart.
+
+    A capsule's solid runs a full radius past its end point, so a link aimed at
+    the midline used to cross it by ``2r`` — invisible on screen, a collision in
+    the print, and added *after* the fit pass had already run.
+    """
+    report = build_all(BNA, _params(basepair_connect=True))
+    assert _all_watertight_single(report)
+    assert report.connections[0]["count"] > 0
+    mans = [_manifold.from_trimesh(m) for _c, m in report.built]
+    assert _shared(mans) == pytest.approx(0.0, abs=1e-3)

@@ -1,0 +1,519 @@
+"""Resolve interpenetration between separately-built chain solids.
+
+Every chain is meshed **independently from its own atoms**, so at a binding
+interface the two solids necessarily overlap: each one's surface is built as if
+the other were not there, and both bulge into the shared space.  On screen that
+looks right — it is what the complex actually looks like — but the two objects
+cannot be printed and assembled, because each occupies volume the other needs.
+
+This pass makes the set of solids *physically disjoint* before anything else
+touches them.  It runs whether or not the parts are being connected: two objects
+that are simply printed and handed to the user still have to fit together.
+
+**Why the probe radius cannot do this job.**  The SES field is
+``EDT(atoms grown by p) − p``; on a convex patch those cancel exactly, leaving a
+surface at ``vdW + padding`` regardless of ``p``.  An interface is convex-facing
+on both sides, so lowering the probe radius does not move it — it only carves
+into concave pockets, opening crevices and risking pinched, non-manifold necks.
+Interference is a boolean problem and is solved here with booleans.
+
+**Who gives up the material.**  Under :attr:`InterferenceRule.AUTO`:
+
+* **nucleic ↔ protein** — the nucleic acid keeps its true shape and the protein
+  is carved.  This matches the biology (DNA sits in a groove) and it reads as
+  intentional: the protein ends up with a socket that is an exact negative of
+  the duplex, like a mould, rather than both parts looking bitten.
+* **same type** — the larger part keeps its shape and the smaller one is carved,
+  which is deterministic and keeps the dominant subunit intact.
+
+:attr:`InterferenceRule.SYMMETRIC` instead has *both* parts retreat out of the
+shared volume.  Neither is deformed by the other's shape, at the cost of a gap
+where they used to interpenetrate (the connector socket bridges it).
+
+**Clearance.**  Carving with a plain subtraction gives a zero-clearance mate:
+geometrically perfect, but FDM parts print a little oversize and would bind.  So
+the tool is the *other* part grown by ``fit_clearance_mm`` first.  A true
+Minkowski dilation is far too slow here (tens of seconds on a protein-sized
+mesh), so the growth is a union of six translated copies — exact along the axes
+and a little under between them, which at a 0.1–0.3 mm clearance is well inside
+print tolerance.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+
+import numpy as np
+
+from .config import PrintParams, MoleculeType, InterferenceRule
+from .chains import Chain
+from .representations import _manifold
+
+
+#: Unit directions used to approximate a spherical dilation by a union of
+#: translated copies.  Six axis directions, not the fourteen that adding the cube
+#: corners would give: this union is the single most expensive thing in the whole
+#: pass (it was 8 s of a 24 s build on a five-chain complex, because each call
+#: unions that many copies of a large mesh), and the corners more than double it
+#: to buy accuracy that a print clearance does not need.
+_DILATE_DIRS: np.ndarray = np.array(
+    [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)],
+    dtype=float,
+)
+
+#: Overlap fragments below this fraction of the largest one are numerical
+#: slivers along the interface rim, not real interpenetration lobes.  They are
+#: still carved away (the carve uses the whole overlap solid); they are just not
+#: offered as connector seats.
+_PIECE_MIN_FRACTION = 0.05
+
+#: Never offer more than this many seats from one interface, however finely the
+#: overlap decomposes.
+_MAX_PIECES = 12
+
+#: Overlaps smaller than this (mm³) are carved away but not reported.  Booleans
+#: on organic meshes leave sub-cubic-millimetre slivers wherever two surfaces
+#: were built to meet exactly — a collar face against its opposite number, say —
+#: and listing those as findings would bury the real ones.
+_REPORT_MIN_MM3 = 0.5
+
+
+# --------------------------------------------------------------------------
+# Small manifold helpers
+# --------------------------------------------------------------------------
+def _volume(man) -> float:
+    """Enclosed volume of a manifold, tolerant of ``volume`` being a property.
+
+    ``manifold3d`` has shipped ``Manifold.volume`` both ways across releases and
+    this is called often enough that going via a trimesh conversion (what
+    :func:`_manifold.volume` does) would be wasteful.
+    """
+    if man is None or man.is_empty():
+        return 0.0
+    try:
+        v = man.volume
+        return float(abs(v() if callable(v) else v))
+    except Exception:
+        return _manifold.volume(man)
+
+
+def _components(man) -> int:
+    try:
+        return len(man.decompose())
+    except Exception:
+        return 1
+
+
+#: Six axis directions grow an axis-facing surface by the full amount and a
+#: corner-facing one by ``cos(54.7°) ≈ 0.58``, so the requested amount is scaled
+#: up to put the spread either side of nominal rather than all below it.  At the
+#: default 0.15 mm clearance that is 0.11 mm at the tightest and 0.19 mm at the
+#: loosest — both comfortably inside what an FDM mating surface cares about, and
+#: the anisotropy is invisible on an organic shape.
+_DILATE_COMPENSATION = 1.25
+
+
+def dilate(man, amount: float):
+    """Grow ``man`` outward by roughly ``amount`` mm in every direction.
+
+    Union of translated copies (see the module docstring) — orders of magnitude
+    faster than a true Minkowski sum and accurate enough for a print clearance.
+    Returns ``man`` unchanged for a non-positive amount.
+    """
+    if man is None or amount <= 0.0 or man.is_empty():
+        return man
+    offsets = _DILATE_DIRS * (float(amount) * _DILATE_COMPENSATION)
+    return _manifold.union([man.translate(tuple(v)) for v in offsets])
+
+
+def _centroid_and_extent(man) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """``(centre of mass, thin-axis unit vector)`` of one overlap fragment.
+
+    An interference lobe is a *lens*: wide across the interface, thin through
+    it.  Its smallest principal direction is therefore the interface normal, and
+    it is far better conditioned than any single nearest-point pair — which is
+    the whole reason a seat derived from the overlap sits square.  The sign is
+    arbitrary here; the caller orients it.
+    """
+    try:
+        mesh = _manifold.to_trimesh(man)
+    except Exception:
+        return None, None
+    verts = np.asarray(mesh.vertices, float)
+    if len(verts) < 4:
+        return None, None
+    try:
+        center = np.asarray(mesh.center_mass, float)
+    except Exception:
+        center = verts.mean(axis=0)
+    try:
+        _u, _s, vh = np.linalg.svd(verts - verts.mean(axis=0), full_matrices=False)
+    except Exception:
+        return center, None
+    if len(vh) < 3:
+        return center, None
+    thin = vh[-1]
+    n = float(np.linalg.norm(thin))
+    return center, (thin / n if n > 1e-12 else None)
+
+
+# --------------------------------------------------------------------------
+# Overlap detection
+# --------------------------------------------------------------------------
+@dataclass
+class OverlapPiece:
+    """One connected lobe of interpenetration between two chains."""
+
+    center: np.ndarray          # centre of mass of the lobe
+    normal: np.ndarray          # interface normal (thin axis), sign unset
+    volume: float               # mm³ of shared material
+
+
+@dataclass
+class Overlap:
+    """All the interpenetration between one pair of chains."""
+
+    i: int
+    j: int
+    solid: object = None        # the intersection manifold
+    volume: float = 0.0
+    pieces: List[OverlapPiece] = field(default_factory=list)
+    #: Bounding box of every connected lobe, *unfiltered* — the carve has to
+    #: cover all of them, including the slivers that are too small to be worth
+    #: offering as a connector seat.
+    boxes: List[Tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return {"a": self.i, "b": self.j, "volume_mm3": round(self.volume, 2),
+                "lobes": len(self.pieces)}
+
+
+def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
+    """Every interpenetrating pair among ``mans``, with its shared solid.
+
+    ``want_pieces`` decomposes each overlap into connected lobes and measures
+    them, which is what the connector pass uses to seat magnets exactly where
+    the parts currently collide — the natural joint positions that the old
+    nearest-point search could never find (an unsigned distance reads a deeply
+    buried vertex as *far away*, so the deepest contact scored worst).
+    """
+    out: List[Overlap] = []
+    n = len(mans)
+    for i in range(n):
+        for j in range(i + 1, n):
+            try:
+                solid = _manifold.intersection(mans[i], mans[j])
+            except Exception:
+                continue
+            if solid is None or solid.is_empty():
+                continue
+            ov = Overlap(i=i, j=j, solid=solid, volume=_volume(solid))
+            if ov.volume <= 0.0:
+                continue
+            if want_pieces:
+                ov.pieces, ov.boxes = _measure_pieces(solid)
+            out.append(ov)
+    return out
+
+
+def _measure_pieces(solid):
+    """``(seat candidates, every lobe's bounding box)`` for one overlap solid."""
+    try:
+        chunks = solid.decompose() or [solid]
+    except Exception:
+        chunks = [solid]
+    measured: List[OverlapPiece] = []
+    boxes: List[Tuple[np.ndarray, np.ndarray]] = []
+    for chunk in chunks:
+        if chunk is None or chunk.is_empty():
+            continue
+        vol = _volume(chunk)
+        if vol <= 0.0:
+            continue
+        try:
+            bb = chunk.bounding_box()
+            boxes.append((np.array(bb[:3], float), np.array(bb[3:], float)))
+        except Exception:
+            pass
+        center, normal = _centroid_and_extent(chunk)
+        if center is None:
+            continue
+        measured.append(OverlapPiece(center=center, normal=normal, volume=vol))
+    if not measured:
+        return [], boxes
+    measured.sort(key=lambda p: -p.volume)
+    cutoff = measured[0].volume * _PIECE_MIN_FRACTION
+    return [p for p in measured if p.volume >= cutoff][:_MAX_PIECES], boxes
+
+
+# --------------------------------------------------------------------------
+# Carving
+# --------------------------------------------------------------------------
+def _carve_target(chain_a: Chain, chain_b: Chain, vol_a: float, vol_b: float,
+                  rule: InterferenceRule) -> str:
+    """Which side gives up the shared volume: ``"a"``, ``"b"`` or ``"both"``."""
+    if rule == InterferenceRule.SYMMETRIC:
+        return "both"
+    a_nuc = chain_a.mtype == MoleculeType.NUCLEIC
+    b_nuc = chain_b.mtype == MoleculeType.NUCLEIC
+    if a_nuc and not b_nuc:
+        return "b"          # nucleic keeps its shape; carve the protein
+    if b_nuc and not a_nuc:
+        return "a"
+    return "a" if vol_a < vol_b else "b"     # same type: the larger one wins
+
+
+def _box(lo, hi):
+    """An axis-aligned box manifold spanning ``lo``..``hi``."""
+    size = np.asarray(hi, float) - np.asarray(lo, float)
+    center = 0.5 * (np.asarray(hi, float) + np.asarray(lo, float))
+    return _manifold.Manifold.cube(tuple(size), center=True).translate(tuple(center))
+
+
+#: Ceiling on how many separate regions one carve is split into.  Each region
+#: costs three booleans, so past a handful the per-region saving is swamped;
+#: adjacent lobes are merged until the count is under this.
+_MAX_CARVE_REGIONS = 4
+
+#: How far past the interference the carve region reaches (mm).  This is not
+#: slack — it is the difference between "remove the shared volume" and "apply the
+#: clearance".  Two parts come within the clearance of each other over a patch
+#: much wider than the volume they actually share, and the thin features on that
+#: flank are exactly what fouls a joint later: trim them and the connector seats;
+#: leave them and the socket's approach cut has to sever them instead, which the
+#: watertight gate then refuses.  Sized to a typical magnet radius.
+_REGION_MARGIN_MM = 3.0
+
+
+def _merge_boxes(boxes, pad: float, limit: int):
+    """Fuse boxes that are within ``pad`` of each other, down to ``limit`` of them.
+
+    A DNA duplex interferes at every base pair, so the raw lobe list is long and
+    strung out along the helix — and a box per rung is the wrong trade, because
+    each region carries its own clip/grow/clip and the overhead beats the saving.
+    Merging first collapses that stripe into one region while still keeping two
+    genuinely separate binding sites apart, which is where the locality actually
+    pays.
+    """
+    merged = [(lo.copy(), hi.copy()) for lo, hi in boxes]
+    changed = True
+    while changed and len(merged) > 1:
+        changed = False
+        out = []
+        for lo, hi in merged:
+            for k, (olo, ohi) in enumerate(out):
+                if np.all(lo - pad <= ohi) and np.all(hi + pad >= olo):
+                    out[k] = (np.minimum(olo, lo), np.maximum(ohi, hi))
+                    changed = True
+                    break
+            else:
+                out.append((lo, hi))
+        merged = out
+    while len(merged) > limit:
+        # Still too many: fold the two closest together and try again.
+        best, pair = np.inf, (0, 1)
+        for a in range(len(merged)):
+            for b in range(a + 1, len(merged)):
+                ca = 0.5 * (merged[a][0] + merged[a][1])
+                cb = 0.5 * (merged[b][0] + merged[b][1])
+                d = float(np.linalg.norm(ca - cb))
+                if d < best:
+                    best, pair = d, (a, b)
+        a, b = pair
+        merged[a] = (np.minimum(merged[a][0], merged[b][0]),
+                     np.maximum(merged[a][1], merged[b][1]))
+        merged.pop(b)
+    return merged
+
+
+def _carve_tool(keeper, ov: "Overlap", amount: float):
+    """The cutting tool for one carve: ``keeper`` grown by ``amount``, localised.
+
+    Growing a whole chain and subtracting it is correct but slow, and slow for a
+    specific reason: two molecular surfaces that bind run *parallel and close*
+    over a wide patch, which is the worst case for a boolean kernel — it is the
+    configuration with the most near-coincident faces to resolve.  Over the full
+    length of a DNA duplex that costs seconds per pair.
+
+    Nothing outside the interference needs cutting, so the work is confined to
+    the lobes.  Per *lobe*, not per interface: a duplex interferes at every base
+    pair, so a single box around the whole overlap would still span the entire
+    helix and save nothing, while a box per rung is genuinely small.
+
+    Each region is handled the same way — clip the keeper to a generous box (so
+    the grown result is still correct at the boundary), grow it there, then clip
+    back to a tight one.  Inside the tight box that is exactly the full
+    dilation; outside it the tool is empty.  Every lobe of shared volume lies
+    inside its own tight box by construction, so the fit guarantee is untouched;
+    all that is skipped is clearance in places the parts never contested.
+    """
+    tight = max(amount, 0.0) + _REGION_MARGIN_MM
+    loose = tight + max(amount, 0.0) + 1.0
+
+    regions = ov.boxes
+    if regions:
+        regions = _merge_boxes(regions, 2.0 * loose, _MAX_CARVE_REGIONS)
+    if not regions:
+        try:
+            bb = ov.solid.bounding_box()
+            regions = [(np.array(bb[:3], float), np.array(bb[3:], float))]
+        except Exception:
+            return dilate(keeper, amount)
+    tools = []
+    for lo, hi in regions:
+        try:
+            local = _manifold.intersection(keeper, _box(lo - loose, hi + loose))
+            if local.is_empty():
+                continue
+            tools.append(_manifold.intersection(dilate(local, amount),
+                                                _box(lo - tight, hi + tight)))
+        except Exception:
+            return dilate(keeper, amount)
+    if not tools:
+        return None
+    try:
+        return _manifold.union(tools)
+    except Exception:
+        return dilate(keeper, amount)
+
+
+def _subtract(man, tool, allow_split: bool = True):
+    """``man - tool``, or ``None`` if the cut is not one we are willing to make.
+
+    On the main pass a carve that *splits* a part is allowed through: a thin
+    protein loop that a DNA duplex genuinely threads has to come apart
+    somewhere, and dropping the offcut silently would be worse than reporting a
+    two-piece object.  Only annihilation is rejected.
+
+    On the closing sweep it is not.  By then the connectors are in, the
+    remaining overlaps are sub-millimetre slivers, and cutting a part in half to
+    chase one is strictly worse than leaving it: it would sever the very joint
+    that was just seated.
+    """
+    if tool is None or tool.is_empty():
+        return man
+    try:
+        out = _manifold.difference(man, tool)
+    except Exception:
+        return None
+    if out is None or out.is_empty():
+        return None
+    if not allow_split and _components(out) > _components(man):
+        return None
+    return out
+
+
+def resolve(mans, chains: List[Chain], params: PrintParams,
+            overlaps: Optional[List[Overlap]] = None,
+            allow_split: bool = True, want_pieces: bool = True):
+    """Make every solid in ``mans`` disjoint from the others.
+
+    Returns ``(new_mans, overlaps, notes)`` where ``overlaps`` are the overlaps
+    that were found *before* carving — the connector pass wants those, because
+    the volume that had to be removed is exactly where a magnet belongs — and
+    ``notes`` are human-readable lines for the build report.
+    """
+    rule = params.resolve_interference
+    if rule == InterferenceRule.NONE or len(mans) < 2:
+        return mans, [], []
+
+    if overlaps is None:
+        # ``want_pieces`` is measurement for the *connector* search — a centroid
+        # and a principal axis per lobe, each needing a mesh conversion and an
+        # SVD.  The closing sweep only carves; it has no seats left to place, so
+        # asking for that is pure waste and on a five-chain complex it was
+        # seconds of it.
+        overlaps = pair_overlaps(mans, want_pieces=want_pieces)
+    if not overlaps:
+        return mans, [], []
+
+    clearance = max(0.0, float(params.fit_clearance_mm))
+    mans = list(mans)
+    # The tool for every carve is built from the solids as they were *before*
+    # this pass, so a chain touching two neighbours is not carved against an
+    # already-carved partner (which would leave the second interface short).
+    original = list(mans)
+    notes: List[str] = []
+
+    # Volume is a pure function of the *original* solid and a chain is often
+    # weighed against several neighbours, so it is computed once per chain.
+    _volumes: dict = {}
+
+    def vol(idx: int) -> float:
+        if idx not in _volumes:
+            _volumes[idx] = _volume(original[idx])
+        return _volumes[idx]
+
+    for ov in overlaps:
+        i, j = ov.i, ov.j
+        target = _carve_target(chains[i], chains[j], vol(i), vol(j), rule)
+        label = f"{chains[i].label()} ↔ {chains[j].label()}"
+
+        if target == "both":
+            half = clearance / 2.0
+            new_i = _subtract(mans[i], _carve_tool(original[j], ov, half),
+                              allow_split)
+            new_j = _subtract(mans[j], _carve_tool(original[i], ov, half),
+                              allow_split)
+            if new_i is None or new_j is None:
+                notes.append(f"Interference at {label} left as-is: carving it out "
+                             f"would have destroyed an object.")
+                continue
+            mans[i], mans[j] = new_i, new_j
+            who = "both parts trimmed"
+        else:
+            cut, keep = (i, j) if target == "a" else (j, i)
+            new = _subtract(mans[cut],
+                            _carve_tool(original[keep], ov, clearance),
+                            allow_split)
+            if new is None:
+                notes.append(f"Interference at {label} left as-is: carving it out "
+                             f"would have destroyed or split {chains[cut].label()}.")
+                continue
+            mans[cut] = new
+            who = f"{chains[cut].label()} carved to fit {chains[keep].label()}"
+
+        if ov.volume < _REPORT_MIN_MM3:
+            continue                      # carved, but too small to be news
+        extra = ""
+        if _components(mans[i]) > _components(original[i]) or \
+                _components(mans[j]) > _components(original[j]):
+            extra = " — this split a part into separate pieces"
+        notes.append(f"Interference at {label}: {ov.volume:.1f} mm³ shared, "
+                     f"{who}{extra}.")
+
+    return mans, overlaps, notes
+
+
+def audit(mans, chains: List[Chain]) -> List[str]:
+    """Report any pair still sharing space — the honest end-of-pipeline check.
+
+    Interference resolution is exact when it runs on the raw chain solids: the
+    exported parts are disjoint, full stop.  Connectors are added afterwards
+    though, and a collar driven through a thin backbone into a neighbour can
+    leave interference that the closing sweep will not remove, because removing
+    it would cut a part in two.  That is a real "these will not fit" condition
+    and it belongs in the user's face rather than in a comment.
+    """
+    notes: List[str] = []
+    for ov in pair_overlaps(mans, want_pieces=False):
+        if ov.volume < _REPORT_MIN_MM3:
+            continue
+        notes.append(
+            f"{chains[ov.i].label()} and {chains[ov.j].label()} still share "
+            f"{ov.volume:.1f} mm³ after connecting — a connector was driven "
+            f"through one of them into the other, and removing it would have "
+            f"split a part. These two will not close fully; try a smaller "
+            f"connector Ø, fewer joints on this interface, or a thicker backbone."
+        )
+    return notes
+
+
+def residual_overlap(mans) -> float:
+    """Total remaining shared volume across all pairs — 0.0 means printable.
+
+    Used by the tests and by the build report as the honest end-to-end check
+    that the parts really will fit together.
+    """
+    return float(sum(ov.volume for ov in pair_overlaps(mans, want_pieces=False)))

@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict
+from typing import Dict, List
+
+import numpy as np
 
 
 class Representation(str, Enum):
@@ -81,6 +83,73 @@ class MagnetShape(str, Enum):
 
     ROUND = "round"       # cylindrical disc magnet
     SQUARE = "square"     # square/block magnet
+
+
+class InterferenceRule(str, Enum):
+    """How interpenetration between two chains is resolved before export.
+
+    Chains are meshed independently, so at a binding interface both solids
+    occupy the same volume.  That is correct as a picture of the complex and
+    impossible as a set of printed parts, so one or both have to give it up.
+    """
+
+    #: Nucleic acids keep their true shape and the protein is carved to fit
+    #: (a socket that is an exact negative of the duplex); between two chains
+    #: of the same type the larger keeps its shape.  The default.
+    AUTO = "auto"
+    #: Both parts retreat out of the shared volume.  Neither is deformed by the
+    #: other's shape, at the cost of a gap where they interpenetrated.
+    SYMMETRIC = "symmetric"
+    #: Leave the overlap in place.  The preview still looks right, but the
+    #: printed parts will not fit together — diagnostics only.
+    NONE = "none"
+
+
+# --- solvent-excluded surface safety envelope -----------------------------
+#
+# The SES field is ``EDT(atoms grown by p) − p``.  On a convex patch the two
+# cancel exactly — a ball of radius ``vdW + pad + p`` eroded inward by ``p`` is a
+# ball of radius ``vdW + pad`` — so **the probe radius does not set the size of
+# the part**.  It only sets how deep a crevice gets filled in.  Anyone reaching
+# for it to stop two chains touching is pulling a lever that is not connected to
+# that: use ``surface_atom_padding_ang``, or let the interference pass carve
+# them apart properly.
+#
+# What the probe radius *does* control is connectivity.  Two atoms stay joined
+# in the surface only while their grown balls overlap (``D < r1 + r2 + 2p``), so
+# lowering it pulls that radius in by twice the amount and starts severing thin
+# necks — first into extra loose bodies, then into pinched, non-manifold
+# geometry that the watertight gate rejects.
+#
+# Measured on 1UBQ at 1.5 mm/Å, 0.5 mm grid — bodies in the raw marching-cubes
+# result, and the volume ``meshops.repair`` then throws away as debris:
+#
+#     probe   bodies   watertight   volume lost
+#      1.0       9        no           2.1 %
+#      1.1      12        yes          1.5 %
+#      1.2       6        yes          0.7 %
+#      1.3       4        yes          0.4 %
+#      1.4       2        yes          0.1 %
+#      1.5       1        yes          0.0 %
+#
+# 1.0 Å is exactly the setting that was destabilising real builds, and the
+# failure is monotonic rather than a cliff.  The floor is therefore set at the
+# water probe: it is both the standard definition of the SES and the point where
+# the surface stops shedding pieces, and below it there is nothing to gain.
+PROBE_RADIUS_MIN_ANG: float = 1.4
+#: Above this the surface is so inflated that side-chain detail is gone and
+#: separate lobes fuse into a blob; there is nothing to gain further out either.
+PROBE_RADIUS_MAX_ANG: float = 2.0
+#: The erosion band (the probe radius in mm) must span at least this many
+#: voxels.  Deliberately mild: the same measurement shows the band is *not* what
+#: drives the failure — 1.4 Å stayed watertight down to a 0.93-voxel band, while
+#: 1.0 Å failed at a 3.0-voxel one — so this only catches the degenerate case
+#: where the erosion is thinner than a single sample and the level set has
+#: nothing to land on.  Grid refinement is expensive and is not the fix here.
+PROBE_VOXELS_MIN: float = 1.0
+#: Ceiling on the auto-refinement, so a large structure cannot silently ask for
+#: tens of gigabytes.  Beyond this the grid is left coarser with a warning.
+SURFACE_VOXEL_BUDGET: int = 40_000_000
 
 
 @dataclass
@@ -170,6 +239,58 @@ class ConnectionParams:
     #: How many candidate seats get the expensive exact (boolean) scoring pass,
     #: over and above the number of magnets actually wanted.
     seat_shortlist_extra: int = 3
+    #: How much a seat is rewarded for the socket being *buried* rather than
+    #: standing proud of the surface (see ``connections._embedding``): 1.0 means
+    #: the collar is entirely inside existing material and only the mating disc
+    #: shows, 0.0 that it would be built out of thin air.
+    #:
+    #: This overlaps ``fill`` deliberately and is not the same measurement.
+    #: ``fill`` starts at each part's own surface, so the stub of collar that
+    #: spans the half-gap — the piece with nothing at all behind it, and the piece
+    #: you actually see sticking out — is excluded from it by construction.  This
+    #: is taken on the collar as built, from the shared mid-plane, so that stub
+    #: counts.  Kept well below ``fill``'s weight of 100 so it refines the choice
+    #: between comparable seats rather than overriding "is there material here".
+    seat_embedding_weight: float = 40.0
+    #: The same measure applied to *orientation*, in units of the surface-point
+    #: counts the axis search scores in.
+    #:
+    #: The axis search had no notion of this at all: it scored candidates purely
+    #: on how many sampled surface points obstruct the approach or sit behind the
+    #: face, which answers "can the parts come apart" and is silent on how deeply
+    #: the collar buries itself.  So a tilt that leaves half the socket in open
+    #: air scored level with one that sinks it into the body.  25 puts a fully
+    #: buried joint roughly on par with 25 surface points of the census — enough
+    #: to decide between two otherwise similar tilts, far too little to override
+    #: the blocked penalty (6 per point), so an axis that cannot be assembled
+    #: still loses.  Set to 0 to score orientation the old way.
+    axis_embedding_weight: float = 25.0
+    #: How strongly a seat is penalised for sitting on the *rim* of an interface
+    #: rather than in its interior.  Measured as the lateral lopsidedness of the
+    #: contact patch around the seat (mm, clamped to the socket radius): a seat
+    #: ringed by contact scores ~0, one whose support is all to one side scores up
+    #: to the socket radius.  This is what stops a socket landing on the edge of a
+    #: contact where its collar overhangs open air — there is usually a cleaner
+    #: spot a little further in, and this makes the ranker prefer it.  Kept modest
+    #: so it only decides between seats of comparable fill, never over a genuinely
+    #: better-seated one.
+    edge_center_weight: float = 8.0
+    #: How strongly a seat is rewarded for having a *well-determined* joint axis,
+    #: by the source the axis came from (overlap lobe / mass line = a real
+    #: interface normal, so the disc sits square and clean; the plain contact-line
+    #: fallback is noisy and can look tilted).  Lets a nearby seat with a cleaner
+    #: orientation win over one that only reaches its axis by fallback.
+    axis_quality_weight: float = 12.0
+    #: Physically slide each seat toward the interior of its contact patch before
+    #: it is built, as a fraction of the measured rim offset (0 = off, the seat
+    #: stays where it was found; 0.5 pulls it halfway in).  The motion is purely
+    #: in the mating plane — never along the axis — so the two flat faces still
+    #: meet on the shared mid-plane; it is capped at one socket radius.  This is
+    #: the physical companion to ``edge_center_weight``: the weight *prefers* an
+    #: interior seat when the shortlist offers one, this *makes* one when the whole
+    #: interface is narrow and every candidate sits on the rim.  Off by default —
+    #: turn it up only if re-ranking alone still leaves sockets proud of an edge.
+    seat_recenter_frac: float = 0.0
     #: Max surface gap (mm) for two chains to count as "in contact".
     contact_threshold_mm: float = 3.0
     #: Max base-centroid distance (ångström, pre-scale) still treated as a real
@@ -229,6 +350,17 @@ class PrintParams:
     #: Cylinder radius (mm) for the bonds ("sticks") in the molecule styles.
     bond_radius_mm: float = 0.5
 
+    # --- fit / interference --------------------------------------------
+    #: How interpenetration between chains is resolved.  This runs whether or
+    #: not the parts are being connected — two objects that are simply printed
+    #: and handed over still have to fit together.
+    resolve_interference: InterferenceRule = InterferenceRule.AUTO
+    #: Sliding clearance left between two mating parts (mm).  A plain boolean
+    #: subtraction is a geometrically perfect zero-clearance mate, but FDM parts
+    #: come out slightly oversize and would bind, so the part being carved is cut
+    #: against its neighbour grown by this much.
+    fit_clearance_mm: float = 0.15
+
     # --- connector / joinery system ------------------------------------
     connections: ConnectionParams = field(default_factory=ConnectionParams)
 
@@ -241,6 +373,81 @@ class PrintParams:
     # that still work in structure space).
     def mm_to_ang(self, mm: float) -> float:
         return mm / self.scale_mm_per_angstrom
+
+
+@dataclass
+class SurfaceGrid:
+    """The probe radius and grid spacing a surface build will actually use."""
+
+    probe_ang: float
+    spacing_mm: float
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def probe_mm_at(self):
+        return self.probe_ang
+
+
+def resolve_surface_grid(params: "PrintParams", extent_mm=None) -> SurfaceGrid:
+    """Clamp the probe radius and refine the grid until the pair is safe.
+
+    The dominant failure mode is the probe radius, not the grid: too small a
+    probe severs the surface between atoms (see the table above
+    :data:`PROBE_RADIUS_MIN_ANG`), and no amount of grid refinement repairs a
+    surface that has genuinely come apart.  So the probe is clamped hard and the
+    grid is only nudged off the degenerate sub-one-voxel case.
+
+    Refinement is capped by :data:`SURFACE_VOXEL_BUDGET` when ``extent_mm`` (the
+    structure's bounding-box size in mm) is supplied, so a large complex cannot
+    silently ask for an impossible allocation; in that case the build goes ahead
+    at the coarser spacing with a note rather than failing.
+    """
+    notes: List[str] = []
+
+    probe = float(params.probe_radius_ang)
+    if probe < PROBE_RADIUS_MIN_ANG:
+        notes.append(
+            f"Probe radius raised from {probe:.2f} to {PROBE_RADIUS_MIN_ANG:.2f} Å "
+            f"(the water probe). Below it the surface starts breaking into "
+            f"separate pieces between atoms — at 1.0 Å it stops being watertight "
+            f"altogether. It would not have made the parts any smaller either: "
+            f"on an outward-facing patch the probe radius cancels out of the "
+            f"surface definition. To shrink a part use Surface padding; to stop "
+            f"two chains colliding, the fit pass already carves them apart."
+        )
+        probe = PROBE_RADIUS_MIN_ANG
+    elif probe > PROBE_RADIUS_MAX_ANG:
+        notes.append(
+            f"Probe radius lowered from {probe:.2f} to {PROBE_RADIUS_MAX_ANG:.2f} Å "
+            "— beyond that the surface is a featureless blob."
+        )
+        probe = PROBE_RADIUS_MAX_ANG
+
+    spacing = float(params.grid_spacing_mm)
+    probe_mm = probe * float(params.scale_mm_per_angstrom)
+    needed = probe_mm / PROBE_VOXELS_MIN
+
+    if spacing > needed:
+        capped = needed
+        if extent_mm is not None:
+            span = np.asarray(extent_mm, float) + 2.0 * probe_mm
+            floor = float((np.prod(span) / SURFACE_VOXEL_BUDGET) ** (1.0 / 3.0))
+            if floor > needed:
+                capped = min(spacing, floor)
+        if capped < spacing:
+            notes.append(
+                f"Grid spacing refined from {spacing:.2f} to {capped:.2f} mm so the "
+                f"{probe_mm:.2f} mm probe erosion spans at least one voxel."
+            )
+            spacing = capped
+        if spacing > needed:
+            notes.append(
+                f"Grid spacing {spacing:.2f} mm is still coarse for a "
+                f"{probe_mm:.2f} mm probe (memory budget); the surface may be "
+                "under-resolved — raise the probe radius or lower the scale."
+            )
+
+    return SurfaceGrid(probe_ang=probe, spacing_mm=spacing, notes=notes)
 
 
 # Van der Waals radii in angstrom, used to size the metaball kernels.
