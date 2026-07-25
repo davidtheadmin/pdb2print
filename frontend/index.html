@@ -62,9 +62,17 @@
   .field-label .sub { color: var(--muted); font-weight: 400; }
   .field + .field { margin-top: 10px; }
   .rep-slot:not(:empty) { margin-top: 12px; }
-  .rep-detail { border-top: 0.5px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+  /* No rule under a style toggle. The panel below it belongs to that toggle,
+     so a divider says the opposite of what is true — and three separate rules
+     used to draw one in the same place (this panel, the note inside the field
+     above it, and a disclosure as the panel's first child), landing as two or
+     three hairlines a few pixels apart that read as a rendering fault. Spacing
+     alone groups it; the borders that genuinely separate unrelated blocks are
+     kept below. */
+  .rep-detail { padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
   .rep-detail .field + .field { margin-top: 0; }
-  .rep-note { font-size: 11px; color: var(--muted); margin: 12px 0 0; border-top: 0.5px solid var(--border); padding-top: 10px; }
+  .rep-detail > .disclosure:first-child { margin-top: 0; border-top: none; padding-top: 0; }
+  .rep-note { font-size: 11px; color: var(--muted); margin: 12px 0 0; padding-top: 2px; }
 
   /* ---- START: primary PDB search + secondary upload + examples ---- */
   .start-card { display: flex; flex-direction: column; gap: 10px; }
@@ -136,7 +144,13 @@
     color: var(--text2); background: transparent; border: none;
     border-left: 0.5px solid var(--border); cursor: pointer;
     transition: background .12s, color .12s; white-space: nowrap;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
   }
+  /* Icons on the style toggles only. "Slab" and "rod" mean nothing until you
+     have seen one, so a shape helps there. The connection toggles are plain
+     words that already say what they do, and icons on those were just noise.
+     Stroked in currentColor so they follow the active/idle state on their own. */
+  .seg button > svg { width: 14px; height: 14px; flex: none; }
   .seg button:first-child { border-left: none; }
   .seg button.active { background: var(--accent); color: #fff; font-weight: 500; }
   .seg button:not(.active):hover { color: var(--text); }
@@ -234,12 +248,23 @@
   .btn-generate.ready { background: var(--accent); color: #fff; border-color: var(--accent); }
   .btn-generate.ready:hover:not(:disabled) { background: var(--accent-d); border-color: var(--accent-d); }
   .btn-generate:disabled { opacity: .7; cursor: default; }
+  /* While building, the same button becomes Cancel — the build is the only
+     thing it could usefully do next, so it takes the primary slot rather than
+     crowding a second control in beside it. */
+  .btn-generate.busy { background: var(--s2); color: var(--text); border-color: var(--border); }
+  .btn-generate.busy:hover { background: var(--danger, #b3453f); color: #fff; border-color: var(--danger, #b3453f); }
   .spinner {
     width: 14px; height: 14px; border-radius: 50%;
     border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
     animation: spin .7s linear infinite; display: none;
   }
   .btn-generate.busy .spinner { display: inline-block; }
+  .btn-generate.busy:hover .spinner { display: none; }
+  /* Hovering a running build swaps the live "Building… 42%" for "Cancel", so
+     the progress stays visible right up until you reach for the button. */
+  .btn-cancel { display: none; }
+  .btn-generate.busy:hover .btn-label { display: none; }
+  .btn-generate.busy:hover .btn-cancel { display: inline; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---- preview (right) ---- */
@@ -336,6 +361,7 @@
         <button id="generate" class="btn-generate">
           <span class="spinner"></span>
           <span class="btn-label">Generate</span>
+          <span class="btn-cancel">Cancel</span>
         </button>
       </div>
 
@@ -391,10 +417,26 @@
         </div>
         <div class="field">
           <div class="seg" data-group="protein_rep">
-            <button data-value="surface" class="active" title="Solid molecular (solvent-excluded) surface">Surface</button>
-            <button data-value="tubes" title="Smooth backbone tube">Tubes*</button>
+            <button data-value="surface" class="active" title="Solid molecular (solvent-excluded) surface"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.2c2.7 0 3.6 1.9 5.3 2.9s3.4 1.6 3.4 4.1-1.9 3.2-2.5 5.1-.7 4.4-3.2 5.2-4-.9-6.1-.9-3.9 1-5.4-.8-.4-3.9-1-5.7-1.3-3.7.3-5.4 3.1-1.4 4.8-2.5S9.3 3.2 12 3.2Z"/></svg>Surface</button>
+            <button data-value="cartoon" title="ChimeraX-style ribbon: helix & strand ribbons, β-arrowheads, coil tube"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 9c3.5-5.5 10.5 5.5 18 0M3 16c3.5-5.5 10.5 5.5 18 0"/></svg>Cartoon*</button>
+            <button data-value="tubes" title="Smooth backbone tube"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><path d="M3 15c4.5-7 6-7 9-7s4.5 7 9 0"/></svg>Tubes*</button>
           </div>
-          <p class="rep-note" id="protein-exp-note" style="margin-top:8px">* Delicate to print (thin features) — bump the scale or thickness, and expect supports.</p>
+          <p class="rep-note" id="protein-exp-note" style="margin-top:8px">* Delicate to print (thin features) — bump the scale or thickness, and expect supports. Best on a resin printer.</p>
+        </div>
+        <!-- Cartoon shape controls: one size per feature + smoothing -->
+        <div id="cartoon" class="rep-detail" hidden>
+          <div class="field" data-slider="cartoon_helix_width">
+            <div class="slider-row"><span class="name" title="Scales the whole helix ribbon — wider and proportionally thicker, so it stays a flat spiral band">Helix size (mm)</span><span class="val"></span></div>
+            <input type="range" min="1.5" max="10.0" step="0.1" value="4.5">
+          </div>
+          <div class="field" data-slider="cartoon_strand_width">
+            <div class="slider-row"><span class="name" title="Scales the whole β-sheet ribbon and its arrowheads — wider and proportionally thicker, always a flat plank">Sheet size (mm)</span><span class="val"></span></div>
+            <input type="range" min="1.5" max="10.0" step="0.1" value="4.0">
+          </div>
+          <div class="field" data-slider="cartoon_tube">
+            <div class="slider-row"><span class="name" title="Thickness (diameter) of the round tube used for every loop / coil between the ribbons">Tube thickness (mm)</span><span class="val"></span></div>
+            <input type="range" min="0.6" max="6.0" step="0.1" value="1.8">
+          </div>
         </div>
         <!-- protein shape controls: which one shows depends on the chosen style -->
         <div id="surface" class="rep-detail">
@@ -429,60 +471,68 @@
         </div>
         <div class="field">
           <div class="seg" data-group="nucleic_rep">
-            <button data-value="surface" title="Solid molecular (solvent-excluded) surface">Surface</button>
-            <button data-value="tube_slab" class="active" title="Backbone tube with base rungs">Tube-slab</button>
+            <button data-value="surface" title="Solid molecular (solvent-excluded) surface"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.2c2.7 0 3.6 1.9 5.3 2.9s3.4 1.6 3.4 4.1-1.9 3.2-2.5 5.1-.7 4.4-3.2 5.2-4-.9-6.1-.9-3.9 1-5.4-.8-.4-3.9-1-5.7-1.3-3.7.3-5.4 3.1-1.4 4.8-2.5S9.3 3.2 12 3.2Z"/></svg>Surface</button>
+            <button data-value="tube_slab" class="active" title="Backbone tube with base rungs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><path d="M7 3v18M17 3v18M7 7.5h10M7 12h10M7 16.5h10"/></svg>Tube-slab</button>
           </div>
         </div>
 
-        <!-- Tube-slab controls: nucleic-only, shown when DNA uses tube-slab -->
+        <!-- Tube-slab controls.  The two style choices are the whole of the
+             everyday UI; the sizes behind "Advanced sizes" are opt-in, and only
+             the ones the chosen styles actually read are ever shown. -->
         <div id="tubeslab" class="rep-detail">
           <div class="field">
-            <p class="field-label">Backbone <span class="sub">— the strand</span></p>
+            <p class="field-label">Backbone <span class="sub">— the strand itself</span></p>
             <div class="seg" data-group="backbone_style">
-              <button data-value="tube" class="active" title="Smooth rod along the backbone">Tube</button>
-              <button data-value="molecule" title="Ball-and-stick atoms">Molecule</button>
+              <button data-value="tube" class="active" title="One smooth tube running along the strand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" aria-hidden="true"><path d="M3 15c4.5-7 6-7 9-7s4.5 7 9 0"/></svg>Tube</button>
+              <button data-value="molecule" title="Every backbone atom as a ball, every bond as a stick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="5.5" cy="17" r="2.6"/><circle cx="12" cy="6.5" r="2.6"/><circle cx="18.5" cy="16" r="2.6"/><path d="M7.3 15 10.4 9M13.6 8.6l3.4 5.1"/></svg>Molecule</button>
             </div>
           </div>
           <div class="field">
-            <p class="field-label">Base / spoke <span class="sub">— the rungs</span></p>
+            <p class="field-label">Bases <span class="sub">— the rungs between the strands</span></p>
             <div class="seg" data-group="base_style">
-              <button data-value="slab" class="active" title="Flat plate rung">Slab</button>
-              <button data-value="rod" title="Cylindrical rung">Rod</button>
-              <button data-value="molecule" title="Ball-and-stick atoms">Molecule</button>
+              <button data-value="slab" class="active" title="Each base is a flat plate on a small connecting rod"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 6l9 4.5-9 4.5z"/><path d="M3 10.5V13l9 4.5 9-4.5v-2.5"/></svg>Slab</button>
+              <button data-value="rod" title="Each base is a single round rod"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><rect x="2.5" y="8.5" width="19" height="7" rx="3.5"/></svg>Rod</button>
+              <button data-value="molecule" title="Every base-ring atom as a ball, every bond as a stick"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="5.5" cy="17" r="2.6"/><circle cx="12" cy="6.5" r="2.6"/><circle cx="18.5" cy="16" r="2.6"/><path d="M7.3 15 10.4 9M13.6 8.6l3.4 5.1"/></svg>Molecule</button>
             </div>
           </div>
-          <details class="disclosure" id="advanced">
+
+          <details class="disclosure" id="advanced-dna">
             <summary>
               <svg class="caret" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-              Advanced dimensions
+              Advanced sizes
             </summary>
             <div class="drawer">
               <div class="field" data-slider="nucleic_radius">
-                <div class="slider-row"><span class="name" title="Thickness of the backbone tube">Tube radius (mm)</span><span class="val"></span></div>
-                <input type="range" min="0.4" max="8.0" step="0.1" value="1.2">
+                <div class="slider-row"><span class="name" title="How thick the strand's tube is.">Backbone tube radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.4" max="8.0" step="0.1" value="3.5">
               </div>
-              <div class="field" data-slider="slab_thickness">
-                <div class="slider-row"><span class="name" title="How thick each base rung is">Base thickness (mm)</span><span class="val"></span></div>
-                <input type="range" min="0.4" max="8.0" step="0.1" value="1.2">
+              <div class="field" data-slider="bb_atom_radius">
+                <div class="slider-row"><span class="name" title="Ball size for the backbone atoms.">Backbone atom radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.3" max="8.0" step="0.1" value="1.0">
               </div>
-              <div class="field" data-slider="base_width">
-                <div class="slider-row"><span class="name" title="Widen or narrow the rungs">Base width scale</span><span class="val"></span></div>
+              <div class="field" data-slider="bb_bond_radius">
+                <div class="slider-row"><span class="name" title="Stick size for the backbone bonds.">Backbone bond radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.2" max="8.0" step="0.1" value="0.5">
+              </div>
+              <div class="field" data-slider="plate_size">
+                <div class="slider-row"><span class="name" title="Scales the whole flat plate at the end of each base — its area and its thickness together, so it keeps its proportions.">Plate size</span><span class="val"></span></div>
                 <input type="range" min="0.3" max="3.0" step="0.05" value="1.0">
               </div>
               <div class="field" data-slider="connector_radius">
-                <div class="slider-row"><span class="name" title="Thickness of the strut fusing each base to the backbone">Connector radius (mm)</span><span class="val"></span></div>
+                <div class="slider-row"><span class="name" title="The little rod joining each plate to the backbone.">Connecting rod radius (mm)</span><span class="val"></span></div>
                 <input type="range" min="0.2" max="8.0" step="0.1" value="0.6">
               </div>
-              <div class="ball-stick" id="ball-stick">
-                <span class="bs-label">Ball-and-stick sizing</span>
-                <div class="field" data-slider="atom_radius">
-                  <div class="slider-row"><span class="name" title="Ball (atom) size">Atom radius (mm)</span><span class="val"></span></div>
-                  <input type="range" min="0.3" max="8.0" step="0.1" value="1.0">
-                </div>
-                <div class="field" data-slider="bond_radius">
-                  <div class="slider-row"><span class="name" title="Stick (bond) size">Bond radius (mm)</span><span class="val"></span></div>
-                  <input type="range" min="0.2" max="8.0" step="0.1" value="0.5">
-                </div>
+              <div class="field" data-slider="rod_thickness">
+                <div class="slider-row"><span class="name" title="How thick each round base rod is.">Rod thickness (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.4" max="8.0" step="0.1" value="2.7">
+              </div>
+              <div class="field" data-slider="atom_radius">
+                <div class="slider-row"><span class="name" title="Ball size for the base-ring atoms.">Base atom radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.3" max="8.0" step="0.1" value="1.0">
+              </div>
+              <div class="field" data-slider="bond_radius">
+                <div class="slider-row"><span class="name" title="Stick size for the base-ring bonds.">Base bond radius (mm)</span><span class="val"></span></div>
+                <input type="range" min="0.2" max="8.0" step="0.1" value="0.5">
               </div>
             </div>
           </details>
@@ -514,16 +564,20 @@
           </summary>
           <div class="drawer">
             <div class="field" data-slider="min_wall">
-              <div class="slider-row"><span class="name" title="Thinnest allowed wall; thin features are thickened to this">Min wall (mm)</span><span class="val"></span></div>
+              <div class="slider-row"><span class="name" title="Floor on feature size, applied as the geometry is built: the tube, rungs, connectors and cartoon ribbons are each clamped up to at least this thick. The molecular surface ignores it — a solvent-excluded surface is thick everywhere by construction.">Min wall (mm)</span><span class="val"></span></div>
               <input type="range" min="0.0" max="5.0" step="0.1" value="1.0">
             </div>
-            <div class="field">
-              <p class="field-label">Min-wall mode</p>
-              <div class="seg" data-group="min_wall_mode">
-                <button data-value="uniform" class="active" title="Thicken everything to the minimum">Uniform</button>
-                <button data-value="selective" title="Only thicken features that are too thin">Selective</button>
-              </div>
-            </div>
+            <!-- The "Min-wall mode" control (uniform / selective) was removed
+                 rather than left visible doing nothing. It only ever selected a
+                 branch inside meshops.enforce_min_wall, and that pass returns
+                 early for every representation that exists: MIN_WALL_EXEMPT
+                 holds SURFACE, TUBE_SLAB and CARTOON, and geometry.py always
+                 stamps the representation onto the mesh, so the branch is
+                 unreachable. Min wall is honoured parametrically at build time
+                 instead (tube_slab.build, cartoon, connections), which is what
+                 the slider above drives. If a future representation builds a
+                 thin shell and needs the voxel pass, bring the control back
+                 with it. -->
           </div>
         </details>
       </div>
@@ -657,11 +711,19 @@
 (function () {
   "use strict";
 
+  // Millimetres of plate thickness per unit of "Plate size", so the one slab
+  // slider scales area and thickness together and the plate keeps its
+  // proportions.  1.0 → 1.2 mm, the thickness this used to default to.
+  const PLATE_THICKNESS_PER_SIZE = 1.2;
+
   // Each preset sets the DNA/RNA style toggles AND chunky (~#9), print-safe
   // dimensions in one click.
+  // The backbone tube carries the whole strand and is what snaps if it is
+  // skinny, so it runs thicker than the rungs hanging off it.
   const CHUNKY = { scale: 1.5, min_wall: 1.0, grid_spacing: 0.5,
-                   nucleic_radius: 2.4, slab_thickness: 2.4, base_width: 1.5,
-                   connector_radius: 1.4, atom_radius: 2.2, bond_radius: 1.2 };
+                   nucleic_radius: 3.5, plate_size: 1.5, rod_thickness: 2.7,
+                   connector_radius: 1.4, atom_radius: 2.2, bond_radius: 1.2,
+                   bb_atom_radius: 2.2, bb_bond_radius: 1.2 };
   const PRESETS = {
     "Clean ladder": {
       style: { nucleic_rep: "tube_slab", backbone_style: "tube", base_style: "rod" },
@@ -728,18 +790,28 @@
   // ---- representation-driven visibility ----
   // Backbone/base and their dimensions are nucleic-only and live permanently in
   // the DNA card; only the sliders relevant to the chosen styles are shown.
+  // Each style reads a different subset of the sizes, so only those are shown —
+  // a slider that is visible but ignored is worse than no slider at all.
+  //   backbone tube      → backbone tube radius
+  //   backbone molecule  → backbone atom + bond radius
+  //   base slab          → plate size, connecting rod radius
+  //   base rod           → rod thickness
+  //   base molecule      → base atom + bond radius
   function updateDnaDims() {
     const bb = groups.backbone_style();      // tube | molecule
     const base = groups.base_style();         // slab | rod | molecule
     const show = (key, on) => { const f = $(`[data-slider="${key}"]`); if (f) f.hidden = !on; };
-    show('nucleic_radius',   bb === 'tube');                    // no tube radius in molecule mode
-    show('slab_thickness',   base === 'slab' || base === 'rod');
-    show('base_width',       base === 'slab' || base === 'rod');
-    show('connector_radius', base === 'slab' || base === 'rod');
-    $('#ball-stick').classList.toggle('show', bb === 'molecule' || base === 'molecule');
+    show('nucleic_radius',   bb === 'tube');
+    show('bb_atom_radius',   bb === 'molecule');
+    show('bb_bond_radius',   bb === 'molecule');
+    show('plate_size',       base === 'slab');
+    show('connector_radius', base === 'slab');
+    show('rod_thickness',    base === 'rod');
+    show('atom_radius',      base === 'molecule');
+    show('bond_radius',      base === 'molecule');
   }
   function updateReps() {
-    const pRep = groups.protein_rep();        // surface | tubes
+    const pRep = groups.protein_rep();        // surface | cartoon | tubes
     const nRep = groups.nucleic_rep();         // surface | tube_slab
     $('#tubeslab').hidden = (nRep !== 'tube_slab');
     const note = $('#dna-surface-note'); if (note) note.hidden = (nRep !== 'surface');
@@ -749,7 +821,14 @@
     show('surface_padding',     anySurface);      // used by any molecular surface
     show('probe_radius',        anySurface);
     show('protein_tube_radius', pRep === 'tubes');
-    // The "delicate to print" note is only for the experimental styles.
+    // Cartoon panel (its own sliders live inside the block, shown/hidden as one).
+    const cartoon = pRep === 'cartoon';
+    const cartoonBlock = $('#cartoon'); if (cartoonBlock) cartoonBlock.hidden = !cartoon;
+    // Keep the surface "Advanced dimensions" drawer out of the way when neither
+    // the protein surface/tube nor a DNA surface would populate it.
+    const surfAdv = $('#advanced-surface');
+    if (surfAdv) surfAdv.hidden = (pRep === 'cartoon' && nRep !== 'surface');
+    // The "delicate to print" note is only for the ribbon/tube styles.
     const exp = $('#protein-exp-note'); if (exp) exp.hidden = (pRep === 'surface');
     updateDnaDims();
   }
@@ -1023,21 +1102,39 @@
     fd.append('scale', sliders.scale.value);
     fd.append('grid_spacing', sliders.grid_spacing.value);
     fd.append('min_wall', sliders.min_wall.value);
-    fd.append('min_wall_mode', groups.min_wall_mode());
+    // min_wall_mode is not sent: its control is gone (see the note in the
+    // Advanced drawer) and the server defaults it to "uniform".
     // "tubes" is a protein backbone tube-slab build.
     const pRep = groups.protein_rep();
-    const pRepMap = { surface: 'surface', tubes: 'tube_slab' };
+    const pRepMap = { surface: 'surface', tubes: 'tube_slab', cartoon: 'cartoon' };
     fd.append('protein_rep', pRepMap[pRep] || 'surface');
     fd.append('nucleic_rep', groups.nucleic_rep());
     fd.append('backbone_style', groups.backbone_style());
     fd.append('base_style', groups.base_style());
     fd.append('nucleic_radius', sliders.nucleic_radius.value);
     fd.append('protein_tube_radius', sliders.protein_tube_radius.value);
-    fd.append('slab_thickness', sliders.slab_thickness.value);
-    fd.append('base_width', sliders.base_width.value);
+    // The slab is one control on screen: "Plate size" scales the plate's area
+    // and its thickness together (PLATE_THICKNESS_PER_SIZE keeps them in
+    // proportion), so there is no way to end up with a plate that is wide and
+    // paper-thin.  The rod style reuses the same thickness field for its own
+    // diameter, and only one of the two styles is ever selected.
+    if (groups.base_style() === 'rod') {
+      fd.append('slab_thickness', sliders.rod_thickness.value);
+      fd.append('base_width', '1.0');
+    } else {
+      const plate = parseFloat(sliders.plate_size.value);
+      fd.append('slab_thickness', (plate * PLATE_THICKNESS_PER_SIZE).toFixed(3));
+      fd.append('base_width', plate.toFixed(3));
+    }
+    fd.append('cartoon_helix_width', sliders.cartoon_helix_width.value);
+    fd.append('cartoon_strand_width', sliders.cartoon_strand_width.value);
+    // "Tube thickness" is a diameter for the user; the builder wants a radius.
+    fd.append('cartoon_coil_radius', (parseFloat(sliders.cartoon_tube.value) / 2).toFixed(3));
     fd.append('connector_radius', sliders.connector_radius.value);
     fd.append('atom_radius', sliders.atom_radius.value);
     fd.append('bond_radius', sliders.bond_radius.value);
+    fd.append('backbone_atom_radius', sliders.bb_atom_radius.value);
+    fd.append('backbone_bond_radius', sliders.bb_bond_radius.value);
     fd.append('probe_radius', sliders.probe_radius.value);
     fd.append('surface_padding', sliders.surface_padding.value);
     fd.append('connect', $('#connect').checked);
@@ -1110,20 +1207,35 @@
     setReport(text, !data.ok || !!data.warning);
   }
 
+  // The AbortController for the build in flight, or null when idle.  Aborting
+  // the fetch also drops the SSE stream, which the server reads as "client gone"
+  // and uses to stop the build itself — so Cancel frees the machine, not just
+  // the browser.
+  let inflight = null;
+
+  function cancelBuild() {
+    if (!inflight) return;
+    inflight.abort();
+    inflight = null;
+  }
+
   async function generate() {
-    if (genBtn.disabled) return;
+    if (inflight) return;              // already building; the button cancels
     if (!$('#pdb-id').value.trim() && !fileInput.files.length) {
       setReport('Enter a PDB ID or upload a .pdb/.cif file.', true);
       return;
     }
-    genBtn.disabled = true;
+    const ctrl = new AbortController();
+    inflight = ctrl;
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Building…';
     setReport('Starting…', false);
     showProgress(0.02);
 
     try {
-      const res = await fetch('/api/generate', { method: 'POST', body: collectForm() });
+      const res = await fetch('/api/generate', {
+        method: 'POST', body: collectForm(), signal: ctrl.signal,
+      });
       const ctype = res.headers.get('content-type') || '';
 
       if (!ctype.includes('text/event-stream') || !res.body) {
@@ -1154,16 +1266,20 @@
       if (finalResult) applyResult(finalResult);
       else setReport('No result received from the server.', true);
     } catch (err) {
-      setReport('Request failed: ' + err.message, true);
+      if (err && err.name === 'AbortError') setReport('Build cancelled.', false);
+      else setReport('Request failed: ' + err.message, true);
     } finally {
-      genBtn.disabled = false;
+      inflight = null;
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
       hideProgress();
     }
   }
 
-  genBtn.addEventListener('click', generate);
+  // The main button is Generate when idle and Cancel while building; the ID
+  // field's own go/Enter only ever *starts* a build, so a stray Enter cannot
+  // kill one that is already running.
+  genBtn.addEventListener('click', () => (inflight ? cancelBuild() : generate()));
   $('#pdb-go').addEventListener('click', generate);
   $('#pdb-id').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
 })();

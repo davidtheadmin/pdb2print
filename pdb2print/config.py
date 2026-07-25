@@ -31,11 +31,10 @@ class Representation(str, Enum):
 
     SURFACE = "surface"        # Gaussian metaball molecular surface
     TUBE_SLAB = "tube_slab"    # backbone tube + base slabs (nucleic acids)
-    # WITHDRAWN — kept so old saved parameter sets still parse, but it is not
-    # registered in ``geometry._BUILDERS`` and is not offered in the UI.  The
-    # first pass (cylinder helices + flat sheet planks) did not read as a
-    # cartoon; see the TODO in NOTES.md for the intended rework.
-    CARTOON = "cartoon"        # secondary-structure cartoon (helices + sheets)
+    # ChimeraX-style ribbon cartoon: Carson-Bugg guide frame swept with
+    # SSE-dependent cross-sections (twisting helix/strand ribbons, β-arrowheads,
+    # coil tube) into one watertight solid.  See ``representations/cartoon.py``.
+    CARTOON = "cartoon"        # secondary-structure ribbon cartoon
 
 
 class BaseStyle(str, Enum):
@@ -364,9 +363,26 @@ class PrintParams:
     #: Backbone tube radius for the *protein* "tubes" representation, kept
     #: separate from the nucleic tube so the two can be sized independently.
     protein_tube_radius_mm: float = 1.2
-    #: Overall chunkiness of the protein "cartoon" representation: the helix
-    #: cylinder radius and (scaled) the sheet-plank thickness.
-    cartoon_thickness_mm: float = 2.0
+    # --- cartoon (ChimeraX-style ribbon) -------------------------------
+    # Three "size" sliders drive the look.  Each ribbon's thickness is a *fixed
+    # fraction* of its width (see ``cartoon._RIBBON_ASPECT``), so a size slider
+    # scales the whole ribbon — wider and proportionally thicker — and the ribbon
+    # stays a flat plank at any size instead of rounding into a tube.
+    #: **Helix size** — width (mm) of the twisting helix ribbon.
+    cartoon_helix_width_mm: float = 4.5
+    #: **Sheet size** — width (mm) of the β-strand ribbon (arrowheads scale with it).
+    cartoon_strand_width_mm: float = 4.0
+    #: **Tube thickness** — radius (mm) of the round tube used for coil / loops.
+    cartoon_coil_radius_mm: float = 0.9
+    # Internal cartoon shape constants (not surfaced in the UI).  Path/twist
+    # smoothing is fixed in ``cartoon._SMOOTH`` — it was briefly a slider and is
+    # not one any more, see NOTES.md.
+    #: How much wider the β-strand arrowhead barbs are than the strand body.
+    cartoon_arrow_width_factor: float = 1.7
+    #: Length of the strand arrowhead, in residues, from the strand C-terminus.
+    cartoon_arrow_residues: float = 1.5
+    #: Spline samples per residue for the cartoon sweep (higher = smoother twist).
+    cartoon_samples_per_residue: int = 10
     slab_thickness_mm: float = 1.2       # base-slab (or rod) thickness
     slab_scale: float = 1.0              # scale factor on the in-plane base size
     connector_radius_mm: float = 0.6     # strut fusing each base to the backbone
@@ -375,10 +391,17 @@ class PrintParams:
     # --- nucleic base / backbone style ---------------------------------
     base_style: BaseStyle = BaseStyle.SLAB
     backbone_style: BackboneStyle = BackboneStyle.TUBE
-    #: Sphere radius (mm) for atoms in the "molecule" base/backbone styles.
+    #: Sphere radius (mm) for atoms in the **base** "molecule" style.
     atom_radius_mm: float = 1.0
-    #: Cylinder radius (mm) for the bonds ("sticks") in the molecule styles.
+    #: Cylinder radius (mm) for the bonds ("sticks") in the **base** molecule style.
     bond_radius_mm: float = 0.5
+    #: Sphere radius (mm) for atoms in the **backbone** "molecule" style.  Kept
+    #: separate from the base pair above: the sugar-phosphate backbone and the
+    #: base rings are drawn at the same time and want different weights — one
+    #: shared slider could only ever be right for one of them.
+    backbone_atom_radius_mm: float = 1.0
+    #: Cylinder radius (mm) for the bonds in the **backbone** molecule style.
+    backbone_bond_radius_mm: float = 0.5
 
     # --- fit / interference --------------------------------------------
     #: How interpenetration between chains is resolved.  This runs whether or

@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import uuid
 
 from fastapi import FastAPI, Form, UploadFile
@@ -27,8 +28,9 @@ from pdb2print.config import (
     ConnectionParams, NoMagnetMethod, MagnetShape,
     color_for_index,
 )
-from pdb2print.pipeline import build_all
+from pdb2print.pipeline import build_all, BuildCancelled
 from pdb2print import export
+from pdb2print.cache import Cache, DEFAULT_CACHE_DIR
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,10 +40,24 @@ FRONTEND_DIR = os.path.join(HERE, "frontend")
 # served read-only at /files/<token>/... for both <model-viewer> and downloads.
 OUTPUT_ROOT = tempfile.mkdtemp(prefix="pdb2print_out_")
 
+# The build cache. Shipped entries live in the repo and survive a restart, which
+# the temp directory above deliberately does not.
+#
+# PDB2PRINT_CACHE_RO=1 turns off writing on misses. Set it wherever the disk is
+# ephemeral (a free Space resets on every cold start): the pre-generated entries
+# are still served, and a miss is simply rebuilt each time rather than written to
+# a filesystem that will throw the result away anyway.
+CACHE_DIR = os.environ.get("PDB2PRINT_CACHE_DIR", DEFAULT_CACHE_DIR)
+CACHE_READ_ONLY = os.environ.get("PDB2PRINT_CACHE_RO", "").strip().lower() in {
+    "1", "true", "on", "yes"}
+cache = Cache(CACHE_DIR, read_only=CACHE_READ_ONLY)
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
 
 app = FastAPI(title="pdb2print")
 app.mount("/files", StaticFiles(directory=OUTPUT_ROOT), name="files")
+app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
 
 
 def _rgb_to_hex(rgb) -> str:
@@ -119,26 +135,76 @@ def _map_params(fields: dict) -> PrintParams:
         base_style=BaseStyle(fields["base_style"]),
         nucleic_radius_mm=float(fields["nucleic_radius"]),
         protein_tube_radius_mm=float(fields.get("protein_tube_radius", 1.2)),
-        cartoon_thickness_mm=float(fields.get("cartoon_thickness", 2.0)),
+        cartoon_helix_width_mm=float(fields.get("cartoon_helix_width", 4.5)),
+        cartoon_strand_width_mm=float(fields.get("cartoon_strand_width", 4.0)),
+        cartoon_coil_radius_mm=float(fields.get("cartoon_coil_radius", 0.9)),
         slab_thickness_mm=float(fields["slab_thickness"]),
         slab_scale=float(fields["base_width"]),
         connector_radius_mm=float(fields["connector_radius"]),
         atom_radius_mm=float(fields["atom_radius"]),
         bond_radius_mm=float(fields["bond_radius"]),
+        backbone_atom_radius_mm=float(fields.get("backbone_atom_radius", 1.0)),
+        backbone_bond_radius_mm=float(fields.get("backbone_bond_radius", 0.5)),
         probe_radius_ang=float(fields["probe_radius"]),
         surface_atom_padding_ang=float(fields["surface_padding"]),
         connections=_map_connections(fields),
     )
 
 
-def _run_and_export(source: str, params: PrintParams, progress) -> dict:
+def _cached_result(meta: dict) -> dict:
+    """Rebuild the result payload for a cache hit.
+
+    Everything except the three URLs was stored verbatim at build time, so a hit
+    is indistinguishable from a fresh build to the front end — same report text,
+    same chain list and colours, same printed size. Only the URLs are rewritten,
+    to point into the cache directory instead of a per-build temp directory.
+    """
+    files = meta.get("files") or {}
+    key = meta["key"]
+
+    def url(kind):
+        name = files.get(kind)
+        return f"/cache/{key}/{name}" if name else None
+
+    result = dict(meta.get("result") or {})
+    result.update({
+        "ok": True,
+        "glb_url": url("glb"),
+        "threemf_url": url("threemf"),
+        "stl_url": url("stl_zip"),
+        "cached": True,
+    })
+    return result
+
+
+def _run_and_export(source: str, params: PrintParams, progress,
+                    should_cancel=None) -> dict:
     """Blocking build + export; returns the result JSON dict (never raises).
 
     ``progress(frac, msg)`` is forwarded straight into ``build_all`` and reused
     for the export phase, so the SSE stream keeps ticking after meshing too.
+    ``should_cancel`` is polled by the pipeline so a disconnected client stops
+    the build instead of leaving it to run to completion unwatched.
     """
+    # Cache first: the overwhelming majority of requests are a handful of famous
+    # structures at preset settings, and serving those as static files is the
+    # difference between a download and a minute of marching cubes. Checked
+    # before the cancellation machinery matters, because a hit finishes far
+    # faster than a client can disconnect.
     try:
-        report = build_all(source, params, progress=progress)
+        hit = cache.lookup(source, params)
+    except Exception:
+        hit = None          # a broken cache must never take the app down
+    if hit:
+        progress(1.0, "Loaded from cache.")
+        return _cached_result(hit)
+
+    try:
+        report = build_all(source, params, progress=progress,
+                           should_cancel=should_cancel)
+    except BuildCancelled:
+        # Nobody is listening any more; unwind quietly rather than reporting.
+        return _error_payload("Build cancelled.")
     except Exception as exc:  # watertight-gate RuntimeError, ValueError, etc.
         return _error_payload(str(exc))
 
@@ -179,7 +245,7 @@ def _run_and_export(source: str, params: PrintParams, progress) -> dict:
         size_mm = [float(maxs[k] - mins[k]) for k in range(3)]
 
     progress(1.0, "Done.")
-    return {
+    result = {
         "ok": True,
         "warning": warning,
         "report": report.summary(),
@@ -191,6 +257,32 @@ def _run_and_export(source: str, params: PrintParams, progress) -> dict:
         "size_mm": size_mm,
         "scale_used": params.scale_mm_per_angstrom,
     }
+
+    # Store on miss. Only a build that produced a 3MF is worth keeping — that is
+    # the artefact people come for, and an entry without one would be served in
+    # place of a retry that might succeed. Caching is strictly an optimisation,
+    # so any failure here is swallowed: the user already has their files.
+    if threemf_url:
+        try:
+            cache.store(
+                source, params,
+                files={
+                    "threemf": os.path.join(out_dir, f"{stem}.3mf"),
+                    "glb": os.path.join(out_dir, f"{stem}.glb"),
+                    "stl_zip": os.path.join(out_dir, f"{stem}_stl.zip"),
+                },
+                meta={
+                    "stem": stem,
+                    # The URLs are per-build and meaningless once this temp
+                    # directory is gone; a hit rewrites them from the entry.
+                    "result": {k: v for k, v in result.items()
+                               if k not in ("glb_url", "threemf_url", "stl_url")},
+                },
+            )
+        except Exception:
+            pass
+
+    return result
 
 
 @app.post("/api/generate")
@@ -206,12 +298,16 @@ async def generate(
     base_style: str = Form("slab"),
     nucleic_radius: float = Form(1.2),
     protein_tube_radius: float = Form(1.2),
-    cartoon_thickness: float = Form(2.0),
+    cartoon_helix_width: float = Form(4.5),
+    cartoon_strand_width: float = Form(4.0),
+    cartoon_coil_radius: float = Form(0.9),
     slab_thickness: float = Form(1.2),
     base_width: float = Form(1.0),
     connector_radius: float = Form(0.6),
     atom_radius: float = Form(1.0),
     bond_radius: float = Form(0.5),
+    backbone_atom_radius: float = Form(1.0),
+    backbone_bond_radius: float = Form(0.5),
     probe_radius: float = Form(1.4),
     surface_padding: float = Form(0.0),
     # --- connector / joinery system ---
@@ -270,10 +366,15 @@ async def generate(
             "nucleic_rep": nucleic_rep, "backbone_style": backbone_style,
             "base_style": base_style, "nucleic_radius": nucleic_radius,
             "protein_tube_radius": protein_tube_radius,
-            "cartoon_thickness": cartoon_thickness,
+            "cartoon_helix_width": cartoon_helix_width,
+            "cartoon_strand_width": cartoon_strand_width,
+            "cartoon_coil_radius": cartoon_coil_radius,
             "slab_thickness": slab_thickness, "base_width": base_width,
             "connector_radius": connector_radius, "atom_radius": atom_radius,
-            "bond_radius": bond_radius, "probe_radius": probe_radius,
+            "bond_radius": bond_radius,
+            "backbone_atom_radius": backbone_atom_radius,
+            "backbone_bond_radius": backbone_bond_radius,
+            "probe_radius": probe_radius,
             "surface_padding": surface_padding,
             "connect": connect, "use_magnets": use_magnets,
             "no_magnet_method": no_magnet_method,
@@ -295,6 +396,11 @@ async def generate(
     async def event_stream():
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        # Set when the client goes away (Cancel button, closed tab, dropped
+        # connection).  The worker polls it through ``should_cancel`` so an
+        # abandoned build stops at the next chain instead of tying up a core
+        # meshing a complex nobody is waiting for any more.
+        cancelled = threading.Event()
 
         def progress(frac, msg):
             loop.call_soon_threadsafe(
@@ -302,7 +408,8 @@ async def generate(
 
         def work():
             try:
-                result = _run_and_export(source, params, progress)
+                result = _run_and_export(source, params, progress,
+                                         should_cancel=cancelled.is_set)
             except Exception as exc:  # defensive: _run_and_export shouldn't raise
                 result = _error_payload(str(exc))
             finally:
@@ -312,11 +419,17 @@ async def generate(
             loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
         loop.run_in_executor(None, work)
-        while True:
-            kind, data = await queue.get()
-            if kind == "__done__":
-                break
-            yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+        try:
+            while True:
+                kind, data = await queue.get()
+                if kind == "__done__":
+                    break
+                yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+        finally:
+            # Reached on normal completion *and* when the client disconnects
+            # (the generator is closed / cancelled).  Setting it after a normal
+            # finish is harmless — the worker has already returned.
+            cancelled.set()
 
     return StreamingResponse(
         event_stream(),

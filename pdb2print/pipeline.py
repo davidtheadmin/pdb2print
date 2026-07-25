@@ -15,6 +15,15 @@ from .config import PrintParams, InterferenceRule
 from .export import BuiltChain
 
 
+class BuildCancelled(RuntimeError):
+    """Raised inside :func:`build_all` when the caller asks it to stop.
+
+    Kept distinct from every other failure so the per-chain error handler can
+    re-raise it rather than swallowing it into a "skipped this chain" warning and
+    carrying on — a cancel has to unwind the whole build, not one chain of it.
+    """
+
+
 @dataclass
 class BuildReport:
     built: List[BuiltChain] = field(default_factory=list)
@@ -38,15 +47,27 @@ class BuildReport:
 
 
 def build_all(source: str, params: PrintParams,
-              progress=None) -> BuildReport:
+              progress=None, should_cancel=None) -> BuildReport:
     """Run the full pipeline for a PDB ID or file path.
 
     ``progress`` is an optional callable ``(fraction, message)`` for UI feedback.
+
+    ``should_cancel`` is an optional zero-argument predicate polled between
+    phases (and between chains); when it first returns true the build raises
+    :class:`BuildCancelled`.  Cancellation is cooperative rather than pre-emptive
+    — a single long boolean cannot be interrupted — so the effective granularity
+    is one chain, which is what makes abandoning a large complex cheap without
+    the geometry core needing to know anything about threads or HTTP.
     """
     def report(frac, msg):
         if progress is not None:
             progress(frac, msg)
 
+    def check_cancel():
+        if should_cancel is not None and should_cancel():
+            raise BuildCancelled("Build cancelled.")
+
+    check_cancel()
     report(0.05, "Loading structure…")
     atoms, names = io.load_with_names(source)
 
@@ -63,6 +84,7 @@ def build_all(source: str, params: PrintParams,
     not_watertight = []
     n = len(chain_list)
     for i, chain in enumerate(chain_list):
+        check_cancel()
         base = 0.15 + 0.8 * (i / n)
         report(base, f"Meshing {chain.label()} ({i + 1}/{n})…")
         try:
@@ -74,6 +96,8 @@ def build_all(source: str, params: PrintParams,
             mesh = geometry.generate_chain_mesh(chain, params)
             mesh = meshops.enforce_min_wall(mesh, params)
             mesh = meshops.repair(mesh)
+        except BuildCancelled:      # never downgrade a cancel to a skipped chain
+            raise
         except Exception as exc:  # keep going; report the bad chain
             out.warnings.append(f"Skipped {chain.label()}: {exc}")
             continue
@@ -105,6 +129,7 @@ def build_all(source: str, params: PrintParams,
     # connectors at all, chains meshed independently interpenetrate at every
     # binding interface, and two objects that simply get printed and handed over
     # still have to fit together.
+    check_cancel()
     needs_fit = params.resolve_interference != InterferenceRule.NONE
     if params.connections.enabled() or needs_fit:
         report(0.9, "Fitting and connecting objects…"
@@ -115,11 +140,17 @@ def build_all(source: str, params: PrintParams,
             # otherwise a build that is working and a build that is stuck are
             # indistinguishable, which is exactly how it looked on a five-chain
             # structure.
+            def _conn_progress(f, m):
+                # The connector pass is the slowest part of a large complex, so
+                # cancellation is polled here too rather than only before it.
+                check_cancel()
+                report(0.90 + 0.06 * f, m)
+
             out.built, out.connections, out.connection_markers, fit_notes = \
-                connections.apply(
-                    out.built, params,
-                    progress=lambda f, m: report(0.90 + 0.06 * f, m))
+                connections.apply(out.built, params, progress=_conn_progress)
             out.warnings.extend(fit_notes)
+        except BuildCancelled:      # a cancel unwinds; it is not a skipped pass
+            raise
         except Exception as exc:  # never let the connector pass sink a good build
             out.warnings.append(f"Connections skipped: {exc}")
         # Re-gate: a connector must never break watertightness.

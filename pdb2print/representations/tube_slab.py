@@ -132,13 +132,16 @@ def _min_wall_dims(params: PrintParams):
     A solid tube/strut/rod of radius ``r`` is ``2r`` thick and a slab is
     ``slab_t`` thick, so the minimum-wall guarantee becomes ``r ≥ min_wall/2``
     and ``slab_t ≥ min_wall`` — a parametric growth of the primitives we
-    control.  Returns ``(tube_r, slab_t, conn_r, atom_r, bond_r)``.
+    control.  Returns
+    ``(tube_r, slab_t, conn_r, atom_r, bond_r, bb_atom_r, bb_bond_r)``.
     """
     tube_r = params.nucleic_radius_mm
     slab_t = params.slab_thickness_mm
     conn_r = params.connector_radius_mm
     atom_r = params.atom_radius_mm
     bond_r = params.bond_radius_mm
+    bb_atom_r = params.backbone_atom_radius_mm
+    bb_bond_r = params.backbone_bond_radius_mm
     if params.min_wall_mm > 0:
         half = params.min_wall_mm / 2.0
         tube_r = max(tube_r, half)
@@ -146,7 +149,9 @@ def _min_wall_dims(params: PrintParams):
         conn_r = max(conn_r, half)
         atom_r = max(atom_r, half)
         bond_r = max(bond_r, half)
-    return tube_r, slab_t, conn_r, atom_r, bond_r
+        bb_atom_r = max(bb_atom_r, half)
+        bb_bond_r = max(bb_bond_r, half)
+    return tube_r, slab_t, conn_r, atom_r, bond_r, bb_atom_r, bb_bond_r
 
 
 def _ball_and_stick(coords_ang, s, atom_r, bond_r):
@@ -169,10 +174,13 @@ def _ball_and_stick(coords_ang, s, atom_r, bond_r):
     return solids
 
 
-def _backbone_solids(residues, backbone_mm, params, s, tube_r, atom_r, bond_r):
+def _backbone_solids(residues, backbone_mm, params, s, tube_r,
+                     bb_atom_r, bb_bond_r):
     """Build the backbone solids for the chosen style.
 
     ``backbone_mm`` are the per-residue trace points already scaled to mm.
+    ``bb_atom_r``/``bb_bond_r`` size the *backbone* ball-and-stick and are
+    independent of the base-molecule sizes.
     """
     solids = []
     if params.backbone_style == BackboneStyle.MOLECULE:
@@ -182,10 +190,10 @@ def _backbone_solids(residues, backbone_mm, params, s, tube_r, atom_r, bond_r):
             atoms = [c for c in (_atom_coord(res, n) for n in _BACKBONE_SUGAR_ATOMS)
                      if c is not None]
             if atoms:
-                solids.extend(_ball_and_stick(atoms, s, atom_r, bond_r))
+                solids.extend(_ball_and_stick(atoms, s, bb_atom_r, bb_bond_r))
         for i in range(len(backbone_mm) - 1):
             solids.append(
-                _manifold.capsule(backbone_mm[i], backbone_mm[i + 1], bond_r)
+                _manifold.capsule(backbone_mm[i], backbone_mm[i + 1], bb_bond_r)
             )
         return solids
 
@@ -228,9 +236,16 @@ def _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
 
     if params.base_style == BaseStyle.ROD:
         # Clean ladder rung: ONE tube from the backbone straight to the base
-        # centroid (points toward the helix axis), slightly thinner than the
-        # backbone tube.  No separate connector — the rung *is* the link.
-        rung_r = tube_r * 0.7
+        # centroid (points toward the helix axis).  No separate connector — the
+        # rung *is* the link.
+        #
+        # Its diameter is the rung-thickness setting (``slab_thickness_mm``,
+        # already min-wall grown), which is what that control has always claimed
+        # to do.  It used to be derived from the *backbone tube* radius instead,
+        # so the rung silently ignored its own thickness slider and changed size
+        # when you adjusted the backbone — two controls that looked independent
+        # and were not.
+        rung_r = slab_t / 2.0
         if params.min_wall_mm > 0:
             rung_r = max(rung_r, params.min_wall_mm / 2.0)
         return [_manifold.capsule(bp, center_mm, rung_r)]
@@ -279,6 +294,44 @@ def base_centroids_mm(chain, params: PrintParams):
     return base_anchors_mm(chain, params)[1]
 
 
+def base_link_frames_mm(chain, params: PrintParams):
+    """Everything the base-pair linker needs per residue, in print-mm space.
+
+    Returns ``(centroids, frames)``, index-aligned, where each frame carries:
+
+    ``center``    base-ring centroid — the rod rung's tip, and the slab's centre.
+    ``normal``    base-plane normal — the slab's through-thickness direction.
+    ``in_plane``  in-plane axis pointing outward from the backbone to the base.
+    ``bp``        backbone trace point; always inside the strand body.
+    ``ring``      ring-atom centres, i.e. the ball centres in the molecule style.
+
+    The linker needs more than a centroid because a link has to *start on solid
+    material*.  ``_commit`` rejects any boolean that increases the piece count,
+    so a link that begins in empty space is silently dropped rather than shown
+    broken — which is exactly what a centroid start does in the molecule style,
+    where the ring centre is the hole in the middle of the ring.
+    """
+    s = params.scale_mm_per_angstrom
+    cens, frames = [], []
+    for res_name, res in _residue_iter(chain.atoms):
+        frame = _base_frame(res_name, res)
+        if frame is None:
+            continue
+        center, normal, in_plane, _glyco = frame
+        cens.append(center * s)
+        frames.append({
+            "res_name": res_name,
+            "center": center * s,
+            "normal": np.asarray(normal, float),
+            "in_plane": np.asarray(in_plane, float),
+            "bp": _backbone_point(res) * s,
+            "ring": [np.asarray(c, float) * s for c in _ring_atoms(res_name, res)],
+        })
+    if not cens:
+        return np.zeros((0, 3)), []
+    return np.array(cens), frames
+
+
 def build(chain, params: PrintParams):
     """Return a watertight trimesh of the nucleic-acid model for ``chain``.
 
@@ -289,7 +342,8 @@ def build(chain, params: PrintParams):
     primitives (see :func:`_min_wall_dims`).
     """
     s = params.scale_mm_per_angstrom
-    tube_r, slab_t, conn_r, atom_r, bond_r = _min_wall_dims(params)
+    (tube_r, slab_t, conn_r, atom_r, bond_r,
+     bb_atom_r, bb_bond_r) = _min_wall_dims(params)
 
     # A protein chain rendered as "tubes" has no bases, only a backbone tube; it
     # gets its own radius so it can be sized independently of the nucleic tube.
@@ -303,7 +357,7 @@ def build(chain, params: PrintParams):
     backbone_mm = np.array([_backbone_point(res) for _, res in residues]) * s
 
     solids = _backbone_solids(
-        residues, backbone_mm, params, s, tube_r, atom_r, bond_r
+        residues, backbone_mm, params, s, tube_r, bb_atom_r, bb_bond_r
     )
 
     for (res_name, res), bp in zip(residues, backbone_mm):

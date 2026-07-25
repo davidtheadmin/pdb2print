@@ -100,6 +100,22 @@ def catmull_rom(points: np.ndarray, samples_per_segment: int) -> np.ndarray:
     return np.vstack(out)
 
 
+def _catmull_pos_tan(p0, p1, p2, p3, t):
+    """Uniform Catmull-Rom position and (unnormalised) tangent at ``t`` in [0,1).
+
+    Same basis as :func:`catmull_rom`, but returns the analytic derivative too so
+    a swept ribbon can carry a frame that follows the curve.  ``(pos, tangent)``.
+    """
+    p0, p1, p2, p3 = (np.asarray(x, float) for x in (p0, p1, p2, p3))
+    a = 2 * p1
+    b = -p0 + p2
+    c = 2 * p0 - 5 * p1 + 4 * p2 - p3
+    d = -p0 + 3 * p1 - 3 * p2 + p3
+    pos = 0.5 * (a + b * t + c * t * t + d * t * t * t)
+    tan = 0.5 * (b + 2 * c * t + 3 * d * t * t)
+    return pos, tan
+
+
 def rasterize_capsule(field, grid, a, b, radius):
     """Union a capsule (segment ``a``-``b`` of ``radius``) into ``field`` as occupancy."""
     a, b = np.asarray(a, float), np.asarray(b, float)

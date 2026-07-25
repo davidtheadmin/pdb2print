@@ -219,3 +219,17 @@ __marimo__/
 
 # locally downloaded structures
 /1TUP.cif
+
+# Build cache — generated, and big. A single 1TUP entry is ~40-60 MB across its
+# 3MF, GLB and STL zip, so a full spec would put hundreds of megabytes into git
+# history that can be rebuilt in minutes with scripts/pregenerate.py.
+#
+# The Hugging Face Space is the place for it: HF repos use git-lfs natively and
+# the entries are only useful where they are served from. Push them there, not
+# here. Keep the directory itself so a fresh clone has somewhere to write.
+/cache/*
+!/cache/.gitkeep
+
+# Staging area for files removed from the repo but not yet deleted from disk
+# (the Cowork device bridge cannot unlink, so removals land here first).
+/_to_delete/

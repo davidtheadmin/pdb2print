@@ -1,0 +1,16 @@
+# Keep the build context small and the image reproducible.
+.git
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+_to_delete
+
+# Local scratch that must never define the image's behaviour
+1TUP.cif
+commit-v3.ps1
+
+# Docs are for the repo, not the running app. The cache is NOT excluded — the
+# pre-generated entries are the whole point of shipping it.
+docs/

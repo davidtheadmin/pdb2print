@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Optional pre-warming for the build cache.",
+    "",
+    "The cache normally fills itself: anything a user builds is stored and",
+    "served instantly the next time someone asks for the same structure at the",
+    "same settings. You do not need this file.",
+    "",
+    "It exists for the case where you want a specific structure warm before",
+    "anyone asks - a demo, a workshop, a link you are about to share. Add",
+    "entries and run:",
+    "",
+    "    python scripts/pregenerate.py --list     show the plan, build nothing",
+    "    python scripts/pregenerate.py            build everything listed",
+    "",
+    "Be aware of the size. One large complex is 40-60 MB across its 3MF, GLB",
+    "and STL zip, so a long list adds up fast.",
+    "",
+    "Fields: pdb_id, preset (a name from pdb2print/presets.py), and optional",
+    "overrides (PrintParams fields; 'connections' may be given as an object)."
+  ],
+
+  "entries": []
+}
