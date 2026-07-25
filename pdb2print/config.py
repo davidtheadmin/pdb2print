@@ -205,6 +205,36 @@ class ConnectionParams:
     #: 45° lead-in at the pocket mouth.  Makes the magnet start square instead of
     #: catching on the rim, and hides the elephant-foot bulge at the face.
     magnet_chamfer_mm: float = 0.4
+    #: Fraction of the socket's flat *back face* that may stand in open air before
+    #: anything is done about it.  This is the disc you see when a cylinder is
+    #: stuck onto an uneven surface and the surface falls away under part of it —
+    #: the side wall of the socket is not the concern and is left alone.
+    #: Everything below is skipped entirely when the back is this well covered,
+    #: so a joint that already sits in solid material is never touched.
+    socket_cap_exposed_max: float = 0.05
+    #: First remedy: how far the socket may be *lengthened* so its walls carry on
+    #: down and reach material further in, as a multiple of its nominal depth
+    #: (1.0 = may double). The socket is not moved and the mating face does not
+    #: shift — only its back is carried deeper, and it is kept at the shortest
+    #: length that closes, so a joint never grows more than it has to.
+    socket_extend_max: float = 1.0
+    #: Second remedy, when no length within that budget closes the back: cap the
+    #: flat disc with a cone built **onto** it.  Strictly additive — the socket
+    #: keeps its full length and full radius and the cone is stacked on the end.
+    #:
+    #: It must be additive.  Chamfering the back edge instead removes the
+    #: material the joint is made of, and since the socket runs only about
+    #: ``socket_wall_mm`` deeper than the magnet pocket, a chamfer of any useful
+    #: size starts biting before the bottom of the pocket: it thins the wall
+    #: around the magnet and then undercuts it, leaving the magnet standing proud
+    #: of a socket carved away from behind.
+    #:
+    #: The cone is 45°, so its height is simply how far the radius has to come in,
+    #: held within the same extension budget above.  Its flat top is sized so its
+    #: area falls under ``socket_cap_exposed_max`` — the same threshold that
+    #: triggered the work — so what stays visible is below the level considered
+    #: worth acting on in the first place.
+    socket_back_taper: bool = True
     #: Extra radius on the bore cut through each part's *approach path*.  A joint
     #: is only assemblable if neither part has material sitting in the other's
     #: way, so anything of one part that reaches past the shared face inside the
