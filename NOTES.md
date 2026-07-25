@@ -4,6 +4,196 @@ Context for a fresh session. Covers architecture, the geometry pipeline as it
 actually works today, the bugs fixed so far, and known limitations that are
 *inherent to the approach* (not bugs). See `README.md` for user-facing docs.
 
+## v7 — DNA controls simplified, publish pass (this session)
+
+**The DNA sizes are now opt-in and say what they do.** Both style pickers stay
+visible; every dimension moved behind an **Advanced sizes** disclosure, and only
+the sliders the chosen styles actually read are shown. "Rung" is gone from the
+vocabulary.
+
+The slab used to need three sliders (thickness, footprint scale, strut) to
+describe one plate on one little rod. It is now **two**: *Plate size*, which
+scales the plate's area and thickness together at a fixed ratio
+(`PLATE_THICKNESS_PER_SIZE = 1.2` in the frontend, so 1.0 reproduces the old
+1.2 mm default and a plate can never end up wide and paper-thin), and
+*Connecting rod radius*. Rod style shows one slider, molecule styles two each.
+This composition lives in `getFormData` — the server API still takes
+`slab_thickness` / `base_width` unchanged, so nothing in the core moved.
+
+**Publish readiness.**
+
+- Removed from the repo (moved to `_to_delete/`, which is gitignored — the
+  Cowork bridge cannot unlink, so `git rm --cached` or deleting that folder
+  finishes the job): `commit-v3.ps1` (a one-shot script whose own header says to
+  delete it afterwards), `.thumbnail` (an unreferenced stray WebP), and
+  `HANDOVER.md` (a v3-session handover whose first instruction is to clear a git
+  lock from July 24 — superseded by this file, and still in git history).
+- Personal names genericised in `docs/FEATURE_BRIEF_connectors_and_ux.md`.
+  Nothing else in the tracked tree carried a local path, machine name or address.
+  (`.gitignore`'s "David-OConnor" is upstream GitHub template text, not personal.)
+- `README.md` still advertised the cartoon as withdrawn; it now lists cartoon as
+  a protein representation, and the roadmap entry became per-residue colouring.
+- `pdb2print/cache.py` (untracked WIP at the time) keyed on `cartoon_smoothing`
+  and `cartoon_thickness_mm`, which no longer exist, and had not been told that
+  the backbone ball-and-stick sizes are now separate from the bases'. Its
+  `drop()` is `pop(..., None)`, so the stale names were harmless, but the
+  *missing* ones would have over-keyed the cache. Both pairs are now keyed off
+  their own style, and a rod base drops the plate footprint/strut it never reads.
+
+## v6 — DNA controls, DNA↔DNA joins, cancel (previous session)
+
+**Cartoon smoothing is no longer a setting.** It was exposed as a slider, tried,
+and removed: the useful range was narrow enough that the default was the only
+sensible value. The behaviour is unchanged — the old default is frozen as
+`cartoon._SMOOTH` — so only the knob went away. `cartoon_smoothing` is gone from
+`PrintParams`, the server form and the UI. The Cartoon panel is now three sliders
+(Helix size, Sheet size, Tube thickness).
+
+**Two DNA controls were lying about what they did.**
+
+- **The rod rung ignored its own thickness slider.** `_base_solids` sized the rod
+  as `tube_r * 0.7` — derived from the *backbone tube* radius — so "Base
+  thickness" did nothing in rod mode and the rung resized when you touched the
+  backbone. It is now `slab_t / 2`, i.e. the rung-thickness control is its
+  diameter, which is what `slab_thickness_mm`'s own comment ("base-slab (or rod)
+  thickness") always claimed. Side benefit: `_rebuild_inflated` grows
+  `slab_thickness_mm` by `2 × amount`, so a rod now inflates by exactly the
+  requested amount instead of `0.7 ×` it.
+- **Base width and strut radius never applied to rods** (a rod is round and is
+  its own link, so there is nothing to widen and no strut), but the UI showed
+  them in rod mode. They are now slab-only.
+
+**Backbone and base ball-and-stick sizes are now separate.**
+`backbone_atom_radius_mm` / `backbone_bond_radius_mm` join the existing
+`atom_radius_mm` / `bond_radius_mm`. One shared pair could only ever be right for
+one of the two, since the sugar-phosphate backbone and the base rings are drawn
+at the same time at different weights. Both new params are wired through
+`_min_wall_dims`, `_backbone_solids`, the server form, the frontend, and
+`_rebuild_inflated` (miss that last one and molecule-backbone is the single style
+that silently refuses to inflate). `app.py` has one slider pair and drives both.
+
+**DNA card layout.** Each style's dimensions now sit under the style that uses
+them — tube radius moved out of the shared "Advanced dimensions" drawer and under
+**Backbone**, where it belongs — and only the sliders a style actually reads are
+shown. Names say what they size: Strand tube/atom/bond radius, Rung thickness,
+Slab size scale, Slab strut radius, Base atom/bond radius.
+
+**DNA↔DNA is never magnetised.** A pocket for even a small magnet is several
+times wider than a backbone tube (1.2 mm default radius vs a 4 mm magnet), so the
+socket cannot sink into the strand — it is a boss standing proud of it, and the
+bore usually blows through, which `_commit` then rejects, losing the joint
+anyway. Those pairs fall back to the bridge and say so in the connection note.
+Protein↔DNA and protein↔protein are untouched.
+
+**Builds are cancellable.** `build_all(..., should_cancel=...)` polls a predicate
+between phases and between chains and raises `pipeline.BuildCancelled`, which the
+per-chain and connector-pass handlers re-raise rather than swallowing into a
+"skipped" warning. Cancellation is cooperative, so the granularity is one chain —
+a single long boolean cannot be interrupted. The server sets a `threading.Event`
+in the SSE generator's `finally`, which fires when the client disconnects; the
+frontend's Cancel button aborts the fetch, so cancelling frees the machine and
+not just the browser. The Generate button becomes Cancel while building (hover
+swaps the live "Building… 42%" for "Cancel"); the ID field's go/Enter only ever
+*starts* a build, so a stray Enter cannot kill a running one.
+
+**One test was measuring sampling noise.**
+`test_inflate_grows_and_closes_gap` asserted every pair's gap shrank to within
+`1e-6`. `_nearest` compares *random vertex subsamples* (`_probe_points`), so
+re-meshing reshuffles which vertices are compared and moves the reading by
+microns; on the already-welded B↔P pair (0.11 mm) that showed up as a 6.6 µm
+*increase* while the genuine pairs closed by ~1.8 mm. Pairs that start below the
+weld threshold are now exempt. This is the same subsample-noise effect the
+joint-placement findings doc documents — worth recognising before treating a
+micron-scale movement in any of these measurements as a regression.
+
+**Pre-existing failure, diagnosed but not fixed.**
+`test_min_wall_thickens_tube_slab_parametrically` sets `nucleic_radius_mm` and
+expects a protein tube-slab build to thicken, but the protein path reads
+`protein_tube_radius_mm` (default 1.2) and both min-wall values it tests
+(0.4, 2.0) floor below that, so the mesh is byte-identical. The test predates the
+protein/nucleic tube-radius split and is stale; it is not evidence of a geometry
+bug. (`test_magnets_seat_where_the_parts_were_interpenetrating` also fails on the
+sandbox and predates this session.)
+
+## v5 — cartoon representation shipped (this session)
+
+The withdrawn cartoon (cylinder helices + detached planks) is replaced by a real
+ChimeraX-style ribbon in `representations/cartoon.py`, registered in
+`geometry._BUILDERS` and offered as a third **Protein** style ("Cartoon") in the
+web UI and Gradio app. This closes the "WITHDRAWN / TODO — protein cartoon"
+item in the v3 notes below.
+
+How it works, following the intended rework point-for-point:
+
+- **SSE** from `biotite.structure.annotate_sse` (P-SEA), all-coil fallback.
+- **Carson–Bugg guide frame**, not Frenet. The ribbon width vector is the
+  carbonyl `C→O` direction projected perpendicular to the tangent, with the
+  180°/residue alternation removed by flipping and gaps filled by transport.
+  This is the whole reason strands lie flat instead of corkscrewing — a
+  tangent-derived frame is undefined exactly where a strand is straight.
+- **Smoothed control points**, strength by structure (`cartoon_smoothing` is the
+  master): strands smoothed fully (flattens the pleat without shortening a
+  near-straight strand), helices only lightly and hard-capped (Laplacian
+  smoothing shrinks a helix toward its axis, so strong smoothing collapses the
+  spiral into a straight twisted stick — the first thing that looked wrong),
+  coil left on the true trace.
+- **Swept closed cross-sections** = a **rounded rectangle** (`_section`) whose
+  corner radius is the smaller half-axis, sampled by arc length. For a ribbon
+  (`hw > ht`) that is a *stadium*: flat top/bottom faces, semicircular thin
+  edges — reads as a flat plank and never as a rounded square, whatever the
+  thickness; when `hw == ht` it is a circle, so coil is a round tube and the two
+  morph smoothly. Strands widen into a **arrowhead** over the last
+  `cartoon_arrow_residues`. Fixed vertex count per ring ⇒ rings correspond ⇒
+  smooth morphs.
+
+  (v1 used a superellipse cross-section and uniform smoothing; both were
+  reworked after the ribbon looked square when thickened and helices read as
+  twisted tubes.  Default `cartoon_thickness_mm` lowered 2.0 → 1.4 for a flatter
+  default plank.)
+- **One watertight solid**: a single `M×K` ring grid closed with two cap fans,
+  built as a `trimesh` and returned; `is_watertight` holds by construction. No
+  manifold union needed because it is one continuous loft (chain breaks > 4.5 Å
+  are bridged by the tube so the print stays one piece). Self-intersection where
+  a helix twists tightly is topologically harmless and slicers resolve it; enough
+  samples/residue keeps twist-per-segment small anyway.
+- **Print sizing**: every dimension (widths, derived thickness, coil radius,
+  blunted arrow tip) is grown to `min_wall_mm` *before* the sweep, so CARTOON
+  stays in `MIN_WALL_EXEMPT` and needs no voxel pass.
+
+**Second-pass fixes (same session, after review):**
+
+- **"Thick ribbon turned into a tube."** The stadium rounds to a circle as its
+  thickness approaches its width, so an independent thickness knob made the
+  ribbon round off. Fixed by a **fixed flat aspect** (`_RIBBON_ASPECT = 0.30`):
+  thickness is always 0.30 × width, so one *size* slider scales the whole ribbon
+  and it stays a flat plank at any size. Independent `cartoon_thickness_mm` is
+  gone.
+- **"Helix crooked / sharp turns."** Twist between residues was linear-interp of
+  the width vectors (non-uniform → kinks). Now **slerp** (`_slerp`), plus a light
+  neighbour-average of the guide vectors (`_smooth_widths`) and samples/residue
+  raised to 10.
+- **"Arrows without ribbons."** `_clean_sse` demotes runs shorter than
+  `_MIN_STRAND_LEN` (3) / `_MIN_HELIX_LEN` (4) to coil, and the arrowhead is
+  clamped to leave ≥1 residue of shaft, so a strand is never all arrow.
+- **UI cut to three sizes + smoothing.** The confusing width/thickness/arrow/
+  samples sliders are gone. The panel is now **Helix size**, **Sheet size**,
+  **Tube thickness** (a *diameter* in the UI → halved to the coil radius in
+  `getFormData`), and **Smoothing**. Params: `cartoon_helix_width_mm`,
+  `cartoon_strand_width_mm`, `cartoon_coil_radius_mm`, `cartoon_smoothing`;
+  `cartoon_arrow_width_factor`, `cartoon_arrow_residues`,
+  `cartoon_samples_per_residue` are now internal (config defaults, not surfaced).
+
+Verified: 1UBQ (mixed α/β) builds watertight, single body, 3MF + GLB export
+clean; two new tests in `tests/test_features.py`
+(`test_cartoon_builds_watertight_single_body`, `..._degrades_to_tube_without_sse`).
+Aimed at resin scale; the ribbon is a thin feature, so FDM wants a higher
+scale/thickness and supports.
+
+**Not done / possible next:** per-residue rainbow (N→C) colouring for the GLB
+preview — would make e.g. GFP pop — is not wired; export still colours per chain.
+`_catmull_pos_tan` was added to `representations/_common.py` (analytic
+position+tangent) for the frame sweep.
+
 ## v4 — parts that actually fit (this session)
 
 Three symptoms turned out to be one root cause: **nothing in the pipeline had a

@@ -1201,6 +1201,11 @@ def _rebuild_inflated(chain: Chain, params: PrintParams, amount_mm: float):
             connector_radius_mm=params.connector_radius_mm + amount_mm,
             atom_radius_mm=params.atom_radius_mm + amount_mm,
             bond_radius_mm=params.bond_radius_mm + amount_mm,
+            # The backbone ball-and-stick has its own radii, so it has to be
+            # grown here too — otherwise a molecule-backbone strand is the one
+            # style that silently refuses to inflate.
+            backbone_atom_radius_mm=params.backbone_atom_radius_mm + amount_mm,
+            backbone_bond_radius_mm=params.backbone_bond_radius_mm + amount_mm,
         )
     mesh = geometry.generate_chain_mesh(chain, q)
     mesh = meshops.enforce_min_wall(mesh, q)
@@ -1210,7 +1215,35 @@ def _rebuild_inflated(chain: Chain, params: PrintParams, amount_mm: float):
 # --------------------------------------------------------------------------
 # DNA interstrand base-pair connect
 # --------------------------------------------------------------------------
-def _pair_bases(cen_a: np.ndarray, cen_b: np.ndarray, max_dist: float):
+#: Watson–Crick partners, by one-letter base code.  Inosine pairs cytosine.
+_WATSON_CRICK = {
+    ("A", "T"), ("T", "A"), ("A", "U"), ("U", "A"),
+    ("G", "C"), ("C", "G"), ("I", "C"), ("C", "I"),
+}
+
+#: How far a partner may sit out of the base plane, as ``|d̂ · n̂|``.
+#:
+#: This is the test that separates a real partner from the base *stacked* on top
+#: of it, and it is geometric rather than chemical on purpose.  A Watson–Crick
+#: partner lies across the helix, so the line between the two ring centroids runs
+#: *within* both base planes and its component along either normal is near zero.
+#: The neighbour one step up the same helix sits directly on top, so that line
+#: runs along the normal and the component is near one.  0.5 accepts anything
+#: within 30° of the plane, which covers propeller twist and buckle with room to
+#: spare while still rejecting a stacked base outright.
+_BASEPAIR_COPLANAR_MAX = 0.5
+
+
+def _base_letter(res_name) -> str:
+    """One-letter base code from a residue name (``DA`` -> ``A``, ``DI`` -> ``I``)."""
+    n = (res_name or "").strip().upper()
+    if len(n) > 1 and n.startswith("D"):
+        n = n[1:]
+    return n[:1]
+
+
+def _pair_bases(cen_a: np.ndarray, cen_b: np.ndarray, max_dist: float,
+                frames_a=None, frames_b=None):
     """Complementary base pairs between two strands (indices, distance).
 
     A duplex pairs bases in a fixed *register*: antiparallel means strand A
@@ -1227,24 +1260,61 @@ def _pair_bases(cen_a: np.ndarray, cen_b: np.ndarray, max_dist: float):
     n_a, n_b = len(cen_a), len(cen_b)
     if n_a == 0 or n_b == 0:
         return []
-    dmat = np.linalg.norm(cen_a[:, None, :] - cen_b[None, :, :], axis=-1)
+    delta = cen_b[None, :, :] - cen_a[:, None, :]
+    dmat = np.linalg.norm(delta, axis=-1)
+
+    ok = dmat <= max_dist
+
+    # Coplanarity gate.  Distance alone cannot tell a partner from the base
+    # stacked on top of it: a stacked neighbour is only ~3.4 Å away, well inside
+    # any cutoff loose enough to tolerate a distorted duplex.  Requiring the
+    # centroid-to-centroid line to lie in *both* base planes removes the whole
+    # stacked column from consideration, which is what stops a one-base overhang
+    # dragging the register off by one.
+    if frames_a and frames_b:
+        with np.errstate(invalid="ignore", divide="ignore"):
+            unit_d = delta / np.where(dmat[..., None] > 1e-9, dmat[..., None], 1.0)
+        na = np.array([f["normal"] for f in frames_a], float)
+        nb = np.array([f["normal"] for f in frames_b], float)
+        out_a = np.abs(np.einsum("ijk,ik->ij", unit_d, na))
+        out_b = np.abs(np.einsum("ijk,jk->ij", unit_d, nb))
+        ok &= (out_a <= _BASEPAIR_COPLANAR_MAX) & (out_b <= _BASEPAIR_COPLANAR_MAX)
+
+    # Watson–Crick complementarity, used to score registers rather than to gate
+    # pairs — a real duplex can carry a mismatch, and refusing to connect there
+    # would leave a visible hole in the ladder.
+    wc = np.zeros_like(ok)
+    if frames_a and frames_b:
+        la = [_base_letter(f.get("res_name")) for f in frames_a]
+        lb = [_base_letter(f.get("res_name")) for f in frames_b]
+        for i, a in enumerate(la):
+            for j, b in enumerate(lb):
+                if (a, b) in _WATSON_CRICK:
+                    wc[i, j] = True
 
     def register(index_of_b):
-        pairs, total = [], 0.0
+        pairs, total, n_wc = [], 0.0, 0
         for i in range(n_a):
             j = index_of_b(i)
-            if 0 <= j < n_b and dmat[i, j] <= max_dist:
+            if 0 <= j < n_b and ok[i, j]:
                 pairs.append((i, j, float(dmat[i, j])))
                 total += dmat[i, j]
-        return pairs, total
+                n_wc += int(wc[i, j])
+        return pairs, total, n_wc
 
-    best, best_key = [], (-1, np.inf)
+    best, best_key = [], (-1, -1, np.inf)
     # Antiparallel diagonals (j = s - i) and parallel diagonals (j = i + off).
     registers = ([(lambda i, s=s: s - i) for s in range(n_a + n_b - 1)]
                  + [(lambda i, o=o: i + o) for o in range(-(n_a - 1), n_b)])
     for idx_of_b in registers:
-        pairs, total = register(idx_of_b)
-        key = (len(pairs), -total)
+        pairs, total, n_wc = register(idx_of_b)
+        # Complementary pairs first, then how many bases are paired at all, then
+        # total distance.  Counting bases first is what produced the "clean but
+        # wrong" ladder on a duplex with a one-base overhang at each end: the
+        # off-by-one register pairs every base including the two overhangs, so it
+        # won on count while pairing each base to its neighbour's partner.  The
+        # true register pairs two fewer and every one of them complementary.
+        key = (n_wc, len(pairs), -total)
         if key > best_key:
             best, best_key = pairs, key
     return best
@@ -1254,45 +1324,138 @@ def _apply_basepairs(man_a, man_b, chain_a: Chain, chain_b: Chain,
                      params: PrintParams):
     """Tie two DNA strands together at each base pair; returns (a, b, n_links)."""
     cp = params.connections
-    cen_a = tube_slab.base_centroids_mm(chain_a, params)
-    cen_b = tube_slab.base_centroids_mm(chain_b, params)
+    cen_a, frames_a = tube_slab.base_link_frames_mm(chain_a, params)
+    cen_b, frames_b = tube_slab.base_link_frames_mm(chain_b, params)
     max_dist = cp.basepair_max_dist_ang * params.scale_mm_per_angstrom
-    pairs = _pair_bases(cen_a, cen_b, max_dist)
+    pairs = _pair_bases(cen_a, cen_b, max_dist, frames_a, frames_b)
     if not pairs:
         return man_a, man_b, 0
 
-    molecule = params.base_style == BaseStyle.MOLECULE
-    if molecule:
-        # Thin bond-like spokes between the paired bases.
+    # The link continues each rung to the midline, so it has to be sized from
+    # whatever that rung actually is — never from the backbone tube.  Those two
+    # were coupled once, which is where the old ``nucleic_radius_mm * 0.7`` came
+    # from; they are separate sliders now, so sizing off the tube produced a link
+    # visibly thinner or fatter than the rung it was supposed to be continuing.
+    #
+    # Each branch mirrors the matching case in ``tube_slab._base_solids``:
+    #   MOLECULE — ball-and-stick rungs, so the link is another bond.
+    #   ROD      — ``rung_r = slab_t / 2``, so the same half-thickness here.
+    #   SLAB     — a plate whose through-plane thickness is ``slab_t``; matching
+    #              its thickness (not its much larger in-plane footprint) keeps
+    #              the link reading as the plate reaching the axis rather than a
+    #              slab-sized block bridging the duplex.
+    #
+    # ``_min_wall_radius`` reproduces the clamp the builder applies: it floors at
+    # ``min_wall/2``, which is exactly what ``slab_t = max(slab_t, min_wall)``
+    # then halved comes to, so a thin setting lands on the same number both ways.
+    if params.base_style == BaseStyle.MOLECULE:
         r = _min_wall_radius(params, params.bond_radius_mm)
     else:
-        # Continue each rung at its own radius to the midline so opposing rungs
-        # meet as one smooth bar (rod rungs are nucleic_radius*0.7 thick).
-        r = _min_wall_radius(params, params.nucleic_radius_mm * 0.7)
+        r = _min_wall_radius(params, params.slab_thickness_mm / 2.0)
 
-    # The link runs *along the base-pair axis*, continuing each rung to the
-    # middle (not a separate strut off the backbone).  It starts a little behind
-    # the centroid — a back-step *onto* the existing rung — so it always fuses to
-    # the strand body while still reading as the rung reaching the axis.
-    back = max(0.6, r)
-    # A capsule's solid extends a full radius past its end point (that is what
-    # the hemispherical cap is), so a link aimed *at* the midline actually
-    # crosses it by ``r`` and the two strands end up interpenetrating by 2r —
-    # invisible on screen and a collision in the print.  Stopping the axis a
-    # radius short puts the cap *surface* on the midline instead, and half the
-    # fit clearance short of it leaves the two rungs facing each other across
-    # exactly the clearance: still one continuous bar to the eye, two separable
-    # parts in the hand.
-    reach = r + max(0.0, float(params.fit_clearance_mm)) / 2.0
+    # The two halves must *overlap*, not approach each other.
+    #
+    # ``fit_clearance_mm`` is for parts assembled by hand — magnet joints, the
+    # interference carving — where an air gap is the whole point.  It is wrong
+    # here.  The two strands are separate 3MF objects only so they can take
+    # different filaments; they are printed at the same time, so coincident
+    # material fuses in the machine.  A clearance between them is simply 0.15 mm
+    # of air, which is exactly "the helix does not hold together".
+    #
+    # Meeting flush is not enough either.  Two round ends that merely touch share
+    # a single tangent point — zero contact area, nothing for the slicer to weld.
+    # So each half runs a short distance *past* the midline and the pair shares a
+    # real volume.  Kept small: enough to weld, never enough to read as a bulge.
+    #
+    # Safe because ``interference.resolve`` has already run by this point (see
+    # the ordering note in ``apply``), so nothing carves this overlap back out.
+    weld = max(0.2, 0.2 * r)
+    # Slab in-plane half-width, matching ``_base_solids``: the plate footprint is
+    # 4.5 x 3.0 Å scaled, and the extension runs along the 4.5 direction, so the
+    # width it must keep is the 3.0 one.
+    slab_half_w = 3.0 * 0.5 * params.slab_scale * params.scale_mm_per_angstrom
+    slab_half_t = max(params.slab_thickness_mm,
+                      params.min_wall_mm if params.min_wall_mm > 0 else 0.0) * 0.5
+
+    def _start_point(frame, centre, u):
+        """Where this style's link may begin and still be inside solid material.
+
+        ``_commit`` drops any boolean that increases the piece count, so a link
+        starting in empty space is discarded and the pair silently fails to
+        connect. Rod and slab are solid at their centroid, so that is both the
+        visual tip and a safe anchor. A ball-and-stick base is *hollow* at its
+        centroid — that point is the middle of the ring — so the molecule style
+        anchors on the ring atom furthest along the pair axis instead: the ball
+        nearest the partner, which is where the real hydrogen bond would leave.
+        """
+        if params.base_style != BaseStyle.MOLECULE:
+            return centre
+        ring = frame.get("ring") or []
+        if not ring:
+            return centre
+        return max(ring, key=lambda p: float(np.dot(p - centre, u)))
+
+    def _link(frame, centre, u, stop):
+        """One half of the link: from this base out to ``stop``.
+
+        Every style ends on a **flat face**, never a dome.  A hemispherical cap
+        is what made the rod and molecule links "barely touch": the widest part
+        of a dome is a single point on the axis, so two of them facing each other
+        share almost no material even when they do meet.  A flat-ended cylinder
+        presents its full circle instead, and with the weld overlap above the two
+        halves interpenetrate over that whole disc.
+        """
+        start = _start_point(frame, centre, u)
+        if params.base_style == BaseStyle.SLAB:
+            # The plate itself reaches the axis — no rod bridging two plates.
+            # Built as a box spanning start→stop, carrying the slab's own
+            # thickness and in-plane width, so it reads as the same plate
+            # continuing rather than a separate part bolted on.
+            d = stop - start
+            length = float(np.linalg.norm(d))
+            if length < 1e-6:
+                return None
+            axis0 = d / length
+            # An in-plane axis perpendicular to the run. Falls back to the
+            # base's own in-plane direction if the run happens to lie along the
+            # normal (degenerate, but cheap to guard).
+            axis1 = np.cross(frame["normal"], axis0)
+            n1 = float(np.linalg.norm(axis1))
+            if n1 < 1e-6:
+                axis1 = np.asarray(frame["in_plane"], float)
+                n1 = float(np.linalg.norm(axis1)) or 1.0
+            axis1 = axis1 / n1
+            axis2 = np.cross(axis0, axis1)
+            axis2 /= (float(np.linalg.norm(axis2)) or 1.0)
+            return _manifold.oriented_box(
+                start + d * 0.5,
+                np.array([axis0, axis1, axis2]),
+                np.array([length * 0.5, slab_half_w, slab_half_t]),
+            )
+        # Rod and molecule: a flat-ended cylinder of the rung's own radius.
+        # ``frustum`` with equal radii is exactly that, and unlike ``capsule`` it
+        # ends where it is told to — no hemisphere adding a radius past the end
+        # point, so ``stop`` is the face rather than the centre of a dome.
+        if float(np.dot(stop - start, u)) <= 1e-6:
+            return None                       # nothing left to span
+        return _manifold.frustum(start, stop, r, r)
+
     n_done = 0
     for ia, ib, _d in pairs:
         ca, cb = cen_a[ia], cen_b[ib]
+        fa, fb = frames_a[ia], frames_b[ib]
         mid = 0.5 * (ca + cb)
         u = _unit(cb - ca)                     # A-centroid → B-centroid (toward axis)
-        if float(np.linalg.norm(mid - ca)) <= reach:
+        # Each half's flat face lands ``weld`` *beyond* the midline, so the two
+        # interpenetrate over a 2 x weld length of full-radius material.
+        stop_a = mid + u * weld
+        stop_b = mid - u * weld
+        tool_a = _link(fa, ca, u, stop_a)
+        tool_b = _link(fb, cb, -u, stop_b)
+        if tool_a is None or tool_b is None:
             continue                           # strands already meet here
-        sa = _commit(man_a, _manifold.capsule(ca - u * back, mid - u * reach, r), add=True)
-        sb = _commit(man_b, _manifold.capsule(cb + u * back, mid + u * reach, r), add=True)
+        sa = _commit(man_a, tool_a, add=True)
+        sb = _commit(man_b, tool_b, add=True)
         if sa is not None and sb is not None:
             man_a, man_b = sa, sb
             n_done += 1
@@ -1450,7 +1613,20 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 # minus the magnet pocket.
                 n_joints = (cp.magnet_count if kind == "protein-protein"
                             else cp.dna_magnet_count)
-                if cp.use_magnets:
+                # DNA↔DNA never gets a magnet.  A pocket for even a small magnet
+                # is several times wider than a backbone tube (default radius
+                # 1.2 mm vs a 4 mm magnet), so the socket cannot sink into the
+                # strand: it is a boss standing proud of it, and the bore usually
+                # blows straight through — which ``_commit`` then rejects, so the
+                # joint is lost anyway.  Those pairs are bridged instead.
+                if cp.use_magnets and kind == "dna-dna":
+                    method = "bridge"
+                    ok, note = _apply_bridge(
+                        mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
+                        overlap=overlap)
+                    note = ("bridged, not magnetised: a magnet pocket is wider "
+                            "than the backbone tube" + (f" — {note}" if note else ""))
+                elif cp.use_magnets:
                     method = "magnet"
                     ok, note = _apply_magnet(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,

@@ -21,6 +21,7 @@ from pdb2print import export
 
 
 REPRESENTATION_CHOICES = [Representation.SURFACE.value, Representation.TUBE_SLAB.value]
+PROTEIN_REP_CHOICES = REPRESENTATION_CHOICES + [Representation.CARTOON.value]
 BASE_STYLE_CHOICES = [BaseStyle.SLAB.value, BaseStyle.ROD.value, BaseStyle.MOLECULE.value]
 BACKBONE_STYLE_CHOICES = [BackboneStyle.TUBE.value, BackboneStyle.MOLECULE.value]
 
@@ -54,6 +55,10 @@ def _run(source_id, uploaded_file, scale, grid_spacing, min_wall, min_wall_mode,
         slab_scale=float(base_width),
         atom_radius_mm=float(atom_radius),
         bond_radius_mm=float(bond_radius),
+        # This UI keeps one ball-and-stick size pair, so it drives the backbone
+        # and the bases together; the web front end splits them.
+        backbone_atom_radius_mm=float(atom_radius),
+        backbone_bond_radius_mm=float(bond_radius),
     )
 
     report = build_all(source, params, progress=lambda f, m: progress(f, desc=m))
@@ -215,7 +220,7 @@ def build_ui():
                     gr.Markdown("Appearance", elem_classes="p2p-head")
                     gr.Markdown("Protein", elem_classes="p2p-cap")
                     protein_rep = gr.Radio(
-                        REPRESENTATION_CHOICES, value=Representation.SURFACE.value,
+                        PROTEIN_REP_CHOICES, value=Representation.SURFACE.value,
                         show_label=False, container=False, elem_classes="p2p-seg",
                     )
                     with gr.Group(elem_classes="p2p-nested"):

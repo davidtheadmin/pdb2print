@@ -5,7 +5,7 @@ This brief is for a fresh build session. It has two halves:
 1. **Established knowledge** — the project, its architecture, and every decision
    locked in during the session that produced the current code. Read this first.
 2. **What to build** — three UX improvements and a connector/joinery system,
-   with the design already agreed with the user (David).
+   with the design already agreed with the maintainer.
 
 **Do not re-architect the geometry core.** Extend it.
 
@@ -112,10 +112,10 @@ the real `repair` path. Server end-to-end verified: generate returns valid GLB
 - Test structures: `1UBQ` (protein), `1BNA` (DNA), `1ZAA` (zinc-finger+DNA),
   `1TUP` (p53+DNA, 5 components), `2HHB` (haemoglobin, 4 chains).
 
-### How the user works
-David agrees the architecture collaboratively before building, wants honest
-diagnosis, and iterates on look-and-feel visually. Show rendered results before
-committing. He values clean, chunky, printable output over fussy detail.
+### How the maintainer works
+The architecture is agreed collaboratively before building; honest diagnosis is
+expected, and look-and-feel is iterated on visually. Show rendered results before
+committing. Clean, chunky, printable output is valued over fussy detail.
 
 ---
 
