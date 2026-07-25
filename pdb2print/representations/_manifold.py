@@ -108,6 +108,31 @@ def difference(a: Manifold, b: Manifold) -> Manifold:
     return a - b
 
 
+def intersection(a: Manifold, b: Manifold) -> Manifold:
+    """Boolean intersection ``a ∩ b``.
+
+    Goes through ``batch_boolean`` rather than the ``^`` operator because the
+    operator overloads have moved around between ``manifold3d`` releases while
+    the explicit ``OpType`` call has been stable.
+    """
+    return Manifold.batch_boolean([a, b], m3d.OpType.Intersect)
+
+
+def volume(manifold: Manifold) -> float:
+    """Enclosed volume of a manifold, or 0.0 if it is empty.
+
+    Measured on the converted mesh: ``Manifold``'s own volume accessor has been
+    a property in some releases and a method in others, and this is only ever
+    called on small probe primitives where the conversion is free.
+    """
+    if manifold is None or manifold.is_empty():
+        return 0.0
+    try:
+        return float(abs(to_trimesh(manifold).volume))
+    except Exception:
+        return 0.0
+
+
 def to_trimesh(manifold: Manifold) -> trimesh.Trimesh:
     """Convert a :class:`Manifold` to a :class:`trimesh.Trimesh` (print-mm space)."""
     if manifold.is_empty():

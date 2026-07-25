@@ -29,6 +29,10 @@ class Representation(str, Enum):
 
     SURFACE = "surface"        # Gaussian metaball molecular surface
     TUBE_SLAB = "tube_slab"    # backbone tube + base slabs (nucleic acids)
+    # WITHDRAWN — kept so old saved parameter sets still parse, but it is not
+    # registered in ``geometry._BUILDERS`` and is not offered in the UI.  The
+    # first pass (cylinder helices + flat sheet planks) did not read as a
+    # cartoon; see the TODO in NOTES.md for the intended rework.
     CARTOON = "cartoon"        # secondary-structure cartoon (helices + sheets)
 
 
@@ -111,10 +115,61 @@ class ConnectionParams:
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
 
+    # --- flush socket (magnets *and* bridge) ---------------------------
+    #: Raise a flat-faced cylindrical collar around the joint on both parts so
+    #: they meet on a clean machined-looking disc instead of two ragged organic
+    #: surfaces.  On by default: cutting a pocket straight into a bumpy molecular
+    #: surface is what made the old joints look wrong and sit proud.
+    socket: bool = True
+    #: Plastic left around the magnet pocket, i.e. socket Ø = magnet Ø + 2×this.
+    socket_wall_mm: float = 1.5
+    #: Extra diameter on the magnet pocket over the nominal magnet Ø.  FDM holes
+    #: print undersize, so a nominal-sized pocket will not accept the magnet at
+    #: all; ~0.2 mm gives a press fit you still have to push.
+    magnet_fit_clearance_mm: float = 0.2
+    #: Extra pocket depth per side over the nominal magnet thickness.  This is
+    #: *bottom relief*, not slop: the magnet is pressed in until it is flush with
+    #: the mating face, and the extra depth is there so a stray blob or a bit of
+    #: stringing at the bottom of the bore cannot hold it proud — which would
+    #: stop the two faces meeting at all.
+    magnet_depth_clearance_mm: float = 0.2
+    #: 45° lead-in at the pocket mouth.  Makes the magnet start square instead of
+    #: catching on the rim, and hides the elephant-foot bulge at the face.
+    magnet_chamfer_mm: float = 0.4
+    #: Extra radius on the bore cut through each part's *approach path*.  A joint
+    #: is only assemblable if neither part has material sitting in the other's
+    #: way, so anything of one part that reaches past the shared face inside the
+    #: collar footprint is cut away.  This is the sliding clearance on that cut.
+    path_clearance_mm: float = 0.3
+
     # --- DNA base-pair connect -----------------------------------------
     basepair_connect: bool = False
 
     # --- internal (not exposed in the UI) ------------------------------
+    #: Radius of the ball used to weigh how much material ("meat") each side has
+    #: around a candidate seat, as a multiple of the socket radius.  Kept modest
+    #: on purpose: a large ball on a protein that *wraps* around DNA reaches
+    #: right around it and drags the local centre of mass to the far side.
+    mass_probe_scale: float = 2.0
+    #: Cosine of the largest angle any candidate axis may differ from the plain
+    #: nearest-point line before it is rejected outright (0.5 = 60°).  Catches
+    #: the protein-wrapped-around-DNA case, where the probe ball reaches right
+    #: around the duplex and the centroid line flips.
+    axis_agreement_min: float = 0.5
+    #: How strongly a candidate axis is penalised for driving the joint through
+    #: material that would have to be cut away.  Large on purpose: a magnet that
+    #: cannot be pulled apart is a failed print, whereas a slightly shallower
+    #: seat is only cosmetic.
+    axis_blocked_weight: float = 6.0
+    #: Aspect ratio at which a contact patch counts as a *strip* rather than a
+    #: disc.  Above this, the strip's long direction is projected out of the
+    #: centroid line — on an elongated patch that direction is the one thing that
+    #: is well determined, and it is exactly where a rod-shaped blob's centre of
+    #: mass slides to.
+    patch_elongation_min: float = 2.0
+    #: How many candidate seats get the expensive exact (boolean) scoring pass,
+    #: over and above the number of magnets actually wanted.
+    seat_shortlist_extra: int = 3
     #: Max surface gap (mm) for two chains to count as "in contact".
     contact_threshold_mm: float = 3.0
     #: Max base-centroid distance (ångström, pre-scale) still treated as a real

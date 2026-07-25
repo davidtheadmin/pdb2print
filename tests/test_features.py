@@ -209,10 +209,14 @@ def test_inflate_grows_and_closes_gap():
     assert min(after) < 0.5                                     # closest pair welds
 
 
-def test_magnet_skips_when_gap_exceeds_two_thickness():
-    """Magnets can only meet if 2×thickness spans the gap; else skip + explain."""
+def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
+    """Bare magnets can only meet if 2×thickness spans the gap; else skip + explain.
+
+    Only applies with the socket off — a socket collar closes the gap itself, so
+    the thickness-vs-gap test is not a limit there (see the next test).
+    """
     report = build_all(COMPLEX, _params(
-        connect=True, use_magnets=True, contact_threshold_mm=4.0,
+        connect=True, use_magnets=True, socket=False, contact_threshold_mm=4.0,
         connector_diameter_mm=3.0, magnet_thickness_mm=1.0))  # 2T = 2.0 mm
     assert _all_watertight_single(report)
     # The A↔P contact (~3 mm gap) exceeds 2×1.0 mm and must be reported skipped.
@@ -220,6 +224,253 @@ def test_magnet_skips_when_gap_exceeds_two_thickness():
                if c["method"] == "magnet" and not c["applied"]
                and "thickness" in c["note"]]
     assert skipped, report.connections
+
+
+def test_socket_bridges_a_gap_that_bare_magnets_cannot():
+    """The collar spans the gap, so the same joint that was skipped now builds."""
+    kw = dict(connect=True, use_magnets=True, contact_threshold_mm=4.0,
+              connector_diameter_mm=3.0, magnet_thickness_mm=1.0)
+    bare = build_all(COMPLEX, _params(socket=False, **kw))
+    socketed = build_all(COMPLEX, _params(socket=True, **kw))
+    assert _all_watertight_single(socketed)
+    placed = lambda r: sum(c["applied"] for c in r.connections if c["method"] == "magnet")
+    assert placed(socketed) > placed(bare)
+
+
+def test_socket_adds_material_and_pocket_removes_it():
+    """A socketed magnet joint nets out as a collar (added) minus a bore (cut)."""
+    base = build_all(COMPLEX, _params())
+    bvol = {c.chain_id: m.volume for c, m in base.built}
+    joined = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, socket=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=3.0, magnet_thickness_mm=1.5))
+    assert _all_watertight_single(joined)
+    # At least one object must have changed volume — the joint is real geometry.
+    assert any(abs(m.volume - bvol[c.chain_id]) > 1e-6 for c, m in joined.built)
+
+
+def test_magnet_bore_is_oversize_for_press_fit():
+    """The cut bore must be wider and deeper than the nominal magnet, not equal.
+
+    An FDM hole printed to a magnet's exact size comes out undersize and will not
+    accept it, so a nominal-sized pocket is a bug, not a tolerance choice.
+    """
+    from pdb2print import connections as cx
+    cp = ConnectionParams(connector_diameter_mm=4.0, magnet_thickness_mm=2.0)
+    assert cp.magnet_fit_clearance_mm > 0
+    assert cp.magnet_depth_clearance_mm > 0
+    bore_r = cp.connector_diameter_mm / 2 + cp.magnet_fit_clearance_mm / 2
+    assert bore_r > cp.connector_diameter_mm / 2
+    # And the chamfer never eats more than a third of a thin magnet's grip.
+    assert min(cp.magnet_chamfer_mm, 0.3 * 0.5) <= 0.15
+    assert cx._MIN_SEAT_FILL > 0
+
+
+def test_seat_faces_are_coplanar_on_the_mid_plane():
+    """Both halves of a joint must end on exactly the same plane, or it isn't flush."""
+    import numpy as np
+    from pdb2print import connections as cx
+    center = np.array([1.0, 2.0, 3.0])
+    axis = cx._unit(np.array([0.3, -0.5, 0.8]))
+    a = cx._seat_solid(center, -axis, 4.0, 2.0)
+    b = cx._seat_solid(center, +axis, 4.0, 2.0)
+    # Project every vertex onto the axis; the two solids must meet at 0 and
+    # extend to opposite sides only.
+    for man, sign in ((a, -1.0), (b, +1.0)):
+        v = np.asarray(cx._manifold.to_trimesh(man).vertices, float)
+        t = (v - center) @ (axis * sign)
+        assert abs(t.min()) < 1e-5        # the flat face sits on the mid-plane
+        assert abs(t.max() - 4.0) < 1e-5  # and the solid extends one way only
+
+
+def test_mass_axis_beats_the_contact_line_on_a_tilted_interface():
+    """The centroid line must point along the material, not along a surface spike.
+
+    Two offset boxes overlapping in x: the true interface normal is +x, but the
+    nearest surface points are diagonal.  The mass-centroid axis should recover
+    something much closer to +x than the raw contact direction does.
+    """
+    import numpy as np
+    import trimesh
+    from pdb2print import connections as cx
+
+    a = trimesh.creation.box(extents=(10, 10, 10))
+    b = trimesh.creation.box(extents=(10, 10, 10))
+    b.apply_translation([10.5, 4.0, 0.0])          # offset along y as well as x
+    ma = cx._manifold.from_trimesh(a)
+    mb = cx._manifold.from_trimesh(b)
+
+    center = np.array([5.25, 2.0, 0.0])
+    _va, ca = cx._local_mass(ma, center, 6.0)
+    _vb, cb = cx._local_mass(mb, center, 6.0)
+    assert ca is not None and cb is not None
+    mass_axis = cx._unit(cb - ca)
+    assert mass_axis[0] > 0.7, mass_axis        # dominated by +x, the real normal
+
+
+def _rod_and_slab():
+    """A DNA-like rod above a protein-like slab, clipped asymmetrically.
+
+    The rod is sampled over x in [-2, 9] while the joint sits at x = 0, so its
+    centre of mass is dragged well along +x — the exact effect that swings the
+    magnet axis toward the helix when the DNA tube is thick.
+    """
+    import numpy as np
+    rng = np.random.default_rng(0)
+    theta = rng.uniform(0, 2 * np.pi, 4000)
+    rod = np.stack([rng.uniform(-2.0, 9.0, 4000),
+                    4.0 + 2.0 * np.cos(theta), 2.0 * np.sin(theta)], 1)
+    slab = np.stack([rng.uniform(-10, 10, 4000), np.zeros(4000),
+                     rng.uniform(-10, 10, 4000)], 1)
+    strip = np.stack([rng.uniform(-8, 8, 200), rng.uniform(-0.6, 0.6, 200),
+                      np.zeros(200)], 1)
+    return rod, slab, strip
+
+
+def _axis_error_deg(axis):
+    import numpy as np
+    return float(np.degrees(np.arccos(min(1.0, abs(axis[1])))))
+
+
+def test_patch_pca_tells_a_strip_from_a_disc():
+    import numpy as np
+    from pdb2print import connections as cx
+    _rod, _slab, strip = _rod_and_slab()
+    direction, elongation = cx._patch_long_axis(strip)
+    assert elongation > 5.0
+    assert abs(direction[0]) > 0.99            # the strip runs along x
+    rng = np.random.default_rng(1)
+    disc = np.column_stack([rng.uniform(-4, 4, 200), rng.uniform(-4, 4, 200),
+                            np.zeros(200)])
+    assert cx._patch_long_axis(disc)[1] < 2.0  # round patch: no long direction
+
+
+def test_rod_shaped_blob_does_not_swing_the_axis_90_degrees():
+    """The DNA case: a thick backbone tube must not drag the magnet off-normal.
+
+    The raw centroid line is ~40° off here because the probe ball clips an
+    asymmetric length of rod.  Whatever axis is chosen must still be close to the
+    true interface normal (+y).
+    """
+    import numpy as np
+    from pdb2print.config import ConnectionParams
+    from pdb2print import connections as cx
+
+    rod, slab, strip = _rod_and_slab()
+    center = np.array([0.0, 1.0, 0.0])
+    cen_a, cen_b = slab.mean(0), rod.mean(0)
+    raw = cx._unit(cen_b - cen_a)
+    assert _axis_error_deg(raw) > 30           # the failure this test guards
+
+    seat = cx.Seat(center=center, axis=cx._unit(np.array([0.0, 1.0, 0.0])),
+                   gap=2.0, footprint=20, patch=strip)
+    axis, _label, _agree, _blocked = cx._choose_axis(
+        seat, cen_a, cen_b, slab, rod, ConnectionParams(), 3.0, 5.0)
+    assert _axis_error_deg(axis) < 5.0, _axis_error_deg(axis)
+
+
+def test_strip_projection_rescues_a_noisy_contact_line():
+    """When the contact line is itself tilted, the de-elongated mass axis wins."""
+    import numpy as np
+    from pdb2print.config import ConnectionParams
+    from pdb2print import connections as cx
+
+    rod, slab, strip = _rod_and_slab()
+    seat = cx.Seat(center=np.array([0.0, 1.0, 0.0]),
+                   axis=cx._unit(np.array([0.34, 0.94, 0.0])),   # 20° off
+                   gap=2.0, footprint=20, patch=strip)
+    axis, label, _agree, _blocked = cx._choose_axis(
+        seat, slab.mean(0), rod.mean(0), slab, rod, ConnectionParams(), 3.0, 5.0)
+    assert label == "mass-flat", label
+    assert _axis_error_deg(axis) < 5.0
+
+
+def test_path_census_counts_material_in_the_way():
+    """An axis driven along the rod must register as heavily blocked."""
+    import numpy as np
+    from pdb2print import connections as cx
+    rod, slab, _strip = _rod_and_slab()
+    center = np.array([0.0, 1.0, 0.0])
+    across, _ = cx._path_census(slab, rod, center, np.array([0.0, 1.0, 0.0]),
+                                3.0, 5.0)
+    along, _ = cx._path_census(slab, rod, center, np.array([1.0, 0.0, 0.0]),
+                               3.0, 5.0)
+    assert across == 0                 # nothing in the way across the interface
+    assert along > 50, along           # driving along the rod hits the slab
+
+
+def test_wrapped_interface_falls_back_to_the_contact_line():
+    """A mass axis that disagrees badly with the contact line must be rejected.
+
+    This is the protein-wrapped-around-DNA case: the probe ball reaches around
+    the far side and the centroid line flips.  The guard keeps the contact line.
+    """
+    import numpy as np
+    from pdb2print.config import ConnectionParams
+    from pdb2print import connections as cx
+
+    cp = ConnectionParams()
+    contact = cx._unit(np.array([1.0, 0.0, 0.0]))
+    for mass in (np.array([-1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0])):
+        agreement = float(np.dot(cx._unit(mass), contact))
+        assert agreement < cp.axis_agreement_min      # would be rejected
+
+
+def test_bridge_joint_is_a_flat_faced_cylinder_not_a_capsule():
+    """The bridge must reuse the seat path, so it has a flat mating face."""
+    report = build_all(COMPLEX, _params(
+        connect=True, no_magnet_method=NoMagnetMethod.BRIDGE,
+        contact_threshold_mm=3.5, connector_diameter_mm=3.0))
+    assert _all_watertight_single(report)
+    bridges = [c for c in report.connections if c["method"] == "bridge"]
+    assert bridges and any(c["applied"] for c in bridges)
+
+
+def test_overhang_in_the_joint_path_is_cut_away():
+    """Neither part may keep material on the other's side of the mating face.
+
+    A lobe hanging over the socket makes the joint look right in the preview and
+    then refuse to close, so the approach path is cleared on both sides.
+    """
+    import numpy as np
+    report = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, socket=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=3.0, magnet_thickness_mm=1.5))
+    assert _all_watertight_single(report)
+    by_id = {c.chain_id: m for c, m in report.built}
+    ids = [c.chain_id for c, _m in report.built]
+    for mark in report.connection_markers:
+        center = np.asarray(mark["center"], float)
+        axis = np.asarray(mark["axis"], float)
+        radius = 0.5 * (mark.get("socket_diameter") or mark["diameter"])
+        for cid in ids:
+            v = np.asarray(by_id[cid].vertices, float)
+            rel = v - center
+            t = rel @ axis
+            radial = np.linalg.norm(rel - np.outer(t, axis), axis=1)
+            near = radial <= radius - 0.15          # inside the footprint
+            if not near.any():
+                continue
+            # A part may live on one side of the face or the other, but no part
+            # may straddle it inside the footprint.
+            assert not (np.any(t[near] > 0.15) and np.any(t[near] < -0.15)), (
+                f"chain {cid} still straddles the mating face at {center}")
+
+
+def test_two_magnets_land_on_different_patches():
+    """Asking for 2 magnets must not stack them on top of each other."""
+    import numpy as np
+    report = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=2.5, magnet_thickness_mm=1.5,
+        magnet_count=2, dna_magnet_count=2))
+    assert _all_watertight_single(report)
+    marks = report.connection_markers
+    if len(marks) >= 2:
+        centers = np.array([m["center"] for m in marks])
+        d = np.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=-1)
+        off_diag = d[~np.eye(len(d), dtype=bool)]
+        assert off_diag.min() > 2.5      # at least a socket diameter apart
 
 
 def test_connect_plus_basepair_combined_watertight():

@@ -30,18 +30,15 @@ watertight:
   set** (reworked from a larger first cut per user feedback): two independent
   switches —
   - **connect** joins chains whose surfaces come within `contact_threshold_mm`.
-    - **magnets**: one tool (round cylinder or square block, Ø `connector_diameter`
-      × `2·magnet_thickness`) centred on the *gap midpoint* is subtracted from
-      *both* parts, so each keeps a seat from which its magnet protrudes to meet
-      the other in the middle (verified by an axis occupancy trace).  Requires
-      `2·thickness > gap`, else the joint is reported skipped ("increase magnet
-      thickness").
+    - **magnets**: a press-fit bore in a flush socket on each part — see the v3
+      section below, which replaced this entirely.
     - **inflate** (default): `_rebuild_inflated` re-meshes each contacting chain
       slightly larger at *build* time — protein via `surface_atom_padding_ang`,
       DNA via the tube/base radii — so neighbours swell until their surfaces
       overlap and weld, no strut, no re-mesh artefact.  Growth is `gap/2 + weld`
       per side, capped at 1.2 mm (wide gaps should use bridge).
-    - **bridge**: a short `connector_diameter` cylinder across the gap.
+    - **bridge**: a `connector_diameter` cylinder across the gap — since v3 the
+      same joint as a magnet, minus the bore.
   - **basepair_connect** ties the two strands of a DNA duplex at every base pair.
     Pairing is **register-based** (`_pair_bases`): it evaluates every antiparallel
     / parallel diagonal and keeps the register with the most in-cutoff pairs —
@@ -63,25 +60,118 @@ Kernel additions in `representations/_manifold.py`: `frustum` (flat/tapered
 cone, for chamfers & pegs), `from_trimesh` (re-enter the kernel), `difference`.
 `tube_slab.base_centroids_mm()` exposes base centroids for base-pair pairing.
 
-**Magnet placement (`connections._magnet_sites`).** Candidate contact points are
-scored by *support* — how many same-facing contact points fall within a
-magnet-sized radius — so magnets seat in the meaty part of an interface, not on
-a thin surface spike; below `_MIN_MAGNET_FOOTPRINT` supporting contacts the seat
-is abandoned and logged. The magnet is placed on the meaty seed's own
-nearest-point line (centre = its midpoint, axis = that line). Positions are
-returned as `connection_markers` and drawn as bright magenta solids in the GLB
-preview only.
+Magnet positions are returned as `connection_markers` and drawn as bright
+magenta solids in the GLB preview only.
 
-**KNOWN ISSUE / TODO — magnet axis on curved interfaces.** When a protein wraps
-against curved DNA, the nearest-point line at a single contact can be off from
-the true interface normal (the magnet looks ~perpendicular to how it should
-sit). Two attempted fixes made other interfaces *worse* and were reverted:
-(a) averaging the point-to-point directions fans around the curve and tilts;
-(b) a local plane fit is ambiguous on a narrow contact strip. A better approach
-to try later: estimate each side's *surface normal* at the contact (from the two
-meshes' local faces) and use their average, or fit an oriented plane constrained
-to point across the gap — validated against a real 1TUP build (needs the full
-file, which the sandbox web-fetch truncates).
+## v3 — magnet axis, flush socket, press fit (this session)
+
+**RESOLVED — magnet axis and seating (v3).** The old failure was that a magnet
+was placed on the *nearest-point line* of one contact pair: the smallest gap on
+the interface, but not the direction either part actually has material in, so on
+a curved interface the magnet sat visibly off-normal. Two earlier attempts were
+reverted (averaging point-to-point directions fans around the curve; a plane fit
+is ambiguous on a narrow contact strip). The current design replaces both.
+
+**Joint placement is now two-stage and shared by magnets and bridges**
+(`connections._joint_seats`):
+
+1. **Stage 1 — shortlist** (`_candidate_seats`, cheap, point clouds). Contacts
+   are scored by how much *consistent* contact surrounds them, so a surface
+   whisker with the smallest gap never wins over a broad interface. Returns more
+   candidates than are wanted, separated by a full socket diameter.
+2. **Stage 2 — rank against the real solids** (`_score_seats`). Each candidate's
+   probe ball is intersected with *both* manifolds. That single operation gives:
+   - **the local centres of mass**, which feed the axis candidates below.
+   - **the fill** — the fraction of the plastic the joint needs that is already
+     solid, measured from each side's own surface inward (not from the mid-plane,
+     or the score would just track the gap). Ranks the seats, so asking for two
+     magnets puts the second on the second-best patch instead of beside the first.
+
+### Orientation: three hypotheses, tested against the geometry
+
+The centroid line alone is **not** a reliable axis, and the reason is worth
+writing down because it cost a debugging round. **The centre of mass of a rod
+slides along the rod.** A DNA backbone tube is locally a rod; the probe ball
+clips an asymmetric length of it, so the DNA-side centroid sits well along the
+helix rather than opposite the contact, and the axis swings toward the helix —
+up to the 90°-wrong magnets seen at some tube thicknesses. Thicker tube, bigger
+effect, which is exactly the observed dependence on the tube-thickness setting.
+
+So `_choose_axis` proposes three candidates and *measures* them:
+
+| candidate | what it is | fails when |
+|---|---|---|
+| `contact` | plain nearest-point line | noisy on a bumpy surface |
+| `mass` | line between the local centres of mass | one side is locally a rod |
+| `mass-flat` | `mass` with the contact strip's long direction projected out | patch isn't elongated (then it isn't offered) |
+
+`mass-flat` is the rod fix. On an elongated contact patch the strip's *long*
+direction is the best-determined thing about it — far better determined than its
+normal, which is why the earlier plane-fit attempt failed — and it is precisely
+the direction the centroid slides in. Projecting it out keeps the
+across-interface component and discards the unreliable one. PCA on the patch
+points, gated on λ1/λ2 ≥ `patch_elongation_min`.
+
+Each candidate is then scored by `_path_census` on the sampled surface clouds:
+**blocked** points (material that would collide on assembly) and **seated**
+points (body for the collar to fuse into), as `seated − 6×blocked`. That is the
+physical test — *can these parts actually come apart this way* — and it is what
+kills an along-the-helix axis, which drives the socket lengthwise into the tube
+and is massively blocked. Point-cloud rather than boolean, because it runs for
+several axes at several seats. `_AXIS_PREFERENCE` breaks genuine ties toward the
+mass-derived axes, which is what still fixes the merely *tilted* magnets.
+
+Measured on the synthetic rod-and-slab fixture in `tests/test_features.py`: raw
+centroid line 40.8° off the true normal; chosen axis 0.0° with a clean contact
+line, 2.1° when the contact line is itself 20° off.
+
+**The wrap guard** sits on top: any candidate more than `axis_agreement_min`
+(cos 60°) from the plain contact line is rejected outright, for the
+protein-wrapped-around-DNA case where the probe ball reaches right around the
+duplex. Keep `mass_probe_scale` modest (2× socket radius) for the same reason.
+The connection note reports `axis from contact line` or `axis flattened along
+contact strip` when a fallback fired, so a suspicious magnet can be traced.
+
+### Clearing the joint path
+
+A joint is only real if the parts can close. Anything of one part that reaches
+**past the shared face inside the joint footprint** is cut away — step 1 of
+`_build_seat`, footprint plus `path_clearance_mm` sliding clearance. Without it a
+lobe of protein hanging over the socket looks correct in the preview and then
+collides on assembly. If that cut would sever the part, `_commit` rejects it and
+the seat is abandoned in favour of the next-ranked one: a seat you cannot
+assemble is not a seat.
+
+**WITHDRAWN / TODO — protein cartoon representation.** The first cartoon pass
+(cylinder helices + flat sheet planks, `pdb2print/representations/cartoon.py`)
+does not read as a cartoon: helices come out as bare rods with no visible pitch,
+sheets as detached planks with no continuity into the loops, and nothing reads
+correctly at print scale. It is withdrawn rather than shipped half-working — the
+option is gone from the UI, `Representation.CARTOON` is no longer registered in
+`geometry._BUILDERS` (requesting it raises "no builder registered"), and the enum
+member is kept only so old parameter sets still parse.
+
+What a proper rework needs, roughly the ChimeraX approach:
+
+1. **Real secondary-structure assignment** — DSSP-style H/E/C per residue
+   (`biotite.structure.annotate_sse` is the cheap route), not geometric guessing.
+2. **A guide spline with an explicit ribbon frame** — a smooth path through the
+   CA trace carrying a per-sample normal/binormal, so ribbon *twist* is defined.
+   The frame is what a plank-per-residue build is missing.
+3. **Swept cross-sections, not primitives** — sweep a profile along the spline
+   and vary it by SSE: a flattened ellipse for helices (a coil ribbon, not a
+   cylinder), a wide rectangle plus arrowhead taper for strands, a small circle
+   for coil. Blend the profile across SSE boundaries so segments stay continuous.
+4. **One watertight solid per chain** — sweeps meet end-to-end along a shared
+   spline, so this can stay analytic (`manifold3d` `batch_boolean`), like
+   `tube_slab`, rather than going back through the voxel grid.
+5. **Print-scale sanity** — a ribbon is a thin shell by nature; the profile
+   minor axis must respect `min_wall_mm` parametrically *before* the union, the
+   same rule `tube_slab` follows. Cartoon should stay out of `MIN_WALL_EXEMPT`
+   only if it can self-thicken; otherwise it is not printable unsupported.
+
+Acceptance: 1UBQ (mixed α/β) must be recognisably a cartoon next to a ChimeraX
+screenshot, watertight, and printable at default scale without supports.
 
 Tests: `tests/test_features.py` (23 tests) covers names, every join type/seat,
 base-pair methods, per-pair override, the watertight gate, SSE, and detect.

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import uuid
@@ -64,6 +65,29 @@ def _bool(x) -> bool:
     return str(x).strip().lower() in {"1", "true", "on", "yes"}
 
 
+#: Characters allowed in a generated download filename; everything else in a
+#: user-supplied name collapses to "_" so the name is safe on every OS and
+#: needs no quoting in a URL path.
+_SAFE_STEM = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _download_stem(source: str, params: PrintParams) -> str:
+    """A descriptive base filename for this build, e.g. ``1zaa_pdb2print_1p5mm``.
+
+    Downloads used to land in the user's folder as ``out.3mf`` / ``out_stl.zip``
+    for every structure, which is useless the moment you have built more than
+    one. The stem carries what distinguishes two builds in a downloads folder:
+    which structure, and at what scale.
+
+    ``source`` is either a bare PDB ID or the path of an uploaded file; either
+    way only the basename (without extension) contributes.
+    """
+    stem = os.path.splitext(os.path.basename(source))[0]
+    stem = _SAFE_STEM.sub("_", stem).strip("._-").lower()[:40] or "model"
+    scale = f"{params.scale_mm_per_angstrom:g}".replace(".", "p")
+    return f"{stem}_pdb2print_{scale}mm"
+
+
 def _map_connections(fields: dict) -> ConnectionParams:
     """Build a :class:`ConnectionParams` from the (small) connection form fields."""
     return ConnectionParams(
@@ -75,6 +99,9 @@ def _map_connections(fields: dict) -> ConnectionParams:
         magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
         magnet_count=int(float(fields.get("magnet_count", 1))),
         dna_magnet_count=int(float(fields.get("dna_magnet_count", 1))),
+        socket=_bool(fields.get("socket", True)),
+        socket_wall_mm=float(fields.get("socket_wall", 1.5)),
+        magnet_fit_clearance_mm=float(fields.get("magnet_fit_clearance", 0.2)),
         basepair_connect=_bool(fields.get("basepair_connect", False)),
     )
 
@@ -120,15 +147,19 @@ def _run_and_export(source: str, params: PrintParams, progress) -> dict:
     out_dir = os.path.join(OUTPUT_ROOT, token)
     os.makedirs(out_dir, exist_ok=True)
 
-    export.write_glb(report.built, os.path.join(out_dir, "out.glb"),
+    # Files are named after the structure so a download is self-describing; the
+    # uuid directory (not the filename) is what keeps concurrent builds apart.
+    stem = _download_stem(source, params)
+
+    export.write_glb(report.built, os.path.join(out_dir, f"{stem}.glb"),
                      markers=report.connection_markers)
-    export.write_stl_zip(report.built, os.path.join(out_dir, "out_stl.zip"))
+    export.write_stl_zip(report.built, os.path.join(out_dir, f"{stem}_stl.zip"))
 
     threemf_url = None
     warning = None
     try:
-        export.write_3mf(report.built, os.path.join(out_dir, "out.3mf"))
-        threemf_url = f"/files/{token}/out.3mf"
+        export.write_3mf(report.built, os.path.join(out_dir, f"{stem}.3mf"))
+        threemf_url = f"/files/{token}/{stem}.3mf"
     except RuntimeError as exc:
         # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
         warning = str(exc)
@@ -152,9 +183,9 @@ def _run_and_export(source: str, params: PrintParams, progress) -> dict:
         "ok": True,
         "warning": warning,
         "report": report.summary(),
-        "glb_url": f"/files/{token}/out.glb",
+        "glb_url": f"/files/{token}/{stem}.glb",
         "threemf_url": threemf_url,
-        "stl_url": f"/files/{token}/out_stl.zip",
+        "stl_url": f"/files/{token}/{stem}_stl.zip",
         "chains": chains,
         "connections": report.connections,
         "size_mm": size_mm,
@@ -192,6 +223,9 @@ async def generate(
     magnet_shape: str = Form("round"),
     magnet_count: int = Form(1),
     dna_magnet_count: int = Form(1),
+    socket: str = Form("true"),
+    socket_wall: float = Form(1.5),
+    magnet_fit_clearance: float = Form(0.2),
     basepair_connect: str = Form("false"),
     file: UploadFile | None = None,
 ):
@@ -246,6 +280,8 @@ async def generate(
             "connector_diameter": connector_diameter,
             "magnet_thickness": magnet_thickness, "magnet_shape": magnet_shape,
             "magnet_count": magnet_count, "dna_magnet_count": dna_magnet_count,
+            "socket": socket, "socket_wall": socket_wall,
+            "magnet_fit_clearance": magnet_fit_clearance,
             "basepair_connect": basepair_connect,
         })
     except (ValueError, TypeError) as exc:
