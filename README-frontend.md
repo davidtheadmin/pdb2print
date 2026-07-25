@@ -37,19 +37,35 @@ uploaded files work without network access.
 ## API contract
 
 `POST /api/generate` (multipart form): parameter fields + optional `file`.
-Returns:
+
+The response is **`text/event-stream`**: zero or more `event: progress`
+(`{frac, msg}`) lines, then a single `event: result` carrying the JSON below.
+Validation problems (bad file type, missing source, unparseable params)
+short-circuit to plain JSON with a 4xx status, so the client tells the two apart
+by content-type.
 
 ```json
 {
   "ok": true,
   "warning": null,
   "report": "Built N chain(s): …",
-  "glb_url": "/files/<token>/out.glb",
-  "threemf_url": "/files/<token>/out.3mf",
-  "stl_url": "/files/<token>/out_stl.zip",
-  "chains": [{ "id": "A", "color": "#D93333" }]
+  "glb_url": "/files/<token>/1zaa_pdb2print_1p5mm.glb",
+  "threemf_url": "/files/<token>/1zaa_pdb2print_1p5mm.3mf",
+  "stl_url": "/files/<token>/1zaa_pdb2print_1p5mm_stl.zip",
+  "chains": [{ "id": "A", "name": "Zif268", "color": "#D93333" }],
+  "connections": [{ "a": "A", "b": "E", "method": "magnet", "applied": true,
+                    "note": "" }],
+  "size_mm": [61.2, 44.0, 38.5],
+  "scale_used": 1.5
 }
 ```
+
+Output files are named after the structure and scale, not `out.3mf`, so a
+downloads folder with several builds stays readable. The uuid directory (not the
+filename) is what keeps concurrent builds apart.
+
+Connection fields beyond the original set: `socket`, `socket_wall`,
+`magnet_fit_clearance`.
 
 If `build_all` fails the watertight gate it returns `ok:false` with the message
 in both `warning` and `report`. If only 3MF export fails, GLB + STL URLs are

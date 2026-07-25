@@ -10,11 +10,37 @@ touching, bulged together, or pocketed for magnets.
 Two independent switches (see :class:`~pdb2print.config.ConnectionParams`):
 
 * **connect** — join chains whose surfaces come within ``contact_threshold_mm``:
-  - **magnets**: subtract a magnet pocket (round cylinder or square block,
-    Ø × thickness) from each side, so parts printed separately snap together;
+  - **magnets**: seat a press-fit magnet pocket in each side, so parts printed
+    separately snap together;
   - **inflate**: grow both surfaces at the contact until they merge (organic,
     no visible strut) — the default;
-  - **bridge**: drop a short cylinder spanning the gap (a peg/strut).
+  - **bridge**: the same joint minus the pocket — a clean cylinder split on the
+    shared face.
+
+**How a joint is placed.**  Magnets and bridges share one path, in two stages.
+Stage 1 shortlists candidate contact patches from the surface point clouds,
+scored by how much *consistent* contact surrounds each one, so a surface
+whisker with the smallest gap never beats a broad interface.  Stage 2 then
+measures each shortlisted candidate against the real solids: intersecting both
+parts with a ball at the contact gives the local centre of mass on each side,
+and the line joining those two centroids is the direction in which both parts
+actually have material — the axis a magnet should lie along.  The same
+intersection yields the *fill*, the fraction of the plastic the joint needs that
+is already solid, which ranks the seats so a second magnet lands on the second
+best patch rather than next to the first.
+
+The centroid line is not trusted blindly: where a protein wraps *around* curved
+DNA the probe ball reaches right around the duplex and drags the protein's local
+centre of mass to the far side.  So it is accepted only when it agrees with the
+plain nearest-point line to within ``axis_agreement_min``, and otherwise the
+nearest-point line is kept (reported as ``axis from contact line``).
+
+**The socket.**  On by default.  Each part gets a flat-ended collar driven from
+the shared mid-plane into its own body, so the two halves meet on one clean disc
+instead of two ragged molecular surfaces touching wherever they happen to.  The
+magnet bore is cut *oversize* — wider and deeper than nominal, with a 45° lead-in
+— because an FDM hole printed to a magnet's exact size comes out too small to
+accept it.
 * **basepair_connect** — tie the two strands of a DNA duplex together at every
   base pair.  Complementary bases are paired by centroid geometry with an
   antiparallel-register check and a distance cutoff, so a wrong pair or an
@@ -149,27 +175,58 @@ def _commit(man, tool, add: bool):
 # --------------------------------------------------------------------------
 # Chain-to-chain join primitives
 # --------------------------------------------------------------------------
-def _magnet_tool(mid, axis, diameter, thickness, shape: MagnetShape):
-    """The single tool subtracted from *both* parts for a magnet joint.
-
-    Centred on the gap midpoint and extending ``±thickness`` along ``axis`` — so
-    the two assembled magnets (each ``thickness`` thick, ``2·thickness`` total)
-    meet in the middle.  Each part keeps only the portion of this cylinder that
-    lies inside it, giving a seat from which its magnet protrudes to touch the
-    other; nothing of the far wall is left, which is what a per-surface pocket
-    got wrong.
-    """
-    r = diameter / 2.0
-    a_end = mid - axis * thickness
-    b_end = mid + axis * thickness
-    if shape == MagnetShape.SQUARE:
-        return _manifold.oriented_box(mid, _frame(axis), [r, r, thickness])
-    return _manifold.frustum(a_end, b_end, r, r)
-
-
 #: Minimum number of supporting contacts under a magnet disc to accept the seat.
 #: Below this the interface is a spike/sliver with too little meat — abandon it.
 _MIN_MAGNET_FOOTPRINT = 3
+
+#: A seat is rejected if less than this fraction of the plastic it needs (the
+#: socket cylinder driven into the part) is actually inside the part *after* the
+#: socket collar is allowed to make up the difference.  Guards against seating a
+#: magnet on a spike that the collar would have to build out of thin air.
+_MIN_SEAT_FILL = 0.35
+
+
+def _seat_solid(face, into, length, radius):
+    """A flat-ended cylinder from the mating face ``length`` deep into a part.
+
+    ``into`` is the unit vector pointing from the face into that part's body, so
+    the flat end always lands exactly on the shared mid-plane.  Both parts build
+    one of these against the same plane, which is what makes them meet flush.
+    """
+    return _manifold.frustum(face, face + into * length, radius, radius)
+
+
+def _pocket_tool(face, into, depth, radius, chamfer, shape: MagnetShape):
+    """The magnet pocket cut into one part, mouth on the mating face.
+
+    Sized for a *press fit*, not a nominal fit: the caller passes a radius and
+    depth that already include the FDM clearances, because a hole printed to the
+    magnet's exact size comes out undersize and will not take it.  A 45° lead-in
+    at the mouth lets the magnet start square and swallows the elephant-foot
+    bulge at the face.
+
+    ``into`` points from the face into the body, and the tool is started a hair
+    *outside* the face so the difference always breaks the surface cleanly rather
+    than leaving a film.
+    """
+    lip = 0.05
+    mouth = face - into * lip
+    if shape == MagnetShape.SQUARE:
+        parts = [_manifold.oriented_box(
+            face + into * (depth / 2.0 - lip / 2.0), _frame(into),
+            [radius, radius, (depth + lip) / 2.0])]
+        if chamfer > 0:
+            # A box has no frustum, so the lead-in is a shallow oversized step.
+            parts.append(_manifold.oriented_box(
+                face + into * (chamfer / 2.0 - lip / 2.0), _frame(into),
+                [radius + chamfer, radius + chamfer, (chamfer + lip) / 2.0]))
+        return _manifold.union(parts)
+
+    parts = [_manifold.frustum(mouth, face + into * depth, radius, radius)]
+    if chamfer > 0:
+        parts.append(_manifold.frustum(
+            mouth, face + into * chamfer, radius + chamfer, radius))
+    return _manifold.union(parts)
 
 
 def _farthest_seeds(points: np.ndarray, n: int) -> List[int]:
@@ -185,17 +242,180 @@ def _farthest_seeds(points: np.ndarray, n: int) -> List[int]:
     return seeds
 
 
-def _magnet_sites(mesh_a, mesh_b, count: int, contact_thresh: float, magnet_r: float):
-    """Placement for ``count`` magnets, chosen for a well-supported seat.
+@dataclass
+class Seat:
+    """One scored candidate joint location on an interface."""
 
-    Returns ``(center, axis, gap)`` per magnet.  The trap with "just take the
-    closest points" is a thin surface spike: it gives the smallest gap but has no
-    material to seat a magnet.  So each candidate contact point is *scored by how
-    much consistent contact surrounds it* — points within a magnet-sized radius
-    whose contact direction agrees — which is high on a broad flat interface
-    (plenty of meat) and low on an isolated spike.  Magnets are placed at the
-    best-supported, well-separated spots, and each one's centre/axis is averaged
-    over its supporting neighbourhood so it sits square on the interface.
+    center: np.ndarray       # mid-plane point the two flat faces meet on
+    axis: np.ndarray         # unit vector from part A into part B
+    gap: float               # local surface-to-surface gap (mm)
+    footprint: int           # supporting contacts under the disc (stage 1)
+    patch: np.ndarray = None      # the local contact midpoints (stage 1)
+    fill: float = 0.0        # fraction of the needed seat volume that is solid
+    agreement: float = 1.0   # cos angle between chosen axis and nearest-point line
+    blocked: int = 0         # surface points sitting in the assembly path
+    axis_source: str = "contact"   # "mass" | "mass-flat" | "contact"
+    score: float = 0.0
+
+
+def _patch_long_axis(points: np.ndarray):
+    """``(direction, elongation)`` of a contact patch, by PCA.
+
+    On a narrow contact *strip* — a protein lying along a DNA backbone, say —
+    the strip's long direction is the best-determined thing about it, far more
+    stable than its normal.  That matters because it is exactly the direction a
+    rod-shaped blob's centre of mass slides along, so knowing it lets us take it
+    back out of the axis.  ``elongation`` is λ1/λ2; ~1 means a round patch with
+    no meaningful long direction.
+    """
+    if points is None or len(points) < 4:
+        return None, 1.0
+    centred = points - points.mean(axis=0)
+    try:
+        _u, s, vh = np.linalg.svd(centred, full_matrices=False)
+    except Exception:
+        return None, 1.0
+    if len(s) < 2 or s[1] < 1e-9:
+        return (_unit(vh[0]), np.inf) if len(s) else (None, 1.0)
+    return _unit(vh[0]), float(s[0] / s[1])
+
+
+def _path_census(pa, pb, center, axis, radius, length):
+    """``(blocked, seated)`` surface-point counts for one candidate axis.
+
+    Cheap stand-in for "can these two parts actually come apart along this
+    direction, and is there anything to bolt the collar to".
+
+    * **blocked** — points of one part that sit inside the joint footprint but on
+      the *other* part's side of the shared face.  Every one of those is material
+      that has to be cut away, or the parts will not mate at all.
+    * **seated** — points of each part inside the footprint on its own side,
+      i.e. body for its collar to fuse into.
+
+    Counted on the sampled surface clouds rather than by boolean, because this
+    runs for several candidate axes at several candidate seats and the exact
+    version would dominate the build time.
+    """
+    blocked = seated = 0
+    for pts, sign in ((pa, -1.0), (pb, +1.0)):
+        into = axis * sign                     # from the face into this part
+        rel = np.asarray(pts, float) - center
+        t = rel @ into
+        radial = np.linalg.norm(rel - np.outer(t, into), axis=1)
+        inside = radial <= radius
+        blocked += int(np.count_nonzero(inside & (t < -0.02)))
+        seated += int(np.count_nonzero(inside & (t > 0.0) & (t <= length)))
+    return blocked, seated
+
+
+def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams):
+    """Candidate joint axes for one seat, as ``(label, unit vector)``.
+
+    Three hypotheses, because no single construction survives every interface:
+
+    * ``contact`` — the plain nearest-point line.  Noisy, but never absurd.
+    * ``mass`` — the line between the two local centres of mass.  Points along
+      the material, which is what we want, *except* when one side's local blob is
+      a rod (a DNA backbone tube): then the centroid slides along the rod as the
+      probe ball clips it asymmetrically, and the axis swings toward the helix.
+    * ``mass-flat`` — the mass line with the contact strip's long direction
+      projected out.  This is the rod fix: it removes the one component the
+      centroid is unreliable in, and keeps the component across the interface.
+
+    They are not ranked here — the caller measures each against the actual
+    geometry and picks whichever can really be assembled.
+    """
+    opts = [("contact", seat.axis)]
+    if cen_a is None or cen_b is None:
+        return opts
+
+    delta = cen_b - cen_a
+    if float(np.linalg.norm(delta)) <= 1e-6:
+        return opts
+    mass = _unit(delta)
+    opts.append(("mass", mass))
+
+    long_dir, elongation = _patch_long_axis(seat.patch)
+    if long_dir is not None and elongation >= cp.patch_elongation_min:
+        flat = mass - long_dir * float(mass @ long_dir)
+        if float(np.linalg.norm(flat)) > 0.35:
+            opts.append(("mass-flat", _unit(flat)))
+    return opts
+
+
+#: Tie-break between candidate axes that the path test cannot separate.  Tiny
+#: next to the blocked/seated point counts, so it only decides genuine ties —
+#: but it decides them toward the axes that know where the material is, which is
+#: what fixes the merely *tilted* (as opposed to 90°-wrong) magnets.
+_AXIS_PREFERENCE = {"mass-flat": 0.6, "mass": 0.3, "contact": 0.0}
+
+
+def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
+                 radius: float, length: float):
+    """Pick the axis the joint can actually be assembled along.
+
+    Every candidate is put through the same physical test: how much material
+    would have to be cut out of the approach path, and how much body is left to
+    seat the collar in.  An axis running *along* a DNA backbone rather than
+    across the interface drives the socket lengthwise into the tube, so it is
+    heavily blocked and loses — which is what makes this robust to the centroid
+    sliding.  Candidates more than ``axis_agreement_min`` away from the plain
+    contact line are rejected outright as wrap artefacts.
+    """
+    best = None
+    for label, axis in _axis_options(seat, cen_a, cen_b, cp):
+        agreement = float(np.dot(axis, seat.axis))
+        if label != "contact" and agreement < cp.axis_agreement_min:
+            continue
+        blocked, seated = _path_census(pa, pb, seat.center, axis, radius, length)
+        score = seated - cp.axis_blocked_weight * blocked + _AXIS_PREFERENCE[label]
+        if best is None or score > best[0]:
+            best = (score, label, axis, agreement, blocked)
+    if best is None:                       # every candidate rejected
+        blocked, _ = _path_census(pa, pb, seat.center, seat.axis, radius, length)
+        return seat.axis, "contact", 1.0, blocked
+    _score, label, axis, agreement, blocked = best
+    return axis, label, agreement, blocked
+
+
+def _local_mass(man, center, radius):
+    """``(volume, centroid)`` of one part's material inside a ball at ``center``.
+
+    This is the "how much meat is there" probe.  Only the component the contact
+    actually sits on is used: a ball straddling an interface can also clip an
+    unrelated lobe of the same chain, and averaging that in would drag the
+    centroid sideways.  Returns ``(0.0, None)`` if the part has nothing here.
+    """
+    try:
+        blob = _manifold.intersection(man, _manifold.sphere(center, radius))
+        if blob.is_empty():
+            return 0.0, None
+        pieces = blob.decompose() or [blob]
+        best, best_d = None, np.inf
+        for piece in pieces:
+            if piece.is_empty():
+                continue
+            mesh = _manifold.to_trimesh(piece)
+            d = float(np.linalg.norm(np.asarray(mesh.center_mass, float) - center))
+            if d < best_d:
+                best, best_d = mesh, d
+        if best is None:
+            return 0.0, None
+        return float(abs(best.volume)), np.asarray(best.center_mass, float)
+    except Exception:
+        return 0.0, None
+
+
+def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
+                     want: int):
+    """Stage 1 — cheap point-cloud shortlist of well-supported contact patches.
+
+    "Just take the closest points" picks a surface spike: smallest gap, no
+    material to seat anything in.  So each contact candidate is scored by how
+    much *consistent* contact surrounds it (neighbours within a socket-sized
+    radius whose contact direction agrees), which is high on a broad interface
+    and low on an isolated whisker.  Returns the best well-separated candidates,
+    more than are wanted, so stage 2 can rank them on real geometry.
     """
     pa = _probe_points(mesh_a)
     pb = _probe_points(mesh_b)
@@ -210,101 +430,281 @@ def _magnet_sites(mesh_a, mesh_b, count: int, contact_thresh: float, magnet_r: f
     dirs = B - A
     dirs = dirs / np.clip(np.linalg.norm(dirs, axis=1, keepdims=True), 1e-9, None)
 
-    reach = magnet_r + 1.5                      # area a magnet needs around it
+    reach = socket_r + 1.5                      # area a socket needs around it
     neigh = cKDTree(mids).query_ball_point(mids, reach)
-    consistent = []                             # supporting neighbours per candidate
-    support = np.zeros(len(mids), int)
+    consistent, support = [], np.zeros(len(mids), int)
     for k in range(len(mids)):
         nb = np.asarray(neigh[k], dtype=int)
         cons = nb[dirs[nb] @ dirs[k] > 0.6]     # same-facing contact = real interface
         consistent.append(cons if len(cons) else np.array([k]))
         support[k] = len(cons)
 
-    count = max(1, count)
-    # Prefer meaty seats (high support); break ties toward the smaller gap.
+    # Prefer meaty patches (high support); break ties toward the smaller gap.
     order = sorted(range(len(mids)), key=lambda k: (-support[k], dd[k]))
-    chosen = []
+    picked, seats = [], []
     for k in order:
-        if len(chosen) >= count:
+        if len(picked) >= max(1, want):
             break
-        if any(np.linalg.norm(mids[k] - mids[c]) < reach for c in chosen):
+        # Separated by a full socket diameter so two sockets never intersect.
+        if any(np.linalg.norm(mids[k] - mids[c]) < 2.0 * socket_r + 1.0 for c in picked):
             continue
-        chosen.append(k)
-
-    sites = []
-    for k in chosen:
-        cons = consistent[k]
-        # Place the magnet on the meaty seed's own closest-point line — centre at
-        # its midpoint, axis exactly along it.  (Averaging directions or fitting
-        # the patch plane both made orientation worse on some interfaces, so we
-        # keep the simple, tight line.)  Footprint counts supporting contacts
-        # under the magnet disc so spikes/slivers are abandoned upstream.
-        # KNOWN ISSUE: on a protein wrapped against curved DNA the nearest-point
-        # line can still be off-normal (see NOTES.md TODO).
-        center = mids[k]
-        axis = _unit(dirs[k])
-        footprint = int((np.linalg.norm(mids[cons] - center, axis=1) <= magnet_r).sum())
-        gap = float(dd[k])
-        sites.append((center, axis, gap, footprint))
-    return sites
+        picked.append(k)
+        near = mids[consistent[k]]
+        foot = int((np.linalg.norm(near - mids[k], axis=1) <= socket_r).sum())
+        seats.append(Seat(center=mids[k], axis=_unit(dirs[k]), gap=float(dd[k]),
+                          footprint=foot, patch=near))
+    return seats, pa, pb
 
 
-def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int,
-                  cp: ConnectionParams, markers: list) -> Tuple[bool, str]:
-    """Subtract ``count`` centred ``Ø × 2·thickness`` magnet cylinders.
+def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
+                 socket_r: float, need_depth: float) -> List[Seat]:
+    """Stage 2 — re-orient and rank each candidate against the real solids.
 
-    Each is placed on the interface plane (see :func:`_magnet_sites`) and its
-    position/size is recorded in ``markers`` so the preview can highlight where
-    the magnets sit.  A magnet is skipped where its combined thickness cannot
-    span the local gap (``2·thickness > gap``).
+    For every candidate we intersect both parts with a ball at the contact.  That
+    one operation yields both things we need:
+
+    * **the axis** — the line joining the two local centres of mass.  This is the
+      direction in which each part actually *has* material, so a magnet laid
+      along it sits square in the meat instead of following whatever tilt the
+      single nearest-point pair happened to have.
+    * **the score** — how much material is there at all, per side.
+
+    The centroid line is not trusted blindly.  Where a protein wraps *around*
+    curved DNA the probe ball reaches right around the duplex and the protein's
+    local centre of mass lands on the far side, which would flip the magnet.  So
+    the mass axis is accepted only when it agrees with the plain nearest-point
+    line to within ``axis_agreement_min``; otherwise the nearest-point line is
+    kept and the seat records ``axis_source="contact"``.
+
+    Finally each seat is checked for *fill*: the fraction of the socket cylinder
+    it needs that is already solid.  A seat on a spike scores near zero here and
+    is dropped, because the collar would otherwise be built out of thin air.
+    """
+    probe_r = max(socket_r * cp.mass_probe_scale, socket_r + 1.0)
+    scored: List[Seat] = []
+    for seat in seats:
+        vol_a, cen_a = _local_mass(man_a, seat.center, probe_r)
+        vol_b, cen_b = _local_mass(man_b, seat.center, probe_r)
+        if vol_a <= 0.0 or vol_b <= 0.0:
+            continue
+
+        axis, source, agreement, blocked = _choose_axis(
+            seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
+            need_depth)
+        seat.axis, seat.axis_source = axis, source
+        seat.agreement, seat.blocked = agreement, blocked
+
+        # Fill: how much of the plastic each side must supply is already there.
+        # Measured from that side's own surface inward, not from the mid-plane —
+        # the half-gap in between is air on every interface and would otherwise
+        # make the score depend on the gap rather than on the material.
+        fills = []
+        for man, sign in ((man_a, -1.0), (man_b, +1.0)):
+            into = seat.axis * sign
+            start = seat.center + into * (seat.gap / 2.0)
+            need = _seat_solid(start, into, need_depth, socket_r)
+            want = _manifold.volume(need)
+            try:
+                have = _manifold.volume(_manifold.intersection(man, need))
+            except Exception:
+                have = 0.0
+            fills.append(have / want if want > 1e-9 else 0.0)
+        seat.fill = float(min(fills))
+
+        # Rank on the weakest side's fill first — a joint is only as good as its
+        # thinner half — then on contact footprint, then prefer a tight gap, and
+        # finally shy away from seats that need a lot cut out of the path.
+        seat.score = (seat.fill * 100.0
+                      + min(seat.footprint, 40) * 0.5
+                      - seat.gap * 2.0
+                      - min(seat.blocked, 60) * 0.5)
+        scored.append(seat)
+
+    scored.sort(key=lambda s: -s.score)
+    return scored
+
+
+def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
+                 cp: ConnectionParams, socket_r: float,
+                 need_depth: float) -> List[Seat]:
+    """The ranked seats to actually build, best first (shared by magnet+bridge)."""
+    count = max(1, count)
+    shortlist, pa, pb = _candidate_seats(mesh_a, mesh_b, cp.contact_threshold_mm,
+                                         socket_r, count + cp.seat_shortlist_extra)
+    ranked = _score_seats(shortlist, man_a, man_b, pa, pb, cp, socket_r, need_depth)
+    # Prefer seats with real material behind them, but if none clears the bar
+    # keep the ranked list anyway: ``_build_seat``'s watertight gate is the hard
+    # limit, and refusing everything here would silently drop a joint the user
+    # asked for on a genuinely thin (but printable) interface.
+    good = [s for s in ranked if s.fill >= _MIN_SEAT_FILL]
+    return (good or ranked)[:count]
+
+
+def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
+                pocket: dict | None, socket_on: bool,
+                clearance: float = 0.3) -> Tuple[bool, str]:
+    """Build one joint at ``seat`` on both parts, or leave both untouched.
+
+    This is the single geometry path behind both joint types, in three steps per
+    part:
+
+    1. **Clear the path.**  Anything of this part that reaches past the shared
+       face, inside the joint footprint, is cut away.  Without this a lobe of the
+       protein hanging over the socket simply collides with the other half and
+       the parts never close — the joint looks right in the preview and does not
+       assemble.  The cut is the footprint plus a sliding ``clearance``.
+    2. **Raise the collar** — a flat-ended cylinder driven from the shared
+       mid-plane into this part's own body, so the two halves meet on one clean
+       disc instead of two ragged surfaces touching wherever they happen to.
+    3. **Cut the bore**, for a magnet joint.
+
+    The collar has to reach far enough back to fuse with the body; how far is not
+    known in advance on a bumpy surface, so it is retried at increasing depths
+    and ``_commit`` rejects any length that would leave it floating.  Both parts
+    are committed together — a joint that only half-builds is worse than none, so
+    on failure neither side is modified.
+    """
+    if not socket_on and pocket is None:
+        return False, "socket disabled and no pocket to cut"
+
+    for grow in (1.0, 1.6, 2.4):
+        length = embed * grow
+        # -1 drives into part A (the axis points A→B), +1 into part B.
+        halves, ok = {}, True
+        for idx, sign in ((i, -1.0), (j, +1.0)):
+            man = mans[idx]
+            into = seat.axis * sign
+            # 1. Clear this part's material out of the other's approach path.
+            #    Starts a hair past the face so the collar's own flat end (which
+            #    lies exactly on it) is never shaved by this cut.
+            path = _seat_solid(seat.center - into * 0.002, -into,
+                               length + seat.gap + 1.0, socket_r + clearance)
+            cleared = _commit(man, path, add=False)
+            if cleared is None:
+                # Cutting the overhang would sever the part — this seat is not
+                # assemblable; the caller moves on to the next-ranked one.
+                ok = False
+                break
+            man = cleared
+            if socket_on:
+                man = _commit(man, _seat_solid(seat.center, into, length, socket_r),
+                              add=True)
+                if man is None:
+                    ok = False
+                    break
+            if pocket is not None:
+                tool = _pocket_tool(seat.center, into, pocket["depth"],
+                                    pocket["radius"], pocket["chamfer"],
+                                    pocket["shape"])
+                man = _commit(man, tool, add=False)
+                if man is None:
+                    ok = False
+                    break
+            halves[idx] = man
+        if ok:
+            mans[i], mans[j] = halves[i], halves[j]
+            return True, ""
+    return False, "would break watertightness or sever an overhang"
+
+
+def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
+                  params: PrintParams, markers: list) -> Tuple[bool, str]:
+    """Seat ``count`` press-fit magnet pockets on the best-scoring contacts.
+
+    The pocket is cut oversize on purpose (see ``magnet_fit_clearance_mm`` /
+    ``magnet_depth_clearance_mm``): an FDM hole printed to the magnet's nominal
+    size comes out too small to accept it at all.  Positions, sizes and the
+    resulting axis are recorded in ``markers`` so the preview can highlight them.
     """
     d, t, shape = cp.connector_diameter_mm, cp.magnet_thickness_mm, cp.magnet_shape
-    sites = _magnet_sites(mesh_a, mesh_b, count, cp.contact_threshold_mm, d / 2.0)
-    placed = 0
-    reasons = []
-    for center, axis, gap, footprint in sites:
-        if footprint < _MIN_MAGNET_FOOTPRINT:
+    pocket_r = d / 2.0 + cp.magnet_fit_clearance_mm / 2.0
+    depth = t + cp.magnet_depth_clearance_mm
+    socket_r = pocket_r + (cp.socket_wall_mm if cp.socket else 0.0)
+    # The collar must bury the pocket and still have wall behind it.
+    embed = depth + max(cp.socket_wall_mm, 1.0)
+
+    # The lead-in eats grip: the top of the bore is oversized, so on a thin
+    # magnet an unclamped chamfer would leave almost nothing holding it.
+    chamfer = min(cp.magnet_chamfer_mm, 0.3 * t)
+
+    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
+                         socket_r, embed)
+    pocket = {"radius": pocket_r, "depth": depth,
+              "chamfer": chamfer, "shape": shape}
+
+    placed, reasons = 0, []
+    for seat in seats:
+        if seat.footprint < _MIN_MAGNET_FOOTPRINT and seat.fill < _MIN_SEAT_FILL:
             reasons.append("too little contact area for a magnet")
             continue
-        if 2.0 * t <= gap + 1e-6:
-            reasons.append(f"gap {gap:.1f} mm ≥ 2×thickness {2*t:.1f} mm")
+        if not cp.socket and 2.0 * t <= seat.gap + 1e-6:
+            # Without a collar to close the gap, the two magnets never meet.
+            reasons.append(f"gap {seat.gap:.1f} mm ≥ 2×thickness {2*t:.1f} mm "
+                           f"(turn the socket on to bridge it)")
             continue
-        tool = _magnet_tool(center, axis, d, t, shape)
-        a2 = _commit(mans[i], tool, add=False)
-        b2 = _commit(mans[j], tool, add=False)
-        if a2 is not None and b2 is not None:
-            mans[i], mans[j] = a2, b2
-            placed += 1
-            markers.append({"center": [float(x) for x in center],
-                            "axis": [float(x) for x in axis],
-                            "diameter": float(d), "thickness": float(t),
-                            "shape": shape.value})
-        else:
-            reasons.append("would break watertightness")
+        ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
+                              cp.socket, cp.path_clearance_mm)
+        if not ok:
+            reasons.append(why)
+            continue
+        placed += 1
+        markers.append({
+            "center": [float(x) for x in seat.center],
+            "axis": [float(x) for x in seat.axis],
+            "diameter": float(d), "thickness": float(t), "shape": shape.value,
+            "socket_diameter": float(2.0 * socket_r) if cp.socket else None,
+            "fill": round(seat.fill, 3), "axis_source": seat.axis_source,
+            "blocked": int(seat.blocked),
+        })
 
-    attempted = len(sites)
-    if placed == attempted and not reasons:
-        note = f"{placed} magnet(s)" if placed > 1 else ""
-    elif placed:
-        note = f"placed {placed}/{attempted} — skipped: " + "; ".join(sorted(set(reasons)))
-    else:
-        note = "no magnet placed — " + "; ".join(sorted(set(reasons)) or ["no contact"])
-    return placed > 0, note
+    return _joint_note(placed, len(seats), reasons, "magnet", seats)
 
 
-def _apply_bridge(mans, i, j, pa, pb, cp: ConnectionParams, params: PrintParams) -> bool:
-    """Union a short cylinder spanning the gap — half grown from each object."""
+def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
+                  params: PrintParams) -> Tuple[bool, str]:
+    """Join two parts with clean flat-ended cylinders on the best contacts.
+
+    Same seat selection and same collar as the magnet joint, minus the pocket —
+    which is the point: the peg is now a true cylinder split on a shared plane,
+    rather than the capsule-with-round-ends grown off the raw nearest-point pair
+    that this used to be (that one landed at whatever angle the closest two
+    vertices implied, and its hemispherical cap left a bobble on the surface).
+    """
     r = _min_wall_radius(params, cp.connector_diameter_mm / 2.0)
-    mid = 0.5 * (pa + pb)
-    n = _unit(pb - pa)
-    ov = 0.3
-    a2 = _commit(mans[i], _manifold.capsule(pa, mid + n * ov, r), add=True)
-    b2 = _commit(mans[j], _manifold.capsule(pb, mid - n * ov, r), add=True)
-    if a2 is not None:
-        mans[i] = a2
-    if b2 is not None:
-        mans[j] = b2
-    return a2 is not None and b2 is not None
+    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp, r, r * 2.0)
+    embed = max(2.0 * r, 2.0)
+    placed, reasons = 0, []
+    for seat in seats:
+        # The peg must span the gap as well as bite into both bodies.
+        ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
+                              None, True, cp.path_clearance_mm)
+        if ok:
+            placed += 1
+        else:
+            reasons.append(why)
+    return _joint_note(placed, len(seats), reasons, "bridge", seats)
+
+
+#: Axis labels worth surfacing in the UI.  "mass" is the expected case, so it is
+#: left unsaid; the other two mean a fallback fired and are worth knowing about
+#: if a magnet still looks wrong.
+_AXIS_NOTE = {
+    "contact": "axis from contact line",
+    "mass-flat": "axis flattened along contact strip",
+}
+
+
+def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
+    """The (ok, human note) pair reported back to the UI for one interface."""
+    used = {s.axis_source for s in seats[:max(placed, 1)]}
+    extra = [_AXIS_NOTE[a] for a in sorted(used) if a in _AXIS_NOTE]
+    if placed and not reasons:
+        parts = ([f"{placed} {what}s"] if placed > 1 else []) + extra
+        return True, "; ".join(parts)
+    joined = "; ".join(sorted(set(reasons)) + extra)
+    if placed:
+        return True, f"placed {placed}/{attempted} — skipped: {joined}"
+    return False, f"no {what} placed — " + (joined or "no contact")
 
 
 def _rebuild_inflated(chain: Chain, params: PrintParams, amount_mm: float):
@@ -509,16 +909,18 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams):
     if cp.connect and not inflate:
         for i, j, pa, pb, gap in contacts:
             kind = _kind(chains[i], chains[j])
+            # Protein↔protein and DNA↔protein each get their own count; the
+            # bridge reuses the same counts, since it is now the same joint
+            # minus the magnet pocket.
+            n_joints = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
             if cp.use_magnets:
                 method = "magnet"
-                # Protein↔protein and DNA↔protein each get their own count.
-                n_mag = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
                 ok, note = _apply_magnet(
-                    mans, i, j, meshes[i], meshes[j], n_mag, cp, markers)
+                    mans, i, j, meshes[i], meshes[j], n_joints, cp, params, markers)
             else:
                 method = "bridge"
-                ok = _apply_bridge(mans, i, j, pa, pb, cp, params)
-                note = "" if ok else "skipped (would break watertightness)"
+                ok, note = _apply_bridge(
+                    mans, i, j, meshes[i], meshes[j], n_joints, cp, params)
             applied.append(Connection(
                 chains[i].chain_id, chains[j].chain_id, kind, method,
                 gap_mm=gap, applied=ok, note=note))

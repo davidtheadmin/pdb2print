@@ -13,14 +13,20 @@ import trimesh
 
 from .config import PrintParams, Representation
 from .chains import Chain
-from .representations import surface, tube_slab, cartoon
+from .representations import surface, tube_slab
 
 
 # representation -> builder callable(chain, params) -> trimesh.Trimesh
+#
+# CARTOON is deliberately *not* registered: the first implementation
+# (``representations/cartoon.py``) produced cylinder-helices and flat sheet
+# planks that did not read as a cartoon at print scale, so it is withdrawn
+# rather than shipped half-working.  The module is kept as the starting point
+# for a proper ChimeraX-style rework — see the TODO in NOTES.md.  Requesting it
+# now raises the "no builder registered" ValueError below.
 _BUILDERS = {
     Representation.SURFACE: surface.build,
     Representation.TUBE_SLAB: tube_slab.build,
-    Representation.CARTOON: cartoon.build,
 }
 
 
