@@ -1,0 +1,40 @@
+# Replace this line with your domain before starting Caddy.
+#
+# No domain yet? Use sslip.io, which resolves any hostname containing an IP to
+# that IP. If your server is 203.0.113.10, put this instead:
+#
+#     pdb2print.203-0-113-10.sslip.io
+#
+# It is a real hostname, so Caddy can still get a proper certificate for it, and
+# you can swap in your own domain later by editing this one line.
+pdb2print.example.com {
+	reverse_proxy app:7860 {
+		# Builds stream progress over Server-Sent Events. Without these the proxy
+		# buffers the stream and the progress bar sits at zero until the build
+		# finishes, which looks exactly like the app having hung.
+		flush_interval -1
+
+		# A large complex can take minutes. The default read timeout would cut
+		# the connection mid-build and the user would see a failure on a build
+		# that was working fine.
+		transport http {
+			read_timeout 30m
+		}
+	}
+
+	# Uploaded structures are small, but a generous cap avoids a confusing
+	# rejection on a big mmCIF.
+	request_body {
+		max_size 100MB
+	}
+
+	encode gzip
+
+	header {
+		# Standard hardening. No CSP here because the front end loads
+		# model-viewer from unpkg; add one only after checking it in a browser.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}

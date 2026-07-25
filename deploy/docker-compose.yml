@@ -1,0 +1,42 @@
+# Production deployment: the app behind Caddy, which handles HTTPS on its own.
+#
+#   cd /opt/pdb2print/deploy
+#   docker compose up -d --build
+#
+# Caddy fetches and renews a Let's Encrypt certificate automatically, so there
+# is no certbot step and nothing to remember in ninety days.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Not published to the host: only Caddy reaches it, over the internal
+    # network. Publishing 7860 as well would expose an unencrypted copy of the
+    # site on a port people scan for.
+    expose:
+      - "7860"
+    volumes:
+      # The build cache lives on the host, so it survives rebuilds and restarts.
+      - ./cache:/app/cache
+    environment:
+      # Cache fills with whatever people build. Set to 1 to make it read-only.
+      - PDB2PRINT_CACHE_RO=0
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data      # certificates — losing this means re-issuing them
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
