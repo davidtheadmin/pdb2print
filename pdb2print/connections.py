@@ -236,6 +236,95 @@ def _seat_solid(face, into, length, radius):
     """
     return _manifold.frustum(face, face + into * length, radius, radius)
 
+def _cap_exposure(blob, face, into, length, radius, skin: float = 0.2) -> float:
+    """Fraction of the socket's flat back face standing in open air.
+
+    Only the *back face* — the disc you look at edge-on when a cylinder is stuck
+    to an uneven surface and the surface has fallen away under part of it.  The
+    socket's side wall is a different thing and is deliberately not measured
+    here: a socket emerging from a bumpy surface always shows some wall, and that
+    reads as a socket, whereas a floating flat disc reads as a mistake.
+
+    Measured on a thin slice at the very end rather than on the face itself,
+    because a zero-thickness disc has no volume to compare; over a slice this
+    thin the volume fraction and the area fraction are the same number.
+    """
+    if blob is None:
+        return 1.0
+    thick = min(skin, max(length * 0.25, 1e-3))
+    disc = _seat_solid(face + into * max(length - thick, 0.0), into, thick, radius)
+    want = _manifold.volume(disc)
+    if want <= 1e-9:
+        return 0.0
+    try:
+        have = _manifold.volume(_manifold.intersection(blob, disc))
+    except Exception:
+        return 1.0
+    return float(max(0.0, min(1.0, 1.0 - have / want)))
+
+
+def _close_the_back(blob, face, into, depth, radius, cp: ConnectionParams):
+    """``(length multiplier, needs a cone)`` for one side of a joint.
+
+    Two remedies in the order they should be tried, and only when the back is
+    actually exposed — a socket already sitting in solid material is left exactly
+    as it was.
+
+    1. **Carry the walls further down.**  Lengthening the socket keeps the mating
+       face and the axis where they are and pushes only its back deeper, which on
+       a surface that falls away is often enough to reach material again.  The
+       shortest length that closes is taken, so a joint never grows more than it
+       must, and the search is bounded by ``socket_extend_max``.
+    2. **Cone the back.**  Where no length within that budget reaches anything,
+       there is nothing to close onto and a longer socket would only be a longer
+       floating cylinder.  The flat disc is replaced by a truncated cone instead
+       — see :func:`_collar_solid`.
+
+    Each probe is one boolean against the small local solid, not the chain, so
+    the whole search costs a handful of cheap intersections.
+    """
+    limit = max(0.0, float(cp.socket_cap_exposed_max))
+    if _cap_exposure(blob, face, into, depth, radius) <= limit:
+        return 1.0, False
+    for mult in (1.25, 1.5, 1.75, 2.0):
+        if mult - 1.0 > cp.socket_extend_max + 1e-9:
+            break
+        if _cap_exposure(blob, face, into, depth * mult, radius) <= limit:
+            return mult, False
+    return 1.0, bool(cp.socket_back_taper)
+
+
+def _collar_solid(face, into, length, radius, top_ratio: float = 0.0,
+                  nose_height: float = 0.0):
+    """The socket, with an optional cone built **onto** its flat back face.
+
+    Strictly additive: the cylinder keeps its full length and full radius, and
+    the cone is stacked on the far end.  Taking the taper *out* of the socket
+    instead — chamfering the back edge — is wrong twice over.  It removes the
+    material the joint is made of, and because the socket is only about a
+    millimetre and a half longer than the magnet pocket is deep, a chamfer of any
+    useful size starts biting before the bottom of the pocket: it thins the wall
+    around the magnet and then undercuts it, so the magnet ends up standing proud
+    of a socket that has been carved out from behind it.  Building on the back
+    cannot do that, because nothing is subtracted.
+
+    What it fixes is the flat disc you look at edge-on when a socket stands on a
+    surface that has fallen away beneath it.  Capping that disc with a cone
+    leaves only the cone's small flat top, whose area is ``top_ratio²`` of the
+    original — 5% at the default, which is the same fraction that was allowed to
+    show before any of this was triggered.
+    """
+    body = _seat_solid(face, into, length, radius)
+    if top_ratio <= 0.0 or top_ratio >= 1.0 or nose_height <= 1e-6:
+        return body
+    back = face + into * length
+    return _manifold.union([
+        body,
+        _manifold.frustum(back, back + into * nose_height,
+                          radius, radius * top_ratio),
+    ])
+
+
 def _pocket_tool(face, into, depth, radius, chamfer, shape: MagnetShape):
     """The magnet pocket cut into one part, mouth on the mating face.
 
@@ -293,6 +382,10 @@ class Seat:
     patch: np.ndarray = None      # the local contact midpoints (stage 1)
     fill: float = 0.0        # fraction of the needed seat volume that is solid
     embedding: float = 0.0   # fraction of the collar as built that is buried
+    extend_a: float = 1.0    # length multiplier that closes A's back face
+    extend_b: float = 1.0    # ...and B's
+    taper_a: bool = False    # A's back could not be closed — cone it instead
+    taper_b: bool = False    # ...and B's
     agreement: float = 1.0   # cos angle between chosen axis and nearest-point line
     blocked: int = 0         # surface points sitting in the assembly path
     axis_source: str = "contact"   # "overlap" | "mass" | "mass-flat" | "contact"
@@ -723,7 +816,11 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
     # then a second, wider cut is taken for the embedding only.  The mass probe
     # itself is deliberately *not* widened: it is kept modest so that a protein
     # wrapping a duplex cannot drag the local centre of mass around it.
-    collar_reach = float(np.hypot(need_depth, socket_r)) + 0.25
+    # Sized for the *longest* socket the back-face search may ask for, so a
+    # lengthened socket is still measured against material rather than against
+    # the edge of the ball it is being tested in.
+    collar_reach = float(np.hypot(need_depth * (1.0 + cp.socket_extend_max),
+                                  socket_r)) + 0.25
     scored: List[Seat] = []
     for seat in seats:
         # Optionally walk the seat off the rim and into the interior of its
@@ -766,6 +863,16 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
         seat.embedding = min(
             _embedding(emb_a, seat.center, -seat.axis, socket_r, need_depth),
             _embedding(emb_b, seat.center, seat.axis, socket_r, need_depth))
+
+        # Whether each side's flat back face is left hanging, and what to do
+        # about it.  Decided here because the small local solid is already cut;
+        # ``_build_seat`` only has the full chains, where the same probes would
+        # each be a full-size boolean.  Recorded as a *multiple* of the depth so
+        # it carries over to the bridge, which sizes its socket differently.
+        seat.extend_a, seat.taper_a = _close_the_back(
+            emb_a, seat.center, -seat.axis, need_depth, socket_r, cp)
+        seat.extend_b, seat.taper_b = _close_the_back(
+            emb_b, seat.center, seat.axis, need_depth, socket_r, cp)
 
         # Fill: how much of the plastic each side must supply is already there.
         # Measured from that side's own surface inward, not from the mid-plane —
@@ -848,7 +955,8 @@ def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
 
 def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 pocket: dict | None, socket_on: bool,
-                clearance: float = 0.3) -> Tuple[bool, str]:
+                clearance: float = 0.3, cap_limit: float = 0.0,
+                extend_max: float = 0.0) -> Tuple[bool, str]:
     """Build one joint at ``seat`` on both parts, or leave both untouched.
 
     This is the single geometry path behind both joint types, in three steps per
@@ -873,18 +981,36 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
     if not socket_on and pocket is None:
         return False, "socket disabled and no pocket to cut"
 
+    # Per side: how far the socket has to run to bury its own back face, and
+    # whether that back has to be coned instead.  Both were measured while the
+    # seat was scored; a flat top of this radius carries ``cap_limit`` of the
+    # disc's area, which is the same fraction that was allowed to show anyway.
+    reach = {i: seat.extend_a, j: seat.extend_b}
+    cone = {i: seat.taper_a, j: seat.taper_b}
+    top_ratio = float(np.sqrt(cap_limit)) if cap_limit > 0.0 else 0.0
+    # A 45° cone is the natural shape and needs no arbitrary constant — its
+    # height is just how far the radius has to come in.  Held inside the same
+    # extension budget the lengthening step was allowed, so the socket cannot
+    # reach further than it was ever permitted to.
+    nose_height = (min(socket_r * (1.0 - top_ratio), embed * extend_max)
+                   if top_ratio > 0.0 else 0.0)
+
     for grow in (1.0, 1.6, 2.4):
-        length = embed * grow
         # -1 drives into part A (the axis points A→B), +1 into part B.
         halves, ok = {}, True
         for idx, sign in ((i, -1.0), (j, +1.0)):
+            length = embed * grow * reach[idx]
             man = mans[idx]
             into = seat.axis * sign
             # 1. Clear this part's material out of the other's approach path.
             #    Starts a hair past the face so the collar's own flat end (which
-            #    lies exactly on it) is never shaved by this cut.
+            #    lies exactly on it) is never shaved by this cut.  Sized from the
+            #    nominal depth, not the lengthened one: how far this part's
+            #    overhang has to be cut back is a fact about the *other* part's
+            #    approach and has nothing to do with how deep our own socket
+            #    happens to run.
             path = _seat_solid(seat.center - into * 0.002, -into,
-                               length + seat.gap + 1.0, socket_r + clearance)
+                               embed * grow + seat.gap + 1.0, socket_r + clearance)
             cleared = _commit(man, path, add=False)
             if cleared is None:
                 # Cutting the overhang would sever the part — this seat is not
@@ -893,8 +1019,20 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 break
             man = cleared
             if socket_on:
-                man = _commit(man, _seat_solid(seat.center, into, length, socket_r),
-                              add=True)
+                # Cone the back only where the search could not close it, and
+                # never at the cost of the joint: if the coned socket will not
+                # commit, the plain one is tried before the seat is abandoned, so
+                # the worst case is exactly the old geometry.
+                nose = top_ratio if cone[idx] else 0.0
+                grown = None
+                if nose > 0.0:
+                    grown = _commit(man, _collar_solid(seat.center, into, length,
+                                                       socket_r, nose, nose_height),
+                                    add=True)
+                if grown is None:
+                    grown = _commit(man, _seat_solid(seat.center, into, length,
+                                                     socket_r), add=True)
+                man = grown
                 if man is None:
                     ok = False
                     break
@@ -949,7 +1087,8 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                            f"(turn the socket on to bridge it)")
             continue
         ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
-                              cp.socket, cp.path_clearance_mm)
+                              cp.socket, cp.path_clearance_mm,
+                              cp.socket_cap_exposed_max, cp.socket_extend_max)
         if not ok:
             reasons.append(why)
             continue
@@ -987,7 +1126,8 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     for seat in seats:
         # The peg must span the gap as well as bite into both bodies.
         ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
-                              None, True, cp.path_clearance_mm)
+                              None, True, cp.path_clearance_mm,
+                              cp.socket_cap_exposed_max, cp.socket_extend_max)
         if ok:
             placed += 1
         else:
