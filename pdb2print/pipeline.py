@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from . import io, chains as chains_mod, geometry, meshops, connections
-from .config import PrintParams
+from .config import PrintParams, InterferenceRule
 from .export import BuiltChain
 
 
@@ -77,6 +77,11 @@ def build_all(source: str, params: PrintParams,
         except Exception as exc:  # keep going; report the bad chain
             out.warnings.append(f"Skipped {chain.label()}: {exc}")
             continue
+        # Builders record any parameter they had to clamp to stay meshable
+        # (probe radius / grid spacing) so the user hears about it.
+        for note in mesh.metadata.get("notes", ()):
+            if note not in out.warnings:
+                out.warnings.append(note)
         out.built.append((chain, mesh))
         if not mesh.is_watertight:
             not_watertight.append(chain.label())
@@ -96,13 +101,25 @@ def build_all(source: str, params: PrintParams,
         raise ValueError("Every chain failed to mesh. See warnings.\n"
                          + "\n".join(out.warnings))
 
-    # Connector / joinery pass (behind params): modifies the per-chain meshes so
-    # chosen pairs are fused / pocketed / pegged, keeping each object watertight.
-    if params.connections.enabled():
-        report(0.9, "Connecting objects…")
+    # Fit + connector pass.  This runs whenever *either* is wanted: even with no
+    # connectors at all, chains meshed independently interpenetrate at every
+    # binding interface, and two objects that simply get printed and handed over
+    # still have to fit together.
+    needs_fit = params.resolve_interference != InterferenceRule.NONE
+    if params.connections.enabled() or needs_fit:
+        report(0.9, "Fitting and connecting objects…"
+               if params.connections.enabled() else "Fitting objects together…")
         try:
-            out.built, out.connections, out.connection_markers = \
-                connections.apply(out.built, params)
+            # The pass is the slowest part of a large complex, so its own
+            # progress is forwarded rather than leaving the bar parked at 0.9 —
+            # otherwise a build that is working and a build that is stuck are
+            # indistinguishable, which is exactly how it looked on a five-chain
+            # structure.
+            out.built, out.connections, out.connection_markers, fit_notes = \
+                connections.apply(
+                    out.built, params,
+                    progress=lambda f, m: report(0.90 + 0.06 * f, m))
+            out.warnings.extend(fit_notes)
         except Exception as exc:  # never let the connector pass sink a good build
             out.warnings.append(f"Connections skipped: {exc}")
         # Re-gate: a connector must never break watertightness.

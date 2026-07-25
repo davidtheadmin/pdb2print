@@ -121,12 +121,19 @@ def intersection(a: Manifold, b: Manifold) -> Manifold:
 def volume(manifold: Manifold) -> float:
     """Enclosed volume of a manifold, or 0.0 if it is empty.
 
-    Measured on the converted mesh: ``Manifold``'s own volume accessor has been
-    a property in some releases and a method in others, and this is only ever
-    called on small probe primitives where the conversion is free.
+    Prefers the kernel's own accessor, which has been a property in some
+    ``manifold3d`` releases and a method in others — hence the probe rather than
+    a straight call.  The mesh conversion is kept only as a fallback: it is
+    perfectly accurate but it materialises the whole mesh to measure it, which is
+    wasted work on anything bigger than a probe primitive.
     """
     if manifold is None or manifold.is_empty():
         return 0.0
+    try:
+        v = manifold.volume
+        return float(abs(v() if callable(v) else v))
+    except Exception:
+        pass
     try:
         return float(abs(to_trimesh(manifold).volume))
     except Exception:

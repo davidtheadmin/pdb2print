@@ -4,6 +4,155 @@ Context for a fresh session. Covers architecture, the geometry pipeline as it
 actually works today, the bugs fixed so far, and known limitations that are
 *inherent to the approach* (not bugs). See `README.md` for user-facing docs.
 
+## v4 — parts that actually fit (this session)
+
+Three symptoms turned out to be one root cause: **nothing in the pipeline had a
+signed notion of inside/outside between two chains.**
+
+- **Chains meshed independently interpenetrate.** Each chain's surface is built
+  from its own atoms as if the others were not there, so at a binding interface
+  both solids claim the same volume. Correct as a picture, impossible as parts.
+- **Magnets never landed on the overlap.** `_candidate_seats` ranked candidates
+  on an *unsigned* nearest-vertex distance. For a vertex of A buried inside B,
+  the nearest vertex *of B* is out on B's surface, so that distance equals the
+  penetration depth — a millimetre or two — and the deepest, meatiest part of
+  the interface scored as "far away". The smallest distance instead landed on
+  the rim where the surfaces cross, the thinnest part of the joint.
+- **One magnet came out tilted.** Same cause. The contact direction `B - A`
+  reverses across that rim, so the seed axis could be tilted or inverted — and
+  since every better-founded axis is vetoed for disagreeing with the seed
+  (`axis_agreement_min`), one bad seed forced the fallback.
+
+**`pdb2print/interference.py`** (new) resolves interpenetration with booleans
+before anything else runs, and runs whether or not connectors are on — two
+objects that are merely printed and handed over still have to fit. Rule
+`AUTO`: nucleic keeps its true shape and the protein is carved (a socket that
+is an exact negative of the duplex, like a mould); between two chains of the
+same type the larger keeps its shape. `SYMMETRIC` has both retreat; `NONE` is
+diagnostics only. Clearance comes from growing the keeper first — by a union of
+14 translated copies, because a true `minkowski_sum` takes ~28 s on a
+protein-sized mesh versus ~0.1 s for this. The carve is confined to boxes around
+the interference lobes (merged, max 4) with a 3 mm margin: a full-length
+subtraction against two parallel molecular surfaces is the pathological case for
+a boolean kernel and cost seconds per pair.
+
+Magnet seats are then taken from the overlap lobes: **position** from the local
+contact between the carved solids (so the seat lands on the real mating face),
+**direction** from the lobe's thin principal axis. An interference lobe is a
+lens — broad across the interface, thin through it — so its smallest principal
+direction *is* the interface normal, averaged over the whole patch instead of
+read off one vertex pair. That axis is trusted and not put through the veto.
+
+**The probe radius was the wrong lever, and is now bounded.** The SES field is
+`EDT(atoms grown by p) − p`; on a convex patch those cancel exactly, leaving a
+surface at `vdW + padding` regardless of `p`. An interface is convex-facing on
+both sides, so **lowering the probe radius cannot reduce interpenetration** — it
+only carves into concave pockets. What it does control is connectivity: two
+atoms stay joined only while their grown balls overlap (`D < r1 + r2 + 2p`).
+Measured on 1UBQ at 1.5 mm/Å, 0.5 mm grid — raw marching-cubes bodies, and the
+volume `repair` then discards:
+
+    probe   bodies   watertight   volume lost
+     1.0       9        no           2.1 %
+     1.2       6        yes          0.7 %
+     1.4       2        yes          0.1 %
+     1.5       1        yes          0.0 %
+
+1.0 Å is exactly the setting that was destabilising builds. The floor is now
+1.4 Å (the water probe), max 2.0, enforced in `config.resolve_surface_grid` and
+in the slider. Note the grid spacing is *not* the mechanism — 1.4 Å stayed
+watertight down to a 0.93-voxel erosion band while 1.0 Å failed at 3.0 — so grid
+auto-refinement is deliberately mild and only catches the sub-one-voxel case.
+
+Two latent bugs surfaced once multi-body chains became reachable (a carve may
+legitimately split a loop the DNA threads through):
+
+- `connections._commit` demanded exactly one body, which would have rejected
+  *every* boolean on such a chain and silently dropped all its connectors. Now
+  it checks the count did not increase.
+- `meshops.repair` sent watertight multi-body meshes through `merge_vertices`,
+  which pinched them into non-manifolds — watertight in, not watertight out,
+  tripping the export gate. The fast path now covers any watertight mesh and
+  speck-dropping is split/concatenate only.
+
+**The socket collar was left alone, deliberately.** Three attempts were made at
+the cosmetic complaint that a flat-ended collar shows its end cap as a flat spot
+where it only half-sinks into a curved surface. All three were reverted:
+
+1. **Rounded end + "skirt".** A hemisphere of the *collar's* radius is a ball
+   wider than a DNA backbone tube — it replaced one eyesore with a bigger one —
+   and the skirt (sweep a wall down, intersect with the offset body) became the
+   slowest thing in the pass.
+2. **Long taper.** Better, but the cone was too long and read as a nose cone
+   stuck on the back of the joint.
+3. **Short steep chamfer + measured depth.** Fixed the poking-through, but the
+   steeper angle looked worse again, and the depth measurement changed which
+   seats succeeded — placement and orientation regressed against a version that
+   was already good.
+
+`_seat_solid` and `_build_seat` are now byte-identical to the pre-v4 versions.
+If this is revisited: the cosmetic problem is real but minor, the geometry is
+entangled with seat selection (changing collar depth changes which seats pass
+`_commit`, hence where magnets land), and the underlying issue on nucleic chains
+is not shape at all — a socket sized for a 4 mm magnet is ~3x wider than a
+default 1.2 mm-radius backbone, so *any* collar there is a boss standing proud.
+Shrinking `connector_diameter_mm` or raising `nucleic_radius_mm` is the real fix.
+Do not touch this to chase looks without a way to check placement did not move.
+
+**Known limitation.** Connectors are added *after* the fit pass, so a collar
+driven through a thin backbone into a neighbour can reintroduce interference. A
+closing sweep removes what it can without cutting a part in two;
+`interference.audit` names anything that survives in the build warnings rather
+than shipping parts that quietly will not close. Trimming each collar against
+its neighbours at build time was tried and reverted — it cost more than the
+entire rest of the pass, because every retry redoes the clip.
+
+**Performance on a real complex (1TUP: 3 x p53 core + DNA duplex, 5 chains).**
+First run of the fit pass took 24-33 s. Profiling, rather than guessing, found
+it in one place: `interference.dilate` was unioning **fourteen** translated
+copies of a large mesh to achieve a 0.15 mm offset — 8.2 s of a 24 s build
+across 70 calls. Cut to the six axis directions (worst-case offset 0.58x
+nominal, so the request is scaled by 1.25 to put the spread either side of
+nominal): at the default clearance that is 0.11-0.19 mm, which is well inside
+what an FDM mating surface cares about.
+
+Second, all the collar probes — `_end_is_buried`, `_collar_skirt` — were asking
+local questions of the *whole chain*. On a 230k-triangle protein that is ~16 ms
+per query against the full solid versus ~3 ms against a local clip, and the clip
+itself costs 0.1 ms. `_near` clips once per seat and the search runs against
+that; only the final commit touches the full solid. Together: 33 s -> 15.5 s
+with byte-identical output. Whole 1TUP build, everything switched on
+(magnets 2/1 + base pairs), is ~30 s end to end, all watertight, zero residual
+overlap.
+
+Two things worth remembering here. `manifold3d` is **lazy** — booleans build a
+DAG and evaluate when something forces it — so cProfile attributes the work to
+whatever call triggers evaluation, not to the operation that queued it. Read the
+totals, not the per-function attribution. And the guesses that felt obvious were
+both wrong: `_merge_boxes` (suspected O(n^3)) is microseconds, and overlap
+detection on 1TUP is 0.00 s per pair — the DNA does not interpenetrate the
+protein there at all.
+
+**Progress reporting.** `connections.apply` now takes a `progress` callback and
+reports per interface, forwarded by `build_all` into the 0.90-0.96 band. Before
+this the bar parked at "Fitting and connecting objects..." for the entire pass,
+so a build that was working and a build that was stuck were indistinguishable —
+which is exactly how a slow 1TUP run was first reported. The phase names are
+also the first diagnostic now: stalling at "Connecting X <-> Y" is boolean work
+on that interface, whereas stalling at "Rebuilding meshes..." means
+`meshops.repair` fell off its fast path into the heavy pymeshlab route (note
+pymeshlab is *not* installed in the dev sandbox, so that path is invisible there
+and will only ever show up on a real install).
+
+**Cost.** The fit pass roughly doubles the connector pass on a heavily
+interpenetrating structure (~2 s → ~6 s on the test fixture). Test fixture
+`tests/data/overlap_complex.pdb` is synthetic: 1BNA plus two copies of a
+34-residue ubiquitin lobe dropped onto the duplex, to force deep protein–DNA and
+protein–protein interference.
+
+**Not yet done.** 1TUP has not been run end-to-end — the sandbox cannot reach
+RCSB. Still outstanding from v3: slice in PrusaSlicer at real INDX print scale.
+
 ## v2 — connectors + UX (this session)
 
 Four features from `docs/FEATURE_BRIEF_connectors_and_ux.md` Part 2, built by

@@ -1,11 +1,27 @@
-"""Post-build connector / joinery pass (simplified).
+"""Post-build fit + connector / joinery pass.
 
 The per-chain meshes come out of the geometry core as separate watertight
 solids, one colour each.  This pass *modifies those solids* — with the same
-``manifold3d`` kernel the representations use — so chosen chains are joined for
-printing, while **every object stays watertight and a single connected body**.
-The 3MF export is unchanged: still individual coloured objects, only now
-touching, bulged together, or pocketed for magnets.
+``manifold3d`` kernel the representations use — so that they **fit together**,
+and so that chosen chains are joined for printing, while every object stays
+watertight.  The 3MF export is unchanged: still individual coloured objects,
+only now disjoint, touching, bulged together, or pocketed for magnets.
+
+**Fit comes first.**  Every chain is meshed from its own atoms alone, so at a
+binding interface both solids claim the same volume — right as a picture,
+impossible as a set of parts.  :mod:`pdb2print.interference` carves them apart
+before anything else runs (see that module for why the probe radius cannot do
+this job, and why it should not be asked to).  It runs even with connectors
+switched off: two objects that are simply printed and handed over still have to
+fit.  It also runs first because the joint search depends on it — the volume
+that had to be carved away is exactly where a magnet belongs, and until the
+parts are disjoint the distances the search measures do not mean what they look
+like.
+
+Note that "watertight" no longer implies "one body".  A chain can legitimately
+end up in several pieces — a protein loop that a DNA duplex genuinely threads
+through has to come apart somewhere — so the booleans check that a step does not
+*increase* the piece count rather than insisting on exactly one.
 
 Two independent switches (see :class:`~pdb2print.config.ConnectionParams`):
 
@@ -49,10 +65,15 @@ accept it.
   bases are joined by thin bond-like spokes.
 
 **Watertight guarantee.** Every boolean goes through :func:`_commit`, which
-accepts the result only if it is still a single connected body — so a pocket
-that would blow through a thin backbone is skipped (min-wall honoured) rather
-than shipping a broken object.  The pipeline re-gates watertightness after the
-pass.
+accepts the result only if it did not shatter the object — so a pocket that
+would blow through a thin backbone is skipped (min-wall honoured) rather than
+shipping a broken object.  The pipeline re-gates watertightness after the pass.
+
+**Fit guarantee.** Exact where it can be: after the fit pass no two chains share
+any volume.  Connectors are added afterwards and can reintroduce a little — a
+closing sweep removes what it can without cutting a part in two, and
+:func:`interference.audit` reports by name anything that survives, rather than
+shipping parts that quietly will not close.
 """
 
 from __future__ import annotations
@@ -65,10 +86,11 @@ from scipy.spatial import cKDTree
 
 from .config import (
     PrintParams, ConnectionParams, NoMagnetMethod, MagnetShape,
-    MoleculeType, BaseStyle,
+    MoleculeType, BaseStyle, InterferenceRule,
 )
 from .chains import Chain
 from .representations import _manifold, tube_slab
+from . import interference
 
 
 # Cap the vertex clouds used for nearest-point detection so big surface meshes
@@ -156,18 +178,31 @@ def _components(man) -> int:
 
 
 def _commit(man, tool, add: bool):
-    """Apply ``man ± tool`` and accept it only if the result is one solid body.
+    """Apply ``man ± tool`` and accept it only if the boolean did not shatter it.
 
     Returns the new manifold on success, or ``None`` if the boolean emptied the
-    object or split it into more than one piece (e.g. a pocket that would blow
-    through a thin wall).  This is what keeps every object watertight and honours
-    minimum wall — a bad connector is skipped, never shipped.
+    object or broke it into *more* pieces than it started with (e.g. a pocket
+    that would blow through a thin wall).  This is what keeps every object
+    watertight and honours minimum wall — a bad connector is skipped, never
+    shipped.
+
+    The test is "no more pieces than before", not "exactly one piece".  A chain
+    can legitimately arrive here in several pieces — the interference pass may
+    have had to cut a loop that a DNA duplex genuinely threads through — and an
+    absolute one-body rule would then reject *every* subsequent boolean and
+    silently drop all its connectors.
     """
     try:
         out = (man + tool) if add else _manifold.difference(man, tool)
     except Exception:
         return None
-    if out.is_empty() or _components(out) != 1:
+    if out.is_empty():
+        return None
+    # ``decompose`` is expensive on a full-size chain and this runs several times
+    # per seat, so the input is only decomposed when the *result* is already in
+    # more than one piece — a single-body result can never be a regression.
+    after = _components(out)
+    if after > 1 and after > _components(man):
         return None
     return out
 
@@ -185,6 +220,12 @@ _MIN_MAGNET_FOOTPRINT = 3
 #: magnet on a spike that the collar would have to build out of thin air.
 _MIN_SEAT_FILL = 0.35
 
+#: Below this fraction of the collar being buried, the joint will visibly stand
+#: off the surface and the user is told so.  Not a rejection: a proud joint still
+#: prints and still holds, it just looks stuck on rather than built in, and on a
+#: genuinely small contact patch there may be nowhere better to put it.
+_MIN_SEAT_EMBEDDING = 0.5
+
 
 def _seat_solid(face, into, length, radius):
     """A flat-ended cylinder from the mating face ``length`` deep into a part.
@@ -194,7 +235,6 @@ def _seat_solid(face, into, length, radius):
     one of these against the same plane, which is what makes them meet flush.
     """
     return _manifold.frustum(face, face + into * length, radius, radius)
-
 
 def _pocket_tool(face, into, depth, radius, chamfer, shape: MagnetShape):
     """The magnet pocket cut into one part, mouth on the mating face.
@@ -252,10 +292,17 @@ class Seat:
     footprint: int           # supporting contacts under the disc (stage 1)
     patch: np.ndarray = None      # the local contact midpoints (stage 1)
     fill: float = 0.0        # fraction of the needed seat volume that is solid
+    embedding: float = 0.0   # fraction of the collar as built that is buried
     agreement: float = 1.0   # cos angle between chosen axis and nearest-point line
     blocked: int = 0         # surface points sitting in the assembly path
-    axis_source: str = "contact"   # "mass" | "mass-flat" | "contact"
+    axis_source: str = "contact"   # "overlap" | "mass" | "mass-flat" | "contact"
+    edge_offset: float = 0.0 # lateral lopsidedness of the patch (mm); 0 = interior
     score: float = 0.0
+    #: mm³ of interpenetration this seat was derived from (0 for point-cloud
+    #: seats).  A joint that sits where the two parts *were* fighting for the
+    #: same space is the natural one: there is guaranteed material on both sides
+    #: and the interface normal is well determined.
+    overlap_volume: float = 0.0
 
 
 def _patch_long_axis(points: np.ndarray):
@@ -278,6 +325,48 @@ def _patch_long_axis(points: np.ndarray):
     if len(s) < 2 or s[1] < 1e-9:
         return (_unit(vh[0]), np.inf) if len(s) else (None, 1.0)
     return _unit(vh[0]), float(s[0] / s[1])
+
+
+def _edge_offset(patch, center, axis) -> float:
+    """Lateral lopsidedness of a contact patch around a seat centre (mm).
+
+    Projects the patch into the plane perpendicular to ``axis`` and returns how
+    far the patch's centroid sits from the seat centre *in that plane*.  A seat
+    ringed by contact on every side returns ~0; a seat on the rim of an
+    interface, whose support is all to one side, returns a value approaching the
+    socket radius — the far side of its collar is overhanging open air.  This is
+    the cheap "is the socket on the edge" probe; the score turns it into a
+    preference for the interior spot that usually sits a little further in.
+    """
+    if patch is None or len(patch) < 3:
+        return 0.0
+    n = _unit(axis)
+    rel = np.asarray(patch, float) - center
+    perp = rel - np.outer(rel @ n, n)
+    return float(np.linalg.norm(perp.mean(axis=0)))
+
+
+def _recenter_into_patch(seat: "Seat", frac: float, max_shift: float) -> None:
+    """Slide a seat toward the interior of its contact patch, in the mating plane.
+
+    The physical companion to the edge penalty: where the whole shortlist sits on
+    the rim (a narrow interface, so there is no better candidate to prefer), walk
+    the socket inward instead.  The shift is ``frac`` of the measured rim offset,
+    taken purely in the plane perpendicular to the axis — never along it, so the
+    two flat faces still land on the shared mid-plane — and capped at
+    ``max_shift`` so a badly lopsided patch cannot fling the seat off the contact.
+    Mutates ``seat.center`` in place; a no-op when ``frac`` is zero.
+    """
+    if frac <= 0.0 or seat.patch is None or len(seat.patch) < 3:
+        return
+    n = _unit(seat.axis)
+    rel = np.asarray(seat.patch, float) - seat.center
+    perp = rel - np.outer(rel @ n, n)
+    shift = perp.mean(axis=0) * float(frac)
+    d = float(np.linalg.norm(shift))
+    if d > max_shift > 0.0:
+        shift = shift * (max_shift / d)
+    seat.center = seat.center + shift
 
 
 def _path_census(pa, pb, center, axis, radius, length):
@@ -349,9 +438,19 @@ def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams):
 #: what fixes the merely *tilted* (as opposed to 90°-wrong) magnets.
 _AXIS_PREFERENCE = {"mass-flat": 0.6, "mass": 0.3, "contact": 0.0}
 
+#: How *clean* the joint axis from each source is, for seat ranking (not axis
+#: selection).  An overlap lobe's thin axis and the local mass line are true
+#: interface normals, so the disc sits square and the joint reads clean;
+#: ``mass-flat`` is a good recovery but only fires on an awkward strip; the plain
+#: ``contact`` line is the noisy fallback and a seat that can only reach its axis
+#: that way is the one that ends up looking tilted.  Scaled by
+#: ``axis_quality_weight`` so a nearby seat with a better-founded normal can win.
+_AXIS_QUALITY = {"overlap": 1.0, "mass": 0.9, "mass-flat": 0.7, "contact": 0.3}
+
 
 def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
-                 radius: float, length: float):
+                 radius: float, length: float,
+                 blob_a=None, blob_b=None, socket_r: float = None):
     """Pick the axis the joint can actually be assembled along.
 
     Every candidate is put through the same physical test: how much material
@@ -361,6 +460,16 @@ def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
     heavily blocked and loses — which is what makes this robust to the centroid
     sliding.  Candidates more than ``axis_agreement_min`` away from the plain
     contact line are rejected outright as wrap artefacts.
+
+    The census alone cannot see the thing that actually looks wrong, though.  It
+    counts *surface points* that are in the way or behind the face, which answers
+    "can these come apart" but says nothing about how deeply the collar ends up
+    buried — so an axis that leaves half the socket standing in open air scores
+    just as well as one that sinks it into the body, as long as few points
+    obstruct it.  Each candidate is therefore also measured for embedding
+    (:func:`_embedding`) against the local solids, and the tilt that buries the
+    joint wins.  With ``blob_a``/``blob_b`` omitted this term is simply absent and
+    the behaviour is the older census-only one.
     """
     best = None
     for label, axis in _axis_options(seat, cen_a, cen_b, cp):
@@ -369,6 +478,10 @@ def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
             continue
         blocked, seated = _path_census(pa, pb, seat.center, axis, radius, length)
         score = seated - cp.axis_blocked_weight * blocked + _AXIS_PREFERENCE[label]
+        if socket_r is not None and cp.axis_embedding_weight > 0.0:
+            buried = min(_embedding(blob_a, seat.center, -axis, socket_r, length),
+                         _embedding(blob_b, seat.center, axis, socket_r, length))
+            score += cp.axis_embedding_weight * buried
         if best is None or score > best[0]:
             best = (score, label, axis, agreement, blocked)
     if best is None:                       # every candidate rejected
@@ -378,18 +491,62 @@ def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
     return axis, label, agreement, blocked
 
 
-def _local_mass(man, center, radius):
-    """``(volume, centroid)`` of one part's material inside a ball at ``center``.
+def _local_solid(man, center, radius):
+    """One part's material inside a ball at ``center``, or ``None``.
+
+    Cut once per seat and then reused: every later question about this seat — how
+    much material is here, where its centre of mass is, how deeply a collar on
+    any candidate axis would bury itself — is answerable from this small solid,
+    and asking them of the full chain instead would mean a full-size boolean
+    apiece.  The ball must be big enough to contain whatever is measured against
+    it, or material simply outside the ball reads as material that is not there.
+    """
+    try:
+        blob = _manifold.intersection(man, _manifold.sphere(center, radius))
+        return None if blob.is_empty() else blob
+    except Exception:
+        return None
+
+
+def _embedding(blob, center, into, radius, length) -> float:
+    """How much of the collar this side would build is already inside the part.
+
+    1.0 means the socket is entirely buried in existing material and only the
+    mating disc shows; 0.0 means it would be built out of thin air and stand
+    proud of the surface.  This is the direct measure of the thing that looks
+    wrong on a finished model — a magnet or its collar sticking out — and unlike
+    ``fill`` it is taken on the collar *as built*: from the shared mid-plane,
+    so the stub spanning the half-gap counts against it, because that stub is
+    exactly the part with nothing behind it.
+
+    ``blob`` must contain the collar; the caller sizes it to guarantee that, so
+    intersecting against the blob gives the same answer as against the whole
+    chain for a fraction of the cost.
+    """
+    if blob is None:
+        return 0.0
+    collar = _seat_solid(center, into, length, radius)
+    want = _manifold.volume(collar)
+    if want <= 1e-9:
+        return 0.0
+    try:
+        have = _manifold.volume(_manifold.intersection(blob, collar))
+    except Exception:
+        return 0.0
+    return float(max(0.0, min(1.0, have / want)))
+
+
+def _local_mass(blob, center):
+    """``(volume, centroid)`` of the lobe of ``blob`` the contact sits on.
 
     This is the "how much meat is there" probe.  Only the component the contact
     actually sits on is used: a ball straddling an interface can also clip an
     unrelated lobe of the same chain, and averaging that in would drag the
     centroid sideways.  Returns ``(0.0, None)`` if the part has nothing here.
     """
+    if blob is None:
+        return 0.0, None
     try:
-        blob = _manifold.intersection(man, _manifold.sphere(center, radius))
-        if blob.is_empty():
-            return 0.0, None
         pieces = blob.decompose() or [blob]
         best, best_d = None, np.inf
         for piece in pieces:
@@ -456,6 +613,83 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
     return seats, pa, pb
 
 
+def _overlap_seats(overlap, mesh_a, mesh_b, socket_r: float) -> List[Seat]:
+    """Seats derived from where the two parts *were* interpenetrating.
+
+    These are the joint positions the old point-cloud search could never find,
+    and the reason is worth stating: it ranked candidates on an **unsigned**
+    nearest-vertex distance.  For a vertex of A buried deep inside B the nearest
+    vertex *of B* is out on B's surface, so that distance equals the penetration
+    depth — a millimetre or two — and the search read the deepest, meatiest part
+    of the interface as "far away".  The smallest distance instead landed on the
+    rim where the two surfaces cross, which is the thinnest part of the joint.
+    Worse, the contact direction ``B - A`` reverses across that rim, so the seed
+    axis could come out tilted or inverted — and since every other candidate
+    axis is vetoed for disagreeing with it, one bad seed forced the fallback and
+    produced exactly the tilted magnet.
+
+    The interference pass has already carved these regions apart, so here we
+    take the two things each source is actually good for:
+
+    * **position** from the local contact between the *carved* solids, which now
+      genuinely touch, so the seat lands on the real mating face;
+    * **direction** from the overlap lobe's thin principal axis.  An
+      interference lobe is a lens — broad across the interface, thin through it
+      — so its smallest principal direction *is* the interface normal, averaged
+      over the whole patch instead of read off one vertex pair.
+    """
+    if overlap is None or not overlap.pieces:
+        return []
+    pa = _probe_points(mesh_a)
+    pb = _probe_points(mesh_b)
+    tree_a, tree_b = cKDTree(pa), cKDTree(pb)
+    reach = socket_r + 2.5
+
+    seats: List[Seat] = []
+    for piece in overlap.pieces:
+        ia = np.asarray(tree_a.query_ball_point(piece.center, reach), dtype=int)
+        ib = np.asarray(tree_b.query_ball_point(piece.center, reach), dtype=int)
+        if len(ia) == 0 or len(ib) == 0:
+            continue
+        local_a, local_b = pa[ia], pb[ib]
+
+        # Position: closest approach of the two carved surfaces near this lobe.
+        dist, near = cKDTree(local_b).query(local_a, k=1)
+        k = int(np.argmin(dist))
+        point_a, point_b = local_a[k], local_b[near[k]]
+        center = 0.5 * (point_a + point_b)
+        gap = float(dist[k])
+
+        # Direction: the lobe's thin axis, signed from A's material into B's.
+        axis = piece.normal
+        if axis is None:
+            axis = _unit(point_b - point_a)
+        else:
+            lead = local_b.mean(axis=0) - local_a.mean(axis=0)
+            sign = float(np.dot(axis, lead))
+            if abs(sign) < 1e-9:
+                sign = float(np.dot(axis, point_b - point_a))
+            axis = _unit(axis * (1.0 if sign >= 0.0 else -1.0))
+
+        patch = np.vstack([local_a, local_b])
+        foot = int((np.linalg.norm(local_a - center, axis=1) <= socket_r).sum())
+        seats.append(Seat(center=center, axis=axis, gap=gap, footprint=foot,
+                          patch=patch, axis_source="overlap",
+                          overlap_volume=float(piece.volume)))
+
+    # Two sockets must not intersect, so thin the list to well-separated lobes,
+    # biggest first — lobe volume is a direct measure of how much material the
+    # joint has to work with.
+    seats.sort(key=lambda s: -s.overlap_volume)
+    kept: List[Seat] = []
+    for seat in seats:
+        if any(np.linalg.norm(seat.center - k.center) < 2.0 * socket_r + 1.0
+               for k in kept):
+            continue
+        kept.append(seat)
+    return kept
+
+
 def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
                  socket_r: float, need_depth: float) -> List[Seat]:
     """Stage 2 — re-orient and rank each candidate against the real solids.
@@ -481,18 +715,57 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
     is dropped, because the collar would otherwise be built out of thin air.
     """
     probe_r = max(socket_r * cp.mass_probe_scale, socket_r + 1.0)
+    # The embedding test intersects the collar with the local solid, so that
+    # solid has to *contain* the collar — anything outside the ball would read as
+    # missing material and score a perfectly buried socket as proud.  With the
+    # stock proportions the mass probe is already wide enough and the same solid
+    # serves both; a deep magnet in a thin wall is the case where it is not, and
+    # then a second, wider cut is taken for the embedding only.  The mass probe
+    # itself is deliberately *not* widened: it is kept modest so that a protein
+    # wrapping a duplex cannot drag the local centre of mass around it.
+    collar_reach = float(np.hypot(need_depth, socket_r)) + 0.25
     scored: List[Seat] = []
     for seat in seats:
-        vol_a, cen_a = _local_mass(man_a, seat.center, probe_r)
-        vol_b, cen_b = _local_mass(man_b, seat.center, probe_r)
+        # Optionally walk the seat off the rim and into the interior of its
+        # contact patch *before* it is measured, so the axis, fill and edge
+        # offset are all read at the position the joint will actually be built
+        # at.  Off (frac 0) unless the user turns it on.
+        _recenter_into_patch(seat, cp.seat_recenter_frac, socket_r)
+
+        blob_a = _local_solid(man_a, seat.center, probe_r)
+        blob_b = _local_solid(man_b, seat.center, probe_r)
+        vol_a, cen_a = _local_mass(blob_a, seat.center)
+        vol_b, cen_b = _local_mass(blob_b, seat.center)
         if vol_a <= 0.0 or vol_b <= 0.0:
             continue
+        if collar_reach <= probe_r:
+            emb_a, emb_b = blob_a, blob_b
+        else:
+            emb_a = _local_solid(man_a, seat.center, collar_reach)
+            emb_b = _local_solid(man_b, seat.center, collar_reach)
 
-        axis, source, agreement, blocked = _choose_axis(
-            seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
-            need_depth)
-        seat.axis, seat.axis_source = axis, source
-        seat.agreement, seat.blocked = agreement, blocked
+        if seat.axis_source == "overlap":
+            # The lobe's thin axis is measured over the whole interference patch
+            # and is already the interface normal, so it is not put through the
+            # candidate search — and above all it is not judged against the
+            # nearest-point line, which is the noisy quantity the search exists
+            # to escape.  Only the path census is still wanted, for the score.
+            seat.blocked, _seated = _path_census(
+                pa, pb, seat.center, seat.axis,
+                socket_r + cp.path_clearance_mm, need_depth)
+            seat.agreement = 1.0
+        else:
+            axis, source, agreement, blocked = _choose_axis(
+                seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
+                need_depth, emb_a, emb_b, socket_r)
+            seat.axis, seat.axis_source = axis, source
+            seat.agreement, seat.blocked = agreement, blocked
+
+        # How buried the collar ends up on its worse side, on the axis finally
+        # chosen — a joint is only as hidden as its more exposed half.
+        seat.embedding = min(
+            _embedding(emb_a, seat.center, -seat.axis, socket_r, need_depth),
+            _embedding(emb_b, seat.center, seat.axis, socket_r, need_depth))
 
         # Fill: how much of the plastic each side must supply is already there.
         # Measured from that side's own surface inward, not from the mid-plane —
@@ -511,13 +784,30 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
             fills.append(have / want if want > 1e-9 else 0.0)
         seat.fill = float(min(fills))
 
+        # How far off the interface's rim this seat sits, measured against the
+        # axis just chosen.  Interior seats score ~0; a seat whose support is all
+        # to one side (collar overhanging open air) scores up to the socket
+        # radius and is penalised for it below.
+        seat.edge_offset = _edge_offset(seat.patch, seat.center, seat.axis)
+
         # Rank on the weakest side's fill first — a joint is only as good as its
         # thinner half — then on contact footprint, then prefer a tight gap, and
-        # finally shy away from seats that need a lot cut out of the path.
+        # shy away from seats that need a lot cut out of the path.  A seat
+        # recovered from an interference lobe gets a bounded bonus: the two parts
+        # were competing for that volume, so material on both sides is guaranteed
+        # and the normal is well determined (bounded, so a huge lobe cannot
+        # outrank a seat that is simply better).  Two cosmetic-but-real terms sit
+        # under those: reward a well-founded joint axis (a cleaner-looking disc),
+        # and penalise a seat that sits on the edge of the interface (a socket
+        # that sticks out) so a tidier interior spot wins when one exists.
         seat.score = (seat.fill * 100.0
                       + min(seat.footprint, 40) * 0.5
                       - seat.gap * 2.0
-                      - min(seat.blocked, 60) * 0.5)
+                      - min(seat.blocked, 60) * 0.5
+                      + min(seat.overlap_volume, 200.0) * 0.15
+                      + cp.axis_quality_weight * _AXIS_QUALITY.get(seat.axis_source, 0.3)
+                      - cp.edge_center_weight * min(seat.edge_offset, socket_r)
+                      + cp.seat_embedding_weight * seat.embedding)
         scored.append(seat)
 
     scored.sort(key=lambda s: -s.score)
@@ -526,11 +816,27 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
 
 def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                  cp: ConnectionParams, socket_r: float,
-                 need_depth: float) -> List[Seat]:
-    """The ranked seats to actually build, best first (shared by magnet+bridge)."""
+                 need_depth: float, overlap=None) -> List[Seat]:
+    """The ranked seats to actually build, best first (shared by magnet+bridge).
+
+    Candidates come from two sources and are scored together on the same
+    footing: the interference lobes this pair had before they were carved apart
+    (``overlap``), and the plain contact patches of the point-cloud search.  The
+    lobes are the natural joint positions and normally win, but they are not
+    forced through — a pair that merely touches has no lobes at all, and a lobe
+    on a spike still has to survive the fill test like anything else.
+    """
     count = max(1, count)
     shortlist, pa, pb = _candidate_seats(mesh_a, mesh_b, cp.contact_threshold_mm,
                                          socket_r, count + cp.seat_shortlist_extra)
+    from_overlap = _overlap_seats(overlap, mesh_a, mesh_b, socket_r)
+    if from_overlap:
+        # Drop point-cloud candidates that would collide with a lobe seat; the
+        # lobe is the better-founded of the two in the same place.
+        shortlist = [s for s in shortlist
+                     if all(np.linalg.norm(s.center - o.center) >= 2.0 * socket_r + 1.0
+                            for o in from_overlap)]
+        shortlist = from_overlap[:count + cp.seat_shortlist_extra] + shortlist
     ranked = _score_seats(shortlist, man_a, man_b, pa, pb, cp, socket_r, need_depth)
     # Prefer seats with real material behind them, but if none clears the bar
     # keep the ranked list anyway: ``_build_seat``'s watertight gate is the hard
@@ -606,9 +912,9 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
             return True, ""
     return False, "would break watertightness or sever an overhang"
 
-
 def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
-                  params: PrintParams, markers: list) -> Tuple[bool, str]:
+                  params: PrintParams, markers: list,
+                  overlap=None) -> Tuple[bool, str]:
     """Seat ``count`` press-fit magnet pockets on the best-scoring contacts.
 
     The pocket is cut oversize on purpose (see ``magnet_fit_clearance_mm`` /
@@ -628,7 +934,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     chamfer = min(cp.magnet_chamfer_mm, 0.3 * t)
 
     seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
-                         socket_r, embed)
+                         socket_r, embed, overlap=overlap)
     pocket = {"radius": pocket_r, "depth": depth,
               "chamfer": chamfer, "shape": shape}
 
@@ -655,13 +961,16 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "socket_diameter": float(2.0 * socket_r) if cp.socket else None,
             "fill": round(seat.fill, 3), "axis_source": seat.axis_source,
             "blocked": int(seat.blocked),
+            "overlap_mm3": round(seat.overlap_volume, 2),
+            "edge_offset": round(seat.edge_offset, 2),
+            "embedding": round(seat.embedding, 3),
         })
 
     return _joint_note(placed, len(seats), reasons, "magnet", seats)
 
 
 def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
-                  params: PrintParams) -> Tuple[bool, str]:
+                  params: PrintParams, overlap=None) -> Tuple[bool, str]:
     """Join two parts with clean flat-ended cylinders on the best contacts.
 
     Same seat selection and same collar as the magnet joint, minus the pocket —
@@ -671,7 +980,8 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     vertices implied, and its hemispherical cap left a bobble on the surface).
     """
     r = _min_wall_radius(params, cp.connector_diameter_mm / 2.0)
-    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp, r, r * 2.0)
+    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp, r, r * 2.0,
+                         overlap=overlap)
     embed = max(2.0 * r, 2.0)
     placed, reasons = 0, []
     for seat in seats:
@@ -696,8 +1006,27 @@ _AXIS_NOTE = {
 
 def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     """The (ok, human note) pair reported back to the UI for one interface."""
-    used = {s.axis_source for s in seats[:max(placed, 1)]}
+    seated = seats[:max(placed, 1)]
+    used = {s.axis_source for s in seated}
     extra = [_AXIS_NOTE[a] for a in sorted(used) if a in _AXIS_NOTE]
+    # A seat can clear the watertight gate and still be sunk into very little
+    # plastic — a socket wider than the backbone it lands on, typically.  It is
+    # printable, so it is not refused, but the user should hear about it before
+    # the magnet pulls out of the part.
+    if placed:
+        thin = min((s.fill for s in seated), default=1.0)
+        if thin < _MIN_SEAT_FILL:
+            extra.append(f"thin seat ({thin * 100:.0f}% solid) — the joint is "
+                         f"wider than the material it lands on; use a smaller "
+                         f"connector Ø or a thicker backbone")
+        # Separately from "is there material here", say so when the collar will
+        # visibly stand off the surface — that is a look, not a failure, so it is
+        # reported rather than refused.
+        proud = min((s.embedding for s in seated), default=1.0)
+        if proud < _MIN_SEAT_EMBEDDING:
+            extra.append(f"joint stands proud ({proud * 100:.0f}% of the collar "
+                         f"is buried) — the parts only meet over a small area "
+                         f"here; a smaller connector Ø sinks it further in")
     if placed and not reasons:
         parts = ([f"{placed} {what}s"] if placed > 1 else []) + extra
         return True, "; ".join(parts)
@@ -806,14 +1135,24 @@ def _apply_basepairs(man_a, man_b, chain_a: Chain, chain_b: Chain,
     # the centroid — a back-step *onto* the existing rung — so it always fuses to
     # the strand body while still reading as the rung reaching the axis.
     back = max(0.6, r)
-    fwd = 0.4
+    # A capsule's solid extends a full radius past its end point (that is what
+    # the hemispherical cap is), so a link aimed *at* the midline actually
+    # crosses it by ``r`` and the two strands end up interpenetrating by 2r —
+    # invisible on screen and a collision in the print.  Stopping the axis a
+    # radius short puts the cap *surface* on the midline instead, and half the
+    # fit clearance short of it leaves the two rungs facing each other across
+    # exactly the clearance: still one continuous bar to the eye, two separable
+    # parts in the hand.
+    reach = r + max(0.0, float(params.fit_clearance_mm)) / 2.0
     n_done = 0
     for ia, ib, _d in pairs:
         ca, cb = cen_a[ia], cen_b[ib]
         mid = 0.5 * (ca + cb)
         u = _unit(cb - ca)                     # A-centroid → B-centroid (toward axis)
-        sa = _commit(man_a, _manifold.capsule(ca - u * back, mid + u * fwd, r), add=True)
-        sb = _commit(man_b, _manifold.capsule(cb + u * back, mid - u * fwd, r), add=True)
+        if float(np.linalg.norm(mid - ca)) <= reach:
+            continue                           # strands already meet here
+        sa = _commit(man_a, _manifold.capsule(ca - u * back, mid - u * reach, r), add=True)
+        sb = _commit(man_b, _manifold.capsule(cb + u * back, mid + u * reach, r), add=True)
         if sa is not None and sb is not None:
             man_a, man_b = sa, sb
             n_done += 1
@@ -848,28 +1187,57 @@ def _nucleic_strand_pairs(built) -> List[Tuple[int, int]]:
     return pairs
 
 
-def apply(built: List[Tuple[Chain, "object"]], params: PrintParams):
-    """Apply the connections pass; returns ``(new_built, [connection dicts])``.
+def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
+          progress=None):
+    """Apply the fit + connections pass.
+
+    Returns ``(new_built, [connection dicts], [magnet markers], [fit notes])``.
 
     Input meshes must already be watertight (the pipeline gates them first).
     Output meshes are re-repaired (the fast-path preserves the already-good
-    manifold result) and remain watertight single bodies.
+    manifold result) and remain watertight.
+
+    Order matters here.  Interference is resolved **first**, before contacts are
+    detected or any joint is seated, for two reasons:
+
+    * a joint seated against still-overlapping geometry is measured against
+      distances that do not mean what they appear to (see ``_overlap_seats``);
+    * contact detection itself would miss the worst cases — for two chains that
+      interpenetrate deeply, the unsigned nearest-vertex distance is the
+      penetration depth, which can exceed ``contact_threshold_mm`` and make the
+      most intimate interface in the structure look like no contact at all.
+
+    The overlaps found on the way in are kept and handed to the joint search,
+    because the volume that had to be carved away is precisely where a magnet
+    belongs.
     """
     from . import meshops
     cp = params.connections
-    if not cp.enabled() or len(built) < 1:
-        return built, [], []
+    do_fit = params.resolve_interference != InterferenceRule.NONE
+    if (not cp.enabled() and not do_fit) or len(built) < 1:
+        return built, [], [], []
+
+    # This pass does seconds of boolean work per interface on a large complex,
+    # and without a running commentary a slow build and a hung one look exactly
+    # alike from the outside.  ``step`` is called often enough that the caller
+    # can always name what is being worked on.
+    def step(frac, msg):
+        if progress is not None:
+            progress(max(0.0, min(1.0, frac)), msg)
 
     chains = [c for c, _m in built]
     meshes = [m for _c, m in built]
     applied: List[Connection] = []
     markers: list = []   # magnet positions for the preview highlight
+    fit_notes: List[str] = []
     inflate = cp.connect and not cp.use_magnets \
         and cp.no_magnet_method == NoMagnetMethod.INFLATE
 
-    # 1a) Detect chain-to-chain contacts (skipping DNA↔DNA when base-pairing).
-    contacts = []  # (i, j, pa, pb, gap)
-    if cp.connect:
+    # 1a) Inflate is the one mode that *wants* the parts to overlap — it grows
+    #     neighbouring surfaces until they weld into one body — so the fit pass
+    #     is skipped for it rather than undoing the join it just made.
+    if inflate:
+        contacts = []
         n = len(built)
         for i in range(n):
             for j in range(i + 1, n):
@@ -877,15 +1245,15 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams):
                         and chains[i].mtype == MoleculeType.NUCLEIC
                         and chains[j].mtype == MoleculeType.NUCLEIC):
                     continue
-                pa, pb, gap = _nearest(meshes[i], meshes[j])
+                _pa, _pb, gap = _nearest(meshes[i], meshes[j])
                 if gap <= cp.contact_threshold_mm:
-                    contacts.append((i, j, pa, pb, gap))
+                    contacts.append((i, j, gap))
 
     # 1b) Inflate rebuilds each contacting object slightly larger (before the
     #     manifold conversion) so neighbours swell until they overlap.
     if inflate and contacts:
         grow = [0.0] * len(built)
-        for i, j, _pa, _pb, gap in contacts:
+        for i, j, gap in contacts:
             # Half the gap on each side, plus a small weld; capped so a wide gap
             # can't balloon a thin chain (use bridge for those instead).  Kept
             # deliberately gentle — just enough to overlap.
@@ -898,32 +1266,63 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams):
                     meshes[idx] = _rebuild_inflated(chains[idx], params, amt)
                 except Exception:
                     pass
-        for i, j, _pa, _pb, gap in contacts:
+        for i, j, gap in contacts:
             applied.append(Connection(
                 chains[i].chain_id, chains[j].chain_id,
                 _kind(chains[i], chains[j]), "inflate", gap_mm=gap, applied=True))
 
     mans = [_manifold.from_trimesh(m) for m in meshes]
 
-    # 1c) Magnet / bridge joins operate on the manifolds.
+    # 1c) Make the solids physically disjoint, and remember where they were not.
+    overlaps = {}
+    if do_fit and not inflate:
+        step(0.05, "Checking how the parts fit together…")
+        found = interference.pair_overlaps(mans)
+        if found:
+            step(0.15, f"Carving {len(found)} overlapping interface(s) apart…")
+        mans, found, fit_notes = interference.resolve(mans, chains, params, found)
+        overlaps = {(o.i, o.j): o for o in found}
+        if fit_notes:
+            # Geometry changed, so the probe clouds the joint search runs on
+            # have to be re-taken from the carved solids.
+            meshes = [_manifold.to_trimesh(m) for m in mans]
+
+    # 1d) Detect contacts on the *resolved* geometry, and always include any
+    #     pair that was interpenetrating — those are in contact by definition,
+    #     however the surviving surface gap happens to measure.
     if cp.connect and not inflate:
-        for i, j, pa, pb, gap in contacts:
-            kind = _kind(chains[i], chains[j])
-            # Protein↔protein and DNA↔protein each get their own count; the
-            # bridge reuses the same counts, since it is now the same joint
-            # minus the magnet pocket.
-            n_joints = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
-            if cp.use_magnets:
-                method = "magnet"
-                ok, note = _apply_magnet(
-                    mans, i, j, meshes[i], meshes[j], n_joints, cp, params, markers)
-            else:
-                method = "bridge"
-                ok, note = _apply_bridge(
-                    mans, i, j, meshes[i], meshes[j], n_joints, cp, params)
-            applied.append(Connection(
-                chains[i].chain_id, chains[j].chain_id, kind, method,
-                gap_mm=gap, applied=ok, note=note))
+        n = len(built)
+        todo = [(i, j) for i in range(n) for j in range(i + 1, n)
+                if not (cp.basepair_connect
+                        and chains[i].mtype == MoleculeType.NUCLEIC
+                        and chains[j].mtype == MoleculeType.NUCLEIC)]
+        for done, (i, j) in enumerate(todo):
+                overlap = overlaps.get((i, j))
+                _pa, _pb, gap = _nearest(meshes[i], meshes[j])
+                if overlap is None and gap > cp.contact_threshold_mm:
+                    continue
+                step(0.3 + 0.6 * done / max(1, len(todo)),
+                     f"Connecting {chains[i].display_name()} ↔ "
+                     f"{chains[j].display_name()} ({done + 1}/{len(todo)})…")
+                kind = _kind(chains[i], chains[j])
+                # Protein↔protein and DNA↔protein each get their own count; the
+                # bridge reuses the same counts, since it is now the same joint
+                # minus the magnet pocket.
+                n_joints = (cp.magnet_count if kind == "protein-protein"
+                            else cp.dna_magnet_count)
+                if cp.use_magnets:
+                    method = "magnet"
+                    ok, note = _apply_magnet(
+                        mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
+                        markers, overlap=overlap)
+                else:
+                    method = "bridge"
+                    ok, note = _apply_bridge(
+                        mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
+                        overlap=overlap)
+                applied.append(Connection(
+                    chains[i].chain_id, chains[j].chain_id, kind, method,
+                    gap_mm=gap, applied=ok, note=note))
 
     # 2) DNA interstrand base-pair connect.
     if cp.basepair_connect:
@@ -936,11 +1335,28 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams):
                 note=f"{n_links} base-pair link(s)" if n_links else "no base pairs found",
             ))
 
+    # 2b) Final sweep.  Everything after the fit pass *adds* material — collars,
+    #     pegs, base-pair rungs — and each of those is a chance to put two parts
+    #     back into the same space.  Re-checking here makes "the exported objects
+    #     do not interpenetrate" a property of the pass as a whole rather than of
+    #     each step remembering to behave, which is the only version of that
+    #     guarantee worth having.  It is normally a no-op and reports nothing.
+    if do_fit and not inflate and any(c.applied for c in applied):
+        step(0.93, "Re-checking the fit after connecting…")
+        mans, _again, late = interference.resolve(mans, chains, params,
+                                                  allow_split=False,
+                                                  want_pieces=False)
+        fit_notes.extend(f"After connecting — {note[0].lower()}{note[1:]}"
+                         for note in late)
+        # ...and say so plainly if anything survived that.
+        fit_notes.extend(interference.audit(mans, chains))
+
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
+    step(0.97, "Rebuilding meshes…")
     new_built = []
     for (chain, old_mesh), man in zip(built, mans):
         mesh = _manifold.to_trimesh(man)
         mesh.metadata.update(old_mesh.metadata)
         mesh = meshops.repair(mesh)
         new_built.append((chain, mesh))
-    return new_built, [c.as_dict() for c in applied], markers
+    return new_built, [c.as_dict() for c in applied], markers, fit_notes

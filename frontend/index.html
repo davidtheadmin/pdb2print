@@ -409,8 +409,8 @@
                 <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
               </div>
               <div class="field" data-slider="probe_radius">
-                <div class="slider-row"><span class="name" title="Radius of the rolling solvent ball that defines the molecular surface (1.4 Å = water). Larger = smoother and fills small pockets. Surface style only.">Probe radius (Å)</span><span class="val"></span></div>
-                <input type="range" min="0.0" max="3.0" step="0.1" value="1.4">
+                <div class="slider-row"><span class="name" title="Radius of the rolling solvent ball that defines the molecular surface (1.4 Å = water). Larger = smoother and fills small pockets. It does NOT set the overall size — on an outward-facing patch the probe cancels out of the surface definition, so use Surface padding for that. Below 1.2 Å the surface starts pinching apart between atoms and fails the watertight check. Surface style only.">Probe radius (Å)</span><span class="val"></span></div>
+                <input type="range" min="1.4" max="2.0" step="0.1" value="1.4">
               </div>
               <div class="field" data-slider="protein_tube_radius">
                 <div class="slider-row"><span class="name" title="Radius of the protein backbone tube">Tube thickness (mm)</span><span class="val"></span></div>

@@ -23,27 +23,40 @@ from __future__ import annotations
 import numpy as np
 from scipy import ndimage
 
-from ..config import PrintParams, VDW_RADII_ANG, DEFAULT_VDW_ANG
+from ..config import (
+    PrintParams, VDW_RADII_ANG, DEFAULT_VDW_ANG, resolve_surface_grid,
+)
 from ._common import Grid, field_to_mesh
 
 
-def _sas_radii_mm(atoms, params: PrintParams) -> np.ndarray:
+def _sas_radii_mm(atoms, params: PrintParams, probe_ang: float) -> np.ndarray:
     """Per-atom solvent-accessible radius (vdW + padding + probe), in print-mm."""
     elements = [str(e).upper() for e in atoms.element]
     radii_ang = (
         np.array([VDW_RADII_ANG.get(e, DEFAULT_VDW_ANG) for e in elements])
         + params.surface_atom_padding_ang
-        + params.probe_radius_ang
+        + probe_ang
     )
     return radii_ang * params.scale_mm_per_angstrom
 
 
 def build(chain, params: PrintParams):
-    """Return a watertight trimesh of the solvent-excluded surface for ``chain``."""
+    """Return a watertight trimesh of the solvent-excluded surface for ``chain``.
+
+    The probe radius and grid spacing are passed through
+    :func:`~pdb2print.config.resolve_surface_grid` first, which clamps them to a
+    combination that can actually be meshed: too small a probe severs the
+    surface between atoms and too coarse a grid cannot place the eroded level
+    set.  Whatever it changed is recorded in ``mesh.metadata["notes"]`` and
+    surfaced by the pipeline as a build warning.
+    """
     coords = chain.atoms.coord.astype(float) * params.scale_mm_per_angstrom
-    sas_radii = _sas_radii_mm(chain.atoms, params)
-    probe_mm = params.probe_radius_ang * params.scale_mm_per_angstrom
-    spacing = params.grid_spacing_mm
+    extent = coords.max(axis=0) - coords.min(axis=0)
+    safe = resolve_surface_grid(params, extent_mm=extent)
+
+    sas_radii = _sas_radii_mm(chain.atoms, params, safe.probe_ang)
+    probe_mm = safe.probe_ang * params.scale_mm_per_angstrom
+    spacing = safe.spacing_mm
 
     pad = float(sas_radii.max()) + 2.0 * spacing
     grid = Grid.covering(coords, spacing=spacing, pad=pad)
@@ -68,4 +81,7 @@ def build(chain, params: PrintParams):
     inward_mm = ndimage.distance_transform_edt(sas) * spacing
     field = inward_mm - probe_mm
 
-    return field_to_mesh(field, grid, level=0.0)
+    mesh = field_to_mesh(field, grid, level=0.0)
+    if safe.notes:
+        mesh.metadata["notes"] = list(safe.notes)
+    return mesh
