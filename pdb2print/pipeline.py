@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 from . import io, chains as chains_mod, geometry, meshops, connections
-from .config import PrintParams, InterferenceRule
+from .config import PrintParams, InterferenceRule, MoleculeType
 from .export import BuiltChain
 
 
@@ -34,12 +34,15 @@ class BuildReport:
     connection_markers: List[dict] = field(default_factory=list)
 
     def summary(self) -> str:
-        lines = [f"Built {len(self.built)} chain(s):"]
+        lines = [f"Built {len(self.built)} object(s):"]
         for chain, mesh in self.built:
             wt = "watertight" if mesh.is_watertight else "NOT watertight"
+            # A ligand is one residue by definition, so "1 residues" tells you
+            # nothing; its atom count is the number that describes it.
+            size = (f"{chain.n_atoms} atoms" if chain.mtype == MoleculeType.LIGAND
+                    else f"{chain.n_residues} residues")
             lines.append(
-                f"  • {chain.label()}: {chain.n_residues} residues, "
-                f"{len(mesh.faces)} faces, {wt}"
+                f"  • {chain.label()}: {size}, {len(mesh.faces)} faces, {wt}"
             )
         for w in self.warnings:
             lines.append(f"  ! {w}")
@@ -72,13 +75,18 @@ def build_all(source: str, params: PrintParams,
     atoms, names = io.load_with_names(source)
 
     report(0.15, "Identifying chains…")
-    chain_list = chains_mod.split_chains(atoms)
+    chain_list = chains_mod.split_chains(
+        atoms, include_ligands=params.include_ligands)
     if not chain_list:
         raise ValueError("No protein or nucleic-acid chains found in the input.")
     # Attach the subunit name parsed from the header (falls back to the chain id
-    # at display time); geometry never depends on it.
+    # at display time); geometry never depends on it.  A ligand already carries
+    # its own name (built from the residue), and the header name belongs to the
+    # *polymer* of that chain id, so overwriting it would label the drug with the
+    # protein it is bound to.
     for chain in chain_list:
-        chain.name = names.get(chain.chain_id)
+        if chain.mtype != MoleculeType.LIGAND:
+            chain.name = names.get(chain.chain_id)
 
     out = BuildReport()
     not_watertight = []
@@ -106,9 +114,23 @@ def build_all(source: str, params: PrintParams,
         for note in mesh.metadata.get("notes", ()):
             if note not in out.warnings:
                 out.warnings.append(note)
-        out.built.append((chain, mesh))
+        # A ligand that will not mesh cleanly is *dropped*, not fatal.  A chain is
+        # load-bearing — a complex missing a subunit is the wrong model and the
+        # user has to know — but a ligand is an addition, and taking the whole
+        # build down over one awkward cofactor would mean a structure that used to
+        # export fine stops exporting the moment ligands are switched on.  The
+        # warning says what was lost.
         if not mesh.is_watertight:
+            if chain.mtype == MoleculeType.LIGAND:
+                out.warnings.append(
+                    f"Left out {chain.display_name()} (chain "
+                    f"{chain.chain_id}): its mesh did not come out watertight, so "
+                    f"it could not be exported. The rest of the model is "
+                    f"unaffected."
+                )
+                continue
             not_watertight.append(chain.label())
+        out.built.append((chain, mesh))
 
     # Hard watertight gate: a non-watertight mesh must never reach the 3MF
     # exporter (slicers reject non-manifold geometry), so fail loudly here
@@ -153,7 +175,22 @@ def build_all(source: str, params: PrintParams,
             raise
         except Exception as exc:  # never let the connector pass sink a good build
             out.warnings.append(f"Connections skipped: {exc}")
-        # Re-gate: a connector must never break watertightness.
+        # Re-gate: a connector must never break watertightness.  Same asymmetry
+        # as above — a broken ligand is dropped with a note, a broken chain is
+        # fatal.  Dropping one here is safe: it is the *host* that was carved, so
+        # the pocket is already correct and the model is simply the one without
+        # the drug in it.
+        kept = []
+        for chain, mesh in out.built:
+            if mesh.is_watertight or chain.mtype != MoleculeType.LIGAND:
+                kept.append((chain, mesh))
+                continue
+            out.warnings.append(
+                f"Left out {chain.display_name()} (chain {chain.chain_id}): the "
+                f"fit pass left its mesh non-watertight. Its pocket in the "
+                f"surrounding object is still there."
+            )
+        out.built = kept
         broke = [c.label() for c, m in out.built if not m.is_watertight]
         if broke:
             raise RuntimeError(

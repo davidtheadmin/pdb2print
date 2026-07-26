@@ -19,6 +19,11 @@ Interference is a boolean problem and is solved here with booleans.
 
 **Who gives up the material.**  Under :attr:`InterferenceRule.AUTO`:
 
+* **ligand ↔ anything** — the ligand keeps its true shape and its host is carved.
+  This is the whole point of printing a bound ligand: the pocket comes out as an
+  exact negative of the drug, so it lifts out and drops back in and you can see
+  why it fits.  Carving the ligand instead would take a bite out of the one
+  object small enough that a bite destroys it.
 * **nucleic ↔ protein** — the nucleic acid keeps its true shape and the protein
   is carved.  This matches the biology (DNA sits in a groove) and it reads as
   intentional: the protein ends up with a socket that is an exact negative of
@@ -28,7 +33,8 @@ Interference is a boolean problem and is solved here with booleans.
 
 :attr:`InterferenceRule.SYMMETRIC` instead has *both* parts retreat out of the
 shared volume.  Neither is deformed by the other's shape, at the cost of a gap
-where they used to interpenetrate (the connector socket bridges it).
+where they used to interpenetrate (the connector socket bridges it).  Ligands are
+excluded from it and keep their shape either way — see :func:`_carve_target`.
 
 **Clearance.**  Carving with a plain subtraction gives a zero-clearance mate:
 geometrically perfect, but FDM parts print a little oversize and would bind.  So
@@ -189,6 +195,22 @@ class Overlap:
                 "lobes": len(self.pieces)}
 
 
+def _bounds(man):
+    """``(lo, hi)`` of a manifold's bounding box, or ``None`` if unavailable."""
+    try:
+        bb = man.bounding_box()
+        return np.array(bb[:3], float), np.array(bb[3:], float)
+    except Exception:
+        return None
+
+
+def _boxes_disjoint(a, b) -> bool:
+    """True if two ``(lo, hi)`` boxes provably cannot intersect."""
+    if a is None or b is None:
+        return False            # unknown: fall through to the real boolean
+    return bool(np.any(a[1] < b[0]) or np.any(b[1] < a[0]))
+
+
 def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
     """Every interpenetrating pair among ``mans``, with its shared solid.
 
@@ -197,11 +219,21 @@ def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
     the parts currently collide — the natural joint positions that the old
     nearest-point search could never find (an unsigned distance reads a deeply
     buried vertex as *far away*, so the deepest contact scored worst).
+
+    Pairs whose bounding boxes do not touch are skipped without a boolean.  That
+    is free correctness — two solids inside disjoint boxes cannot share a point —
+    and it stops the quadratic cost from mattering.  It matters now because
+    ligands multiplied the object count: a haemoglobin with its four haems is 8
+    objects, so 28 pairs instead of 6, and all but a handful are a protein and a
+    drug at opposite ends of the model.
     """
     out: List[Overlap] = []
     n = len(mans)
+    boxes = [_bounds(m) for m in mans]
     for i in range(n):
         for j in range(i + 1, n):
+            if _boxes_disjoint(boxes[i], boxes[j]):
+                continue
             try:
                 solid = _manifold.intersection(mans[i], mans[j])
             except Exception:
@@ -253,6 +285,17 @@ def _measure_pieces(solid):
 def _carve_target(chain_a: Chain, chain_b: Chain, vol_a: float, vol_b: float,
                   rule: InterferenceRule) -> str:
     """Which side gives up the shared volume: ``"a"``, ``"b"`` or ``"both"``."""
+    a_lig = chain_a.mtype == MoleculeType.LIGAND
+    b_lig = chain_b.mtype == MoleculeType.LIGAND
+    # A ligand is exempt from SYMMETRIC too, and not as a convenience: symmetric
+    # retreat means "both parts give up half the shared volume", and a ligand
+    # sitting *inside* its host shares essentially its whole volume, so its half
+    # is a bite out of a 20-atom molecule.  The socket-shaped-like-the-drug result
+    # is the only useful one, so the rule that produces it is not optional.  Two
+    # ligands against each other is not a real configuration (they would be one
+    # residue), and if it happens the larger still wins below.
+    if a_lig != b_lig:
+        return "b" if a_lig else "a"
     if rule == InterferenceRule.SYMMETRIC:
         return "both"
     a_nuc = chain_a.mtype == MoleculeType.NUCLEIC

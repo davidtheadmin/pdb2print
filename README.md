@@ -40,6 +40,11 @@ so the helix keeps its shape instead of flopping about as two loose spirals.
 direction the joint can actually come apart in, and cuts a press-fit pocket into
 each side. Print, push the magnets in, snap it together.
 
+**Bound ligands.** Switch them on and a drug, a cofactor or a substrate comes out
+as its own object in its own filament, ball-and-stick, with the protein around it
+carved into an exact negative — so the ligand lifts out of its pocket and drops
+back in.
+
 And it runs in a browser, so there's nothing to install.
 
 ## Using it
@@ -67,7 +72,34 @@ base. The three chips at the top set the tube-slab look in one click:
 | **Molecular** | Ball-and-stick throughout. |
 | **Tube + molecule bases** | Smooth tube, ball-and-stick bases. |
 
-### 3. Set the size
+### 3. Decide about ligands
+
+Off by default. Turn **Include ligands** on and anything bound that is not
+protein, nucleic acid or water becomes its own object: the inhibitor in 9YMP, the
+four haems in 2HHB. Each one is ball-and-stick, gets its own filament, and sits in
+a pocket carved to its shape, held by friction — no magnet, because a 4 mm magnet
+is bigger than most drugs.
+
+It is opt-in because it changes the protein too, not just what is in the box. The
+host ends up with a drug-shaped void in it, and on a molecular surface that void is
+usually sealed, so the slicer fills it with support. Worth knowing before you
+print, which is the point of it being a decision rather than a default.
+
+**Ligand thickness** is the one setting, the diameter of the balls; the sticks
+follow it. It is an absolute size in millimetres while the atom spacing follows
+**Scale**, so the two only line up at one scale — turn the scale up and turn this
+up with it, or the molecule thins out into pinheads on long sticks. It is not
+derived from the scale on purpose: the reason to raise the scale is usually that
+something else in the model was too small to print, and having the ligand quietly
+follow would take away the adjustment you came for.
+
+Water and lone ions are always skipped, and so are the usual crystallisation
+additives — glycerol, PEG, sulfate, MPD and friends. The size floor and the
+blocklist that do that are `LIGAND_MIN_HEAVY_ATOMS` and `LIGAND_BLOCKLIST` in
+`pdb2print/config.py`; if a structure you care about has something classed
+wrongly, that is the pair of knobs.
+
+### 4. Set the size
 
 **Scale (mm/Å)** is how big the thing comes out. After your first build the
 estimated dimensions show up under the slider.
@@ -80,7 +112,7 @@ dropping the scale coarsens the mesh even though you never touched the grid.
 to it while the model is built. Surface ignores this, because a molecular surface
 is already thick everywhere.
 
-### 4. Connect the chains
+### 5. Connect the chains
 
 Off by default. Turn on **Connect chains** and pick one:
 
@@ -97,7 +129,7 @@ highlights where they'll end up.
 **Connect DNA base pairs** is the one that welds the two strands of a duplex.
 Leave it on for DNA unless you specifically want them separate.
 
-### 5. Download and slice
+### 6. Download and slice
 
 Grab the **3MF**. In PrusaSlicer:
 
@@ -196,12 +228,12 @@ server.py                 FastAPI: serves the page and /api/generate
 frontend/index.html       the UI, one file, no build step
 pdb2print/
   io.py                   RCSB fetch and file loading
-  chains.py               chain split, protein/nucleic classification
+  chains.py               chain split, protein/nucleic/ligand classification
   config.py               all settings
   presets.py              the preset chips
   cache.py                build cache
   geometry.py             dispatch to a representation
-  representations/        surface, cartoon, tube_slab
+  representations/        surface, cartoon, tube_slab, ligand
   connections.py          magnets, bridges, base pairs
   export.py               3MF, STL, GLB
   pipeline.py             build_all()

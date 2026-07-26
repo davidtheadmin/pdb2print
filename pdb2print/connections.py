@@ -163,11 +163,36 @@ def _min_wall_radius(params: PrintParams, r: float) -> float:
 
 
 def _kind(a: Chain, b: Chain) -> str:
+    if a.mtype == MoleculeType.LIGAND or b.mtype == MoleculeType.LIGAND:
+        return "ligand"
     if a.mtype == MoleculeType.PROTEIN and b.mtype == MoleculeType.PROTEIN:
         return "protein-protein"
     if a.mtype == MoleculeType.NUCLEIC and b.mtype == MoleculeType.NUCLEIC:
         return "dna-dna"
     return "dna-protein"
+
+
+def _is_ligand(chain: Chain) -> bool:
+    return chain.mtype == MoleculeType.LIGAND
+
+
+def _joinable(a: Chain, b: Chain) -> bool:
+    """True if this pair should be offered a chain-to-chain joint at all.
+
+    **Ligands never are.**  Not one of the three methods makes sense on one:
+
+    * a *magnet* is bigger than the molecule.  A 4 mm disc against a drug that is
+      12 Å across — 18 mm at the default scale, and only a few millimetres thick
+      through the ring — means a pocket wider and deeper than the part it is cut
+      into, so ``_commit`` rejects it and the joint is lost anyway;
+    * a *bridge* or an *inflate* weld would fuse the ligand to its host, which
+      destroys the only interesting thing about printing it separately: that it
+      comes out and goes back in;
+    * and none of it is needed.  The fit pass has already carved the host into an
+      exact negative of the ligand, so the pocket grips it on every face at the
+      print clearance.  Friction is the joint.
+    """
+    return not (_is_ligand(a) or _is_ligand(b))
 
 
 # --------------------------------------------------------------------------
@@ -1213,6 +1238,14 @@ def _inflate_growth(chain: Chain, params: PrintParams, amount_mm: float):
     import dataclasses
     rep = params.representation_for(chain.mtype)
 
+    # A ligand is never inflated.  Its radii are fixed constants rather than
+    # parameters precisely because its proportions are the information — growing
+    # the beads by half a millimetre closes the rings and it stops being a
+    # recognisable molecule.  ``_joinable`` already keeps ligands out of every
+    # contact, so this is the belt to that braces.
+    if chain.mtype == MoleculeType.LIGAND:
+        return None
+
     if chain.mtype == MoleculeType.PROTEIN:
         if rep == Representation.SURFACE:
             # Padding every atom's vdW radius moves the whole solvent-excluded
@@ -1315,8 +1348,12 @@ def _unify_nucleic_growth(grow: List[float], chains) -> List[float]:
     solvent-excluded surface is a local offset, not a gauge, and two proteins
     padded differently is not something you can see.
     """
+    # Nucleic *specifically*, not "everything that is not protein": a ligand also
+    # fails that test, and levelling it to a strand's growth would inflate the one
+    # object that must not be inflated (and that nothing asked to grow, since
+    # ``_joinable`` excluded it from every contact).
     nucleic = [k for k, c in enumerate(chains)
-               if c.mtype != MoleculeType.PROTEIN]
+               if c.mtype == MoleculeType.NUCLEIC]
     if nucleic:
         uniform = max(grow[k] for k in nucleic)
         for k in nucleic:
@@ -1656,6 +1693,8 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         n = len(built)
         for i in range(n):
             for j in range(i + 1, n):
+                if not _joinable(chains[i], chains[j]):
+                    continue
                 if (cp.basepair_connect
                         and chains[i].mtype == MoleculeType.NUCLEIC
                         and chains[j].mtype == MoleculeType.NUCLEIC):
@@ -1738,9 +1777,10 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     if cp.connect and not inflate:
         n = len(built)
         todo = [(i, j) for i in range(n) for j in range(i + 1, n)
-                if not (cp.basepair_connect
-                        and chains[i].mtype == MoleculeType.NUCLEIC
-                        and chains[j].mtype == MoleculeType.NUCLEIC)]
+                if _joinable(chains[i], chains[j])
+                and not (cp.basepair_connect
+                         and chains[i].mtype == MoleculeType.NUCLEIC
+                         and chains[j].mtype == MoleculeType.NUCLEIC)]
         for done, (i, j) in enumerate(todo):
                 overlap = overlaps.get((i, j))
                 _pa, _pb, gap = _nearest(meshes[i], meshes[j])
