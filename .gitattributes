@@ -1,0 +1,11 @@
+# Normalise line endings so a Windows working tree and a Linux server do not
+# produce a 15,000-line phantom diff where nothing actually changed.
+* text=auto eol=lf
+
+# Binary, never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.3mf binary
+*.glb binary
+*.zip binary
