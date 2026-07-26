@@ -32,11 +32,14 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from typing import Dict, List, Optional
 
-from .config import PrintParams, Representation, BaseStyle, BackboneStyle
+from .config import (
+    PrintParams, Representation, BaseStyle, BackboneStyle, MoleculeType,
+    LigandStyle,
+)
 from .io import looks_like_pdb_id
 
 #: Where the shipped cache lives.  A directory inside the repo (rather than a
@@ -73,7 +76,15 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 #:     and the pairing register now gated on base-plane coplanarity so a strand
 #:     with a one-base overhang no longer pairs every base to its neighbour's
 #:     partner.  Same parameters, different geometry.
-CACHE_VERSION = 2
+#: 3 — bound ligands are exported instead of discarded, and their host is carved
+#:     into a pocket around them.  Every pre-existing entry for a ligand-bearing
+#:     structure therefore holds *both* the wrong object list and the wrong
+#:     protein geometry.  Adding ``include_ligands`` to the parameters already
+#:     changes the hash on its own, so this bump is belt-and-braces rather than
+#:     the mechanism — but the mechanism is a hash of a dataclass and the cost of
+#:     being wrong here is serving someone a model with no drug in it, so the
+#:     explicit invalidation is worth the one-line diff.
+CACHE_VERSION = 3
 
 #: Artefact kinds an entry must hold to count as complete.  A half-written entry
 #: (a crash mid-export, a killed container) must never be served, so lookup
@@ -129,6 +140,35 @@ def canonical_params(params: PrintParams) -> dict:
     def drop(*names):
         for n in names:
             data.pop(n, None)
+
+    # ``include_ligands`` is never dropped, under any combination of the
+    # representations.  It is the one parameter that changes *which objects exist*
+    # rather than how one of them is shaped: with it on, a ligand-bearing
+    # structure gains an object and its host gains a pocket, and with it off both
+    # are absent.  There is no representation and no style under which those two
+    # outputs are the same file, so there is never a case for merging the keys.
+    # Listed here explicitly because everything else in this function is a
+    # removal, and a reader looking for "where is the new field handled" should
+    # find an answer rather than an absence.
+    #
+    # Its *thickness* is a different matter and does drop out: with ligands off
+    # nothing reads it, so someone who nudged the ligand slider and then switched
+    # ligands off still hits the build they would have got anyway.
+    if not data.get("include_ligands"):
+        drop("ligand_style", "ligand_atom_mm", "ligand_bond_mm",
+             "ligand_vdw_scale")
+    else:
+        # Each ligand style reads a different subset, so the rest can merge.
+        style = data.get("ligand_style")
+        if style == LigandStyle.SURFACE.value:
+            # Sized entirely by the surface controls, which are keyed already.
+            drop("ligand_atom_mm", "ligand_bond_mm", "ligand_vdw_scale")
+        elif style == LigandStyle.SPACEFILL.value:
+            drop("ligand_bond_mm")
+        elif style == LigandStyle.STICKS.value:
+            drop("ligand_atom_mm", "ligand_vdw_scale")
+        else:
+            drop("ligand_vdw_scale")
 
     # min_wall_mode selects a branch inside meshops.enforce_min_wall, and that
     # pass returns early for every representation there is (MIN_WALL_EXEMPT
@@ -206,7 +246,140 @@ def canonical_params(params: PrintParams) -> dict:
     else:
         conn.pop("no_magnet_method", None)   # unused once magnets are on
 
+    # The display stand is generated after the build, and is off for every
+    # ordinary one, so the whole block drops out when it is off.  That is not
+    # merely a merge of equivalent keys: it leaves the dict for a normal build
+    # *byte-identical to the one produced before the stand existed*, so every
+    # entry already sitting in ``cache/`` — including the pre-generated ones
+    # shipped in the repo — keeps hitting, instead of being orphaned by a field
+    # that build never read.  Bumping CACHE_VERSION would throw them all away to
+    # no purpose.
+    if not (data.get("stand") or {}).get("enabled"):
+        drop("stand")
+
     return data
+
+
+@dataclass
+class CachedObject:
+    """A built object rebuilt from an entry's metadata, without its atoms.
+
+    A cache hit serves finished files and never touches the geometry core, so
+    the ``Chain`` objects that produced them are long gone.  The display stand
+    does not need them: it works on the meshes, and asks an object only for its
+    name, its chain id and its molecule type.  This carries exactly that, and
+    satisfies the same small interface the exporters use — the same duck-typing
+    that lets a ligand, and a stand part, ride through as a chain.
+
+    Deliberately *not* a ``Chain`` with an empty atom array: something holding
+    itself out as a chain with no atoms would be a trap for every caller that
+    reasonably expects to be able to read them.
+    """
+
+    chain_id: str
+    mtype: MoleculeType
+    name: Optional[str] = None
+    res_name: Optional[str] = None
+    res_id: Optional[int] = None
+    _label: str = ""
+
+    n_atoms: int = 0
+    n_residues: int = 0
+
+    @property
+    def is_ligand(self) -> bool:
+        return self.mtype == MoleculeType.LIGAND
+
+    def label(self) -> str:
+        return self._label or f"chain_{self.chain_id}_{self.mtype.value}"
+
+    def display_name(self) -> str:
+        return self.name if self.name else f"Chain {self.chain_id}"
+
+    def object_name(self) -> str:
+        if self.is_ligand:
+            code = self.res_name or "LIG"
+            return f"ligand_{code}{'' if self.res_id is None else self.res_id}"
+        return (f"{self.name} ({self.chain_id})" if self.name
+                else f"Chain {self.chain_id}")
+
+
+def describe_objects(built) -> list:
+    """The per-object metadata an entry needs to be reopened as geometry.
+
+    Stored alongside the files so a cache hit can be turned back into a list of
+    ``(object, mesh)`` pairs — which is what lets a display stand be added to a
+    cached build without re-meshing the structure from scratch.
+    """
+    out = []
+    for chain, _mesh in built:
+        mtype = getattr(chain, "mtype", None)
+        out.append({
+            "label": chain.label(),
+            "chain_id": str(getattr(chain, "chain_id", "?")),
+            "mtype": mtype.value if mtype is not None else "protein",
+            "name": getattr(chain, "name", None),
+            "res_name": getattr(chain, "res_name", None),
+            "res_id": getattr(chain, "res_id", None),
+        })
+    return out
+
+
+def objects_from_meta(meta: dict) -> list:
+    """Rebuild :class:`CachedObject` instances from stored metadata."""
+    out = []
+    for item in (meta.get("objects") or []):
+        try:
+            mtype = MoleculeType(item.get("mtype", "protein"))
+        except ValueError:
+            mtype = MoleculeType.PROTEIN
+        out.append(CachedObject(
+            chain_id=str(item.get("chain_id", "?")),
+            mtype=mtype,
+            name=item.get("name"),
+            res_name=item.get("res_name"),
+            res_id=item.get("res_id"),
+            _label=str(item.get("label", "")),
+        ))
+    return out
+
+
+def objects_from_labels(labels: List[str]) -> list:
+    """Recover objects from STL filenames alone, for entries with no metadata.
+
+    Every entry written before ``objects`` existed still has a per-chain STL zip,
+    and ``Chain.label`` encodes what is needed: ``chain_A_nucleic``,
+    ``ligand_HEM141_A``.  Parsing it back means a cache built last week can still
+    be stood up without re-meshing, rather than every pre-generated structure —
+    exactly the popular ones — paying for a full rebuild until the day it is
+    regenerated.
+
+    ``labels`` must be in the zip's own order, which is the order the objects
+    were built in and therefore the order the colour palette was assigned in.
+    Sorting here would recolour the model.
+
+    Names are not recoverable this way, so the legend falls back to chain ids.
+    A ligand's code and number cannot be split apart reliably either (CCD codes
+    contain digits), so the whole tag is kept as the code.
+    """
+    out = []
+    for label in labels:
+        if label.startswith("chain_"):
+            rest = label[len("chain_"):]
+            chain_id, _, raw = rest.rpartition("_")
+            try:
+                mtype = MoleculeType(raw)
+            except ValueError:
+                continue
+            out.append(CachedObject(chain_id=chain_id or "?", mtype=mtype,
+                                    _label=label))
+        elif label.startswith("ligand_"):
+            rest = label[len("ligand_"):]
+            tag, _, chain_id = rest.rpartition("_")
+            out.append(CachedObject(chain_id=chain_id or "?",
+                                    mtype=MoleculeType.LIGAND,
+                                    res_name=tag or None, _label=label))
+    return out
 
 
 def key_for(source: str, params: PrintParams) -> str:

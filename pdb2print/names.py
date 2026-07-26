@@ -41,6 +41,96 @@ def chain_names(path: str) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------
+# Structure title
+# --------------------------------------------------------------------------
+def structure_title(path: str) -> Optional[str]:
+    """The structure's overall title, or ``None``.
+
+    Distinct from :func:`chain_names`, which names each *subunit*.  The title
+    names the whole entry — "Crystal structure of the Zif268-DNA complex" — and
+    is what the display-stand plaque wants: on a five-chain complex the chain
+    names describe the parts, and nothing describes the thing.
+
+    ``TITLE`` records for PDB, ``_struct.title`` for mmCIF.  Best-effort like
+    everything else here: any failure returns ``None`` and the caller does
+    without.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext in (".pdb", ".ent"):
+            return _title_from_pdb(path)
+        if ext in (".cif", ".mmcif", ".bcif"):
+            return _title_from_cif(path)
+        return _title_from_cif(path) or _title_from_pdb(path)
+    except Exception:
+        return None
+
+
+def _title_from_pdb(path: str) -> Optional[str]:
+    """Join the ``TITLE`` continuation records (text in columns 11-80)."""
+    parts = []
+    with open(path, "r", errors="ignore") as fh:
+        for line in fh:
+            if line.startswith("TITLE"):
+                parts.append(line[10:80].strip())
+            elif parts and not line.startswith(("TITLE", "REMARK", "COMPND")):
+                # TITLE is a contiguous block near the top; stop once past it
+                # rather than reading a whole 70 MB structure to find nothing.
+                if line.startswith(("ATOM", "HETATM", "SEQRES")):
+                    break
+    return _prettify_title(" ".join(p for p in parts if p))
+
+
+#: ``_struct.title`` on one line, quoted or bare.
+_CIF_TITLE_INLINE = re.compile(r"^\s*_struct\.title\s+(.+?)\s*$", re.I)
+
+
+def _title_from_cif(path: str) -> Optional[str]:
+    """Read ``_struct.title``, including the semicolon-delimited multi-line form."""
+    text_lines = []
+    with open(path, "r", errors="ignore") as fh:
+        lines = []
+        for line in fh:
+            lines.append(line)
+            # The header sits at the top; stop before the atom loop.
+            if line.startswith(("ATOM ", "HETATM")):
+                break
+    for i, line in enumerate(lines):
+        match = _CIF_TITLE_INLINE.match(line)
+        if match:
+            value = match.group(1).strip()
+            if value in (";", ""):
+                break                      # multi-line form; handled below
+            return _prettify_title(value.strip("'\""))
+        if line.strip().lower() == "_struct.title":
+            # Value is on the following line(s), usually ``;`` delimited.
+            for follow in lines[i + 1:]:
+                stripped = follow.rstrip("\n")
+                if stripped.startswith(";"):
+                    if text_lines:
+                        break
+                    text_lines.append(stripped[1:].strip())
+                elif text_lines is not None and stripped.strip():
+                    text_lines.append(stripped.strip())
+                if len(text_lines) > 12:
+                    break
+            break
+    return _prettify_title(" ".join(t for t in text_lines if t))
+
+
+def _prettify_title(title: Optional[str]) -> Optional[str]:
+    """Collapse whitespace and title-case an ALL-CAPS header title."""
+    if not title:
+        return None
+    text = re.sub(r"\s+", " ", title).strip().strip("'\";")
+    if not text:
+        return None
+    if text.isupper():
+        text = _prettify(text) or text
+    return text
+
+
+# --------------------------------------------------------------------------
 # PDB COMPND
 # --------------------------------------------------------------------------
 def _names_from_pdb(path: str) -> Dict[str, str]:

@@ -21,17 +21,20 @@ import time
 import uuid
 from typing import Optional
 
-from fastapi import FastAPI, Form, UploadFile
+from collections import OrderedDict
+
+from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from pdb2print.config import (
     PrintParams, Representation, MinWallMode, BaseStyle, BackboneStyle,
-    ConnectionParams, NoMagnetMethod, MagnetShape,
-    color_for_index,
+    ConnectionParams, NoMagnetMethod, MagnetShape, StandParams, ColumnShape,
+    MoleculeType, LigandStyle, color_for_index,
 )
 from pdb2print.pipeline import build_all, BuildCancelled
 from pdb2print import export
+from pdb2print import cache as cache_mod
 from pdb2print.cache import Cache, DEFAULT_CACHE_DIR
 
 
@@ -83,7 +86,15 @@ def _rgb_to_hex(rgb) -> str:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    # No-store on the shell page. The whole UI is one HTML file, so a browser
+    # holding a cached copy is a browser running last week's front end against
+    # this week's API — which presents as a fixed bug that is still there, and
+    # sends everyone hunting in the wrong place. The file is small and the page
+    # is loaded once per session; there is nothing to gain by caching it.
+    return FileResponse(
+        os.path.join(FRONTEND_DIR, "index.html"),
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 def _error_payload(message: str) -> dict:
@@ -163,6 +174,14 @@ def _map_params(fields: dict) -> PrintParams:
         backbone_bond_radius_mm=float(fields.get("backbone_bond_radius", 0.5)),
         probe_radius_ang=float(fields["probe_radius"]),
         surface_atom_padding_ang=float(fields["surface_padding"]),
+        # Defaults to False when the field is absent, matching the checkbox: a
+        # caller that says nothing about ligands gets the plain structure, which is
+        # both the old behaviour and the conservative one.
+        include_ligands=_bool(fields.get("include_ligands", False)),
+        ligand_style=LigandStyle(fields.get("ligand_style", "ball_stick")),
+        ligand_atom_mm=float(fields.get("ligand_atom", 2.2)),
+        ligand_bond_mm=float(fields.get("ligand_bond", 1.2)),
+        ligand_vdw_scale=float(fields.get("ligand_vdw_scale", 1.0)),
         connections=_map_connections(fields),
     )
 
@@ -205,6 +224,48 @@ def _sweep_output_root(now: Optional[float] = None) -> int:
         shutil.rmtree(path, ignore_errors=True)
         removed += 1
     return removed
+
+
+# --------------------------------------------------------------------------
+# Recently built meshes, kept in memory for the display stand
+# --------------------------------------------------------------------------
+#: token -> {"built", "params", "source"} for the last few completed builds.
+#:
+#: The stand is generated from the *finished* meshes and changes nothing about
+#: how they were built, so re-running the pipeline to add one would spend a
+#: minute of marching cubes reproducing geometry the server had in its hands a
+#: moment ago — and would spend it again for every change of column count. This
+#: is the short-lived hand-back that makes the button feel like a button.
+#:
+#: It is a cache of convenience and never one of record: a miss (server
+#: restarted, entry evicted, or the build came from the disk cache and so never
+#: existed in memory) falls back to a full rebuild, which is correct, just slow.
+_RECENT_BUILDS: "OrderedDict[str, dict]" = OrderedDict()
+_RECENT_LOCK = threading.Lock()
+
+#: How many builds to hold. Deliberately small: a large complex is hundreds of
+#: megabytes of triangles, and this process also has to mesh the next one.
+_RECENT_MAX = 2
+
+
+def _remember_build(token: str, source: str, params: PrintParams, built) -> None:
+    with _RECENT_LOCK:
+        _RECENT_BUILDS[token] = {
+            "built": built, "params": params, "source": source,
+        }
+        _RECENT_BUILDS.move_to_end(token)
+        while len(_RECENT_BUILDS) > _RECENT_MAX:
+            _RECENT_BUILDS.popitem(last=False)
+
+
+def _recall_build(token: str):
+    if not token:
+        return None
+    with _RECENT_LOCK:
+        entry = _RECENT_BUILDS.get(token)
+        if entry is not None:
+            _RECENT_BUILDS.move_to_end(token)
+        return entry
 
 
 def _cached_result(meta: dict) -> dict:
@@ -270,6 +331,12 @@ def _run_and_export(source: str, params: PrintParams, progress,
     out_dir = os.path.join(OUTPUT_ROOT, token)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Hold the meshes so "Create display stand" can work from them instead of
+    # meshing the whole structure again. Done before the export rather than
+    # after, so an export that fails on disk space still leaves the build
+    # reachable.
+    _remember_build(token, source, params, report.built)
+
     # Files are named after the structure so a download is self-describing; the
     # uuid directory (not the filename) is what keeps concurrent builds apart.
     stem = _download_stem(source, params)
@@ -326,6 +393,11 @@ def _run_and_export(source: str, params: PrintParams, progress,
         "connections": report.connections,
         "size_mm": size_mm,
         "scale_used": params.scale_mm_per_angstrom,
+        # Names the in-memory meshes for a follow-up stand request. Deliberately
+        # excluded from what gets cached below: a token identifies one process's
+        # memory, and serving a stale one from disk would send the client
+        # chasing a build that no longer exists.
+        "build_token": token,
     }
 
     # Store on miss. Only a build that produced a 3MF is worth keeping — that is
@@ -344,10 +416,16 @@ def _run_and_export(source: str, params: PrintParams, progress,
                 },
                 meta={
                     "stem": stem,
+                    # What each object *was*, so a later display-stand request
+                    # can reopen this entry as geometry instead of re-meshing
+                    # the whole structure. Cheap to write and the only thing
+                    # standing between a cache hit and a second full build.
+                    "objects": cache_mod.describe_objects(report.built),
                     # The URLs are per-build and meaningless once this temp
                     # directory is gone; a hit rewrites them from the entry.
                     "result": {k: v for k, v in result.items()
-                               if k not in ("glb_url", "threemf_url", "stl_url")},
+                               if k not in ("glb_url", "threemf_url", "stl_url",
+                                            "build_token")},
                 },
             )
         except Exception:
@@ -391,6 +469,11 @@ async def generate(
     backbone_bond_radius: float = Form(0.5),
     probe_radius: float = Form(1.4),
     surface_padding: float = Form(0.0),
+    include_ligands: str = Form("false"),
+    ligand_style: str = Form("ball_stick"),
+    ligand_atom: float = Form(2.2),
+    ligand_bond: float = Form(1.2),
+    ligand_vdw_scale: float = Form(1.0),
     # --- connector / joinery system ---
     connect: str = Form("false"),
     use_magnets: str = Form("false"),
@@ -457,6 +540,10 @@ async def generate(
             "backbone_bond_radius": backbone_bond_radius,
             "probe_radius": probe_radius,
             "surface_padding": surface_padding,
+            "include_ligands": include_ligands,
+            "ligand_style": ligand_style, "ligand_atom": ligand_atom,
+            "ligand_bond": ligand_bond,
+            "ligand_vdw_scale": ligand_vdw_scale,
             "connect": connect, "use_magnets": use_magnets,
             "no_magnet_method": no_magnet_method,
             "connector_diameter": connector_diameter,
@@ -510,6 +597,338 @@ async def generate(
             # Reached on normal completion *and* when the client disconnects
             # (the generator is closed / cancelled).  Setting it after a normal
             # finish is harmless — the worker has already returned.
+            cancelled.set()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------
+# Display stand
+# --------------------------------------------------------------------------
+def _map_stand(fields: dict) -> StandParams:
+    """Build a :class:`StandParams` from the stand form fields."""
+    return StandParams(
+        enabled=True,
+        columns=int(float(fields.get("stand_columns", 0) or 0)),
+        orbit_theta_deg=float(fields.get("orbit_theta", 0.0) or 0.0),
+        orbit_phi_deg=float(fields.get("orbit_phi", 75.0) or 75.0),
+        roll_deg=float(fields.get("orbit_roll", 0.0) or 0.0),
+        plate_margin_mm=float(fields.get("plate_margin", 7.0) or 7.0),
+        plate_thickness_mm=float(fields.get("plate_thickness", 4.0) or 4.0),
+        column_diameter_mm=float(fields.get("column_diameter", 8.0) or 8.0),
+        cradle_clearance_mm=float(fields.get("cradle_clearance", 0.35) or 0.35),
+        cradle_depth_mm=float(fields.get("cradle_depth", 4.0) or 4.0),
+        stand_off_mm=float(fields.get("stand_off", 6.0) or 6.0),
+        plaque=_bool(fields.get("plaque", True)),
+        plaque_pdb_id=_bool(fields.get("plaque_pdb_id", True)),
+        plaque_title=_bool(fields.get("plaque_title", True)),
+        plaque_scalebar=_bool(fields.get("plaque_scalebar", True)),
+        plaque_legend=_bool(fields.get("plaque_legend", True)),
+        plaque_tile=_bool(fields.get("plaque_tile", True)),
+        plaque_text_mm=float(fields.get("plaque_text", 5.0) or 5.0),
+        column_shape=ColumnShape(fields.get("column_shape", "square")),
+    )
+
+
+def _plaque_meta(source: str) -> dict:
+    """The PDB ID and structure title the plaque prints, best-effort."""
+    from pdb2print import io as p2p_io
+    from pdb2print.names import structure_title
+
+    stem = os.path.splitext(os.path.basename(source))[0]
+    meta = {"pdb_id": stem.upper() if len(stem) <= 8 else stem, "title": None}
+    try:
+        meta["title"] = structure_title(p2p_io.resolve_source(source))
+    except Exception:
+        pass
+    return meta
+
+
+def _built_from_cache(hit: dict):
+    """Reopen a cache entry as ``[(object, mesh), ...]``, or ``None``.
+
+    The per-chain STL zip an entry already carries *is* the finished geometry —
+    the same meshes the 3MF was written from, after the connections pass. Paired
+    with the object metadata stored beside it, that is everything a display stand
+    needs, so a structure served from cache can be stood up without meshing it a
+    second time.
+
+    This matters more than it looks. The in-memory registry only holds builds
+    this process actually performed, and the whole point of the cache is that
+    the popular structures are *never* built — so before this, the exact
+    structures most likely to be asked for were the ones guaranteed to pay for a
+    full rebuild before they could get a stand.
+    """
+    import io as _io
+    import zipfile
+
+    import trimesh
+
+    name = (hit.get("files") or {}).get("stl_zip")
+    if not name:
+        return None
+    path = os.path.join(cache.entry_dir(hit["key"]), name)
+    if not os.path.isfile(path):
+        return None
+
+    by_label = {}
+    order = []
+    try:
+        with zipfile.ZipFile(path) as zf:
+            # Zip order is write order is build order, which is the order the
+            # colour palette was handed out in. Keep it.
+            for entry in zf.namelist():
+                if not entry.lower().endswith(".stl"):
+                    continue
+                with zf.open(entry) as fh:
+                    mesh = trimesh.load(_io.BytesIO(fh.read()), file_type="stl")
+                label = os.path.splitext(os.path.basename(entry))[0]
+                by_label[label] = mesh
+                order.append(label)
+    except Exception:
+        return None
+
+    # Entries written before the metadata existed still carry everything needed
+    # in their filenames, so fall back to those rather than rebuilding.
+    objects = cache_mod.objects_from_meta(hit)
+    if not objects:
+        objects = cache_mod.objects_from_labels(order)
+    if not objects:
+        return None
+
+    built = []
+    for obj in objects:
+        mesh = by_label.get(obj.label())
+        if mesh is None:
+            return None            # a partial model is worse than a rebuild
+        built.append((obj, mesh))
+    return built or None
+
+
+def _run_stand(source: str, params: PrintParams, token: str, progress,
+               should_cancel=None) -> dict:
+    """Generate a display stand and export the model standing on it.
+
+    Uses the in-memory meshes for ``token`` when they are still there, and falls
+    back to a full rebuild when they are not — which happens after a restart, an
+    eviction, or when the original build was served from the disk cache and so
+    never existed as meshes in this process at all.
+
+    **Nothing here is written to the disk cache, deliberately.**  A stand is a
+    one-off: it is keyed on an orientation the user arranged by hand and will
+    almost never arrange identically twice, so an entry would be written once
+    and read never — while costing the same hundreds of megabytes per structure
+    that the pre-generated entries are budgeted in.  The cache exists to make
+    the *famous structure at preset settings* instant, and a stand is the
+    opposite of that.  (The rebuild fallback below calls ``build_all`` directly
+    rather than ``_run_and_export`` for the same reason: it must not store
+    either.)
+    """
+    from pdb2print import stand as stand_mod
+
+    entry = _recall_build(token)
+    built = None
+    base_params = params
+    if entry is not None:
+        progress(0.30, "Using the model already built…")
+        built = entry["built"]
+        base_params = entry["params"]
+    else:
+        # Not in memory. Before rebuilding, see whether this exact build is
+        # already sitting in the disk cache — a hit there serves finished
+        # per-chain meshes, which is all the stand needs.
+        try:
+            hit = cache.lookup(source, params)
+        except Exception:
+            hit = None
+        if hit:
+            progress(0.20, "Reopening the cached model…")
+            built = _built_from_cache(hit)
+
+    if built is None:
+        progress(0.02, "Rebuilding the model to stand it…")
+        try:
+            report = build_all(source, params, progress=lambda f, m: progress(
+                0.02 + 0.55 * f, m), should_cancel=should_cancel)
+        except BuildCancelled:
+            return _error_payload("Build cancelled.")
+        except Exception as exc:
+            return _error_payload(str(exc))
+        built = report.built
+        base_params = params
+
+    # The stand block is the only thing that may differ from the build that
+    # produced these meshes: everything else has to match, or the stand would be
+    # sized for geometry that is not there.
+    import dataclasses
+    effective = dataclasses.replace(base_params, stand=params.stand)
+
+    progress(0.62, "Placing the stand…")
+    try:
+        oriented, stand_parts, notes = stand_mod.build_stand(
+            built, effective, meta=_plaque_meta(source))
+    except Exception as exc:
+        return _error_payload(f"Could not build the display stand: {exc}")
+
+    combined = list(oriented) + list(stand_parts)
+
+    progress(0.86, "Writing export files…")
+    _sweep_output_root()
+    out_token = uuid.uuid4().hex
+    out_dir = os.path.join(OUTPUT_ROOT, out_token)
+    os.makedirs(out_dir, exist_ok=True)
+    stem = _download_stem(source, effective) + "_stand"
+
+    try:
+        # The preview is written Y-up so it stands the right way in the viewer
+        # and the orbit's poles agree with the model's own up; the print files
+        # stay Z-up, which is what a slicer means by up.
+        export.write_glb(stand_mod.to_view_frame(combined),
+                         os.path.join(out_dir, f"{stem}.glb"))
+        export.write_stl_zip(combined, os.path.join(out_dir, f"{stem}_stl.zip"))
+    except OSError as exc:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return _error_payload(
+            "The server ran out of disk space while writing the export files. "
+            f"({exc.strerror or exc})")
+
+    threemf_url = None
+    warning = None
+    try:
+        export.write_3mf(combined, os.path.join(out_dir, f"{stem}.3mf"))
+        threemf_url = f"/files/{out_token}/{stem}.3mf"
+    except (RuntimeError, OSError) as exc:
+        warning = str(exc)
+
+    # The viewer legend names the *molecule*. A base plate and a lettering tile
+    # are not chains and listing them there turns a legend into an inventory —
+    # the point of the pills is to say which colour is which subunit, and a
+    # "stand_plaque_tile" pill answers a question nobody asked.
+    chains = [
+        {"id": getattr(chain, "chain_id", "-"),
+         "name": chain.display_name(),
+         "color": _rgb_to_hex(color)}
+        for (chain, _mesh), color in zip(combined, export.object_colors(combined))
+        if getattr(chain, "mtype", None) != MoleculeType.STAND
+    ]
+
+    mins = [min(m.bounds[0][k] for _, m in combined) for k in range(3)]
+    maxs = [max(m.bounds[1][k] for _, m in combined) for k in range(3)]
+
+    progress(1.0, "Done.")
+    # Say what was actually produced, and from which switches. A plaque element
+    # that should not be there is otherwise only visible as a shape in a
+    # preview, which makes "it is still doing X" impossible to check against
+    # what the server believes it did.
+    sp = effective.stand
+    lines = [
+        f"Display stand: {len(stand_parts)} object(s) — "
+        + ", ".join(part.object_name() for part, _m in stand_parts),
+        f"  from {'meshes in memory' if entry is not None else 'the cached build'}"
+        f" · columns {sp.columns or 'auto'} {sp.column_shape.value}"
+        f" · orbit {sp.orbit_theta_deg:.0f}/{sp.orbit_phi_deg:.0f}"
+        f" roll {sp.roll_deg:.0f}",
+        f"  plaque={sp.plaque} id={sp.plaque_pdb_id} title={sp.plaque_title} "
+        f"scale={sp.plaque_scalebar} legend={sp.plaque_legend} "
+        f"tile={sp.plaque_tile}",
+    ]
+    lines.extend(f"  ! {n}" for n in notes)
+    return {
+        "ok": True,
+        "warning": warning,
+        "report": "\n".join(lines),
+        "glb_url": f"/files/{out_token}/{stem}.glb",
+        "threemf_url": threemf_url,
+        "stl_url": f"/files/{out_token}/{stem}_stl.zip",
+        "chains": chains,
+        "connections": [],
+        "size_mm": [float(maxs[k] - mins[k]) for k in range(3)],
+        "scale_used": effective.scale_mm_per_angstrom,
+        "stand_notes": notes,
+        # The stand build is not remembered: standing it again would start from
+        # the already-rotated meshes and tilt it twice.
+        "build_token": token,
+    }
+
+
+@app.post("/api/stand")
+async def stand(request: Request):
+    """Add a display stand to a model that has already been built.
+
+    Takes the same form fields as ``/api/generate`` plus a ``build_token`` and
+    the stand block, and streams progress the same way, so the front end reuses
+    its whole result-handling path.
+    """
+    form = dict(await request.form())
+    token = str(form.get("build_token", "")).strip()
+    source = str(form.get("pdb_id", "")).strip()
+
+    # An *uploaded* structure has no PDB ID to resend, and the temp file it was
+    # read from is deleted the moment its build finishes. The remembered build
+    # is therefore the only route to standing one — so take the source from
+    # there when the form cannot supply it, and only refuse when neither can.
+    if not source:
+        remembered = _recall_build(token)
+        if remembered is not None:
+            source = remembered["source"]
+    if not source:
+        return JSONResponse(
+            _error_payload("A display stand needs a model that is still in "
+                           "memory on the server. Generate the model again, "
+                           "then add the stand."),
+            status_code=400)
+
+    # ``_map_params`` indexes the fields the generate endpoint declares with a
+    # ``Form(...)`` default, so those defaults have to be supplied here too —
+    # this route takes the form wholesale rather than field by field, to avoid a
+    # second thirty-parameter signature drifting out of step with the first.
+    fields = {
+        "scale": 1.5, "grid_spacing": 0.5, "min_wall": 1.0,
+        "min_wall_mode": "uniform", "protein_rep": "surface",
+        "nucleic_rep": "tube_slab", "backbone_style": "tube",
+        "base_style": "slab", "nucleic_radius": 1.2, "slab_thickness": 1.2,
+        "base_width": 1.0, "connector_radius": 0.6, "atom_radius": 1.0,
+        "bond_radius": 0.5, "probe_radius": 1.4, "surface_padding": 0.0,
+    }
+    fields.update({k: v for k, v in form.items() if v != ""})
+
+    try:
+        params = _map_params(fields)
+        params.stand = _map_stand(fields)
+    except (ValueError, TypeError, KeyError) as exc:
+        return JSONResponse(
+            _error_payload(f"Invalid parameter: {exc}"), status_code=400)
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+        cancelled = threading.Event()
+
+        def progress(frac, msg):
+            loop.call_soon_threadsafe(
+                queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
+
+        def work():
+            try:
+                result = _run_stand(source, params, token, progress,
+                                    should_cancel=cancelled.is_set)
+            except Exception as exc:
+                result = _error_payload(str(exc))
+            loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
+            loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
+
+        loop.run_in_executor(None, work)
+        try:
+            while True:
+                kind, data = await queue.get()
+                if kind == "__done__":
+                    break
+                yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+        finally:
             cancelled.set()
 
     return StreamingResponse(

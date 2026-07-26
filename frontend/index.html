@@ -46,7 +46,6 @@
     font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
     color: var(--text); padding: 0 2px 2px; flex: none;
   }
-  .brand .dot { color: var(--accent); }
   .card {
     background: var(--s1); border: 0.5px solid var(--border);
     border-radius: 12px; padding: 12px 14px; flex: none;
@@ -278,6 +277,26 @@
     color: var(--muted); text-align: center; padding: 24px; pointer-events: none;
   }
   .viewer-empty svg { opacity: .5; }
+  /* ---- orientation gizmo (bottom-RIGHT of viewer) ----
+     A molecule has no up. Turned away from its stand it looks much the same
+     from many angles, so you lose track of which way you are facing and the
+     orbit's limits feel arbitrary rather than natural. This is the missing
+     reference: the structure's own axes projected onto the screen, plus the
+     direction that will become down when a stand is generated. */
+  .gizmo {
+    position: absolute; right: 12px; bottom: 12px; width: 84px; height: 84px;
+    z-index: 2; pointer-events: none; opacity: .92;
+  }
+  .gizmo[hidden] { display: none; }
+  .gizmo .axis { stroke-width: 1.7; stroke-linecap: round; }
+  .gizmo .lbl { font: 600 8px ui-monospace, monospace; }
+
+  /* The roll is applied to the rendered picture, which is exactly what rolling
+     the camera would look like and needs no camera support at all. Scaled up so
+     the rotated corners still cover the frame. Only reachable once the view is
+     locked, so a rotated picture never fights a drag. */
+  model-viewer { transform-origin: 50% 50%; }
+
   .legend {
     position: absolute; left: 12px; bottom: 12px;
     display: flex; flex-wrap: wrap; gap: 6px; max-width: 65%;
@@ -329,6 +348,87 @@
     100% { box-shadow: 0 0 0 0 rgba(47,158,111,0); }
   }
 
+  /* ---- display stand (overlay, top-RIGHT of viewer) ----
+     Top-right because the downloads own top-left and the legend bottom-left,
+     and because this button only appears once there is a model to stand. */
+  .stand-group { position: absolute; top: 14px; right: 14px; z-index: 2; }
+  /* Outlined rather than filled: the downloads on the other side are the filled
+     green, and two solid green buttons at once would read as one choice split in
+     two. The heavier border keeps it just as findable. */
+  .stand-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(23,26,29,.82); backdrop-filter: blur(6px);
+    border: 2px solid var(--accent); border-radius: 11px;
+    padding: 10px 15px; font: 600 13px/1 inherit; font-family: inherit;
+    letter-spacing: -0.01em; color: var(--accent); cursor: pointer;
+    transition: background .12s, border-color .12s, color .12s, transform .12s;
+  }
+  .stand-btn:hover {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+    transform: translateY(-1px);
+  }
+  .stand-btn[hidden] { display: none; }
+
+  /* Two positions, one card. While the view is being chosen it sits centred,
+     because the only decision on offer is about the view itself. Once locked it
+     moves to the corner and becomes an ordinary options panel, out of the way of
+     the model it is about to describe. */
+  .stand-sheet {
+    position: absolute; z-index: 5; width: 292px;
+    background: rgba(20,22,25,.97); backdrop-filter: blur(10px);
+    border: 0.5px solid var(--border); border-radius: 13px;
+    padding: 15px 16px 16px; box-shadow: 0 18px 44px rgba(0,0,0,.55);
+    transition: opacity .15s;
+  }
+  .stand-sheet.choosing { top: 50%; left: 50%; transform: translate(-50%, -50%); }
+  .stand-sheet.locked { top: 56px; right: 14px; }
+  /* The card stays solid. Fading it on hover was meant to let the model be
+     judged through it, and instead made the one panel you are actively reading
+     flicker every time the pointer crossed it. The card is small and the model
+     can simply be turned out from behind it. */
+  .stand-lockbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 11px; padding: 7px 9px;
+    background: rgba(47,158,111,.13); border: 0.5px solid var(--accent);
+    border-radius: 9px; font-size: 12px; color: var(--accent);
+  }
+  .stand-lockbar button {
+    border: none; background: none; padding: 0; cursor: pointer;
+    font: 500 11px/1 inherit; font-family: inherit; color: var(--muted);
+    text-decoration: underline;
+  }
+  .stand-lockbar button:hover { color: var(--text2); }
+  .stand-sheet[hidden] { display: none; }
+  .stand-sheet h4 {
+    margin: 0 0 3px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
+    color: var(--text);
+  }
+  .stand-sheet .hint { margin: 0 0 11px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+  .stand-sheet .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+  .stand-sheet .row > span { font-size: 12px; color: var(--text2); }
+  .stand-seg { display: inline-flex; gap: 3px; background: var(--s2); border-radius: 8px; padding: 2px; }
+  .stand-seg button {
+    min-width: 30px; padding: 4px 0; border: none; border-radius: 6px;
+    background: none; color: var(--text2); font: 600 12px/1 inherit;
+    font-family: inherit; cursor: pointer;
+  }
+  .stand-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .stand-sheet .chk { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; font-size: 12px; color: var(--text2); cursor: pointer; }
+  .stand-sheet .chk input { accent-color: var(--accent); }
+  .stand-sheet .sep { height: 0.5px; background: var(--border); margin: 12px 0 11px; }
+  .stand-go {
+    width: 100%; margin-top: 3px; padding: 9px 0; border: none; border-radius: 9px;
+    background: var(--accent); color: #fff; font: 600 13px/1 inherit;
+    font-family: inherit; cursor: pointer;
+  }
+  .stand-go:hover { background: var(--accent-d); }
+  .stand-cancel {
+    width: 100%; margin-top: 6px; padding: 7px 0; border: none; border-radius: 9px;
+    background: none; color: var(--muted); font: 500 12px/1 inherit;
+    font-family: inherit; cursor: pointer;
+  }
+  .stand-cancel:hover { color: var(--text2); }
+
   /* ---- generation progress bar (top edge of viewer) ---- */
   .progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--s2); z-index: 3; overflow: hidden; }
   .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width .25s ease; }
@@ -342,6 +442,49 @@
     white-space: pre-wrap;
   }
   .report .err { color: var(--red); }
+  /* ---- help toggle + manual overlay ----
+     The manual sits over the viewer, not over the settings: the point is to
+     read a step and set it on the left without losing your place.  Generate
+     closes it, because once a build starts the model is what you want to see. */
+  .brand { display: flex; align-items: center; }
+  .help-btn {
+    margin-left: 7px; flex: none; width: 17px; height: 17px; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 50%; border: 0.5px solid var(--border); background: var(--s2);
+    color: var(--text2); font: 600 11px/1 inherit; font-family: inherit;
+    cursor: pointer; transition: color .12s, border-color .12s, background .12s;
+  }
+  .help-btn:hover { color: var(--text); border-color: var(--accent); }
+  .help-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .manual {
+    position: absolute; inset: 0; z-index: 6; overflow: auto;
+    background: rgba(14,15,17,.975);
+    padding: 20px 22px 28px;
+    line-height: 1.55;
+  }
+  .manual-inner { max-width: 540px; margin: 0 auto; }
+  .manual-close {
+    position: absolute; top: 10px; right: 12px; width: 24px; height: 24px;
+    display: flex; align-items: center; justify-content: center; padding: 0;
+    background: none; border: none; color: var(--muted);
+    font: 400 20px/1 inherit; font-family: inherit; cursor: pointer;
+  }
+  .manual-close:hover { color: var(--text); }
+  .manual h3 { font-size: 15px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .manual h4 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--text2); font-weight: 600; margin: 20px 0 8px;
+    border-top: 0.5px solid var(--border); padding-top: 14px;
+  }
+  .manual h4 .n { color: var(--muted); margin-right: 6px; }
+  .manual p { margin: 0 0 9px; color: var(--text); }
+  .manual .lede { color: var(--text2); margin-bottom: 2px; }
+  .manual dl { display: grid; grid-template-columns: 128px 1fr; gap: 5px 14px; margin: 0 0 9px; }
+  .manual dt { font-weight: 600; }
+  .manual dd { margin: 0; color: var(--text2); }
+  .manual .m-foot { margin-top: 18px; padding-top: 12px; border-top: 0.5px solid var(--border); color: var(--muted); font-size: 12px; }
+  @media (max-width: 900px) { .manual dl { grid-template-columns: 1fr; gap: 1px 0; } .manual dd { margin-bottom: 7px; } }
 </style>
 </head>
 <body>
@@ -350,7 +493,10 @@
     <aside class="settings">
       <!-- primary action + brand, pinned to the top while the panel scrolls -->
       <div class="gen-bar">
-        <div class="brand">pdb2print<span class="dot">.</span></div>
+        <div class="brand">pdb2print
+          <button id="help-btn" class="help-btn" type="button" aria-expanded="false"
+                  aria-controls="manual" title="How it works">?</button>
+        </div>
         <button id="generate" class="btn-generate">
           <span class="spinner"></span>
           <span class="btn-label">Generate</span>
@@ -672,12 +818,119 @@
           </label>
         </div>
       </div>
+
+      <!-- LIGANDS (last: one switch, on by default, nothing to tune) -->
+      <div class="card">
+        <div class="card-head">
+          <p class="eyebrow">Ligands</p>
+          <span class="hint">bound small molecules</span>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="include_ligands"><span class="track"></span>
+          <span class="sw-text"><span>Include ligands</span><span class="sw-sub">each bound molecule gets its own object and filament, in a pocket carved to its shape</span></span>
+        </label>
+        <div id="ligand-opts" class="conn-opts">
+          <div class="field">
+            <p class="field-label">Style <span class="sub">— how each bound molecule is drawn</span></p>
+            <div class="seg" data-group="ligand_style">
+              <button data-value="ball_stick" class="active" title="Balls at the atoms, sticks between them — reads as that specific molecule"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="5.5" cy="17" r="2.6"/><circle cx="12" cy="6.5" r="2.6"/><circle cx="18.5" cy="16" r="2.6"/><path d="M7.3 15 10.4 9M13.6 8.6l3.4 5.1"/></svg>Ball &amp; stick</button>
+              <button data-value="spacefill" title="Van der Waals spheres fused into one lump — by far the most printable"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8.5" cy="13" r="5.4"/><circle cx="16" cy="9.5" r="4.2"/></svg>Spacefill</button>
+              <button data-value="surface" title="The same solvent surface the protein uses — matches a surface-rendered host"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 13c0-4 3-6 6-5.5S13 4 17 5.5 21 12 19 15s-6 4.5-9 3.5S4 17 4 13Z"/></svg>Surface</button>
+              <button data-value="sticks" title="Bonds only, no atom balls — clearest chemistry, most fragile print"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M4 18 10 8M10 8l5 6M15 14l5-5"/></svg>Sticks</button>
+            </div>
+          </div>
+          <div class="field" data-slider="ligand_atom">
+            <div class="slider-row"><span class="name" title="Ball diameter in ball-and-stick, and the floor on atom size in spacefill. This is an absolute size in millimetres while the atom spacing follows Scale, so the two only agree at one scale: raise Scale and raise this with it, or the molecule thins out into pinheads on long sticks.">Ligand atoms (mm)</span><span class="val"></span></div>
+            <input type="range" min="0.8" max="8.0" step="0.1" value="2.2">
+          </div>
+          <div class="field" data-slider="ligand_bond">
+            <div class="slider-row"><span class="name" title="Stick diameter, and the whole thickness of the Sticks style. Independent of the atom size — the bonds are what snap on the plate, so they often want to be thicker than the proportions suggest.">Ligand bonds (mm)</span><span class="val"></span></div>
+            <input type="range" min="0.4" max="6.0" step="0.1" value="1.2">
+          </div>
+          <div class="field" data-slider="ligand_vdw_scale">
+            <div class="slider-row"><span class="name" title="Spacefill only: multiplies the real van der Waals radii. Below 1 the atoms pull apart and the molecule reads as separate beads; at 1 they fuse into the solid lump that prints best.">Spacefill fullness</span><span class="val"></span></div>
+            <input type="range" min="0.5" max="1.4" step="0.05" value="1.0">
+          </div>
+          <p class="rep-note" id="ligand-surface-note" hidden>Surface ligands are sized by the <b>probe radius</b> and <b>surface padding</b> set under Protein — the same controls, so the drug and the pocket match.</p>
+          <p class="rep-note" style="margin-top:8px">Water and single ions are always skipped, along with common crystallisation additives (glycerol, PEG, sulfate and the like). Ligands never get a magnet — the pocket holds them. <b>Spacefill</b> is the safest bet on a printer; <b>sticks</b> is the most fragile.</p>
+        </div>
+      </div>
     </aside>
 
     <!-- ============ PREVIEW (right) ============ -->
     <section class="hero">
       <div class="viewer-wrap">
         <div id="progress" class="progress" hidden><div id="progress-fill" class="progress-fill"></div></div>
+        <div id="manual" class="manual" hidden>
+          <button id="manual-close" class="manual-close" type="button" title="Close (Esc)" aria-label="Close">&times;</button>
+          <div class="manual-inner">
+            <h3>How this works</h3>
+            <p class="lede">Type a PDB ID, pick a style, download a file your slicer understands.
+            Leave this open while you work down the settings &mdash; Generate closes it.</p>
+
+            <h4><span class="n">1</span> Load a structure</h4>
+            <p>Type a 4-character PDB ID and press Enter, or upload a <code>.pdb</code>,
+            <code>.cif</code>, <code>.mmcif</code> or <code>.bcif</code>. The examples load
+            with one click &mdash; <b>1UBQ</b> for a small protein, <b>1BNA</b> for a DNA
+            duplex, <b>1ZAA</b> for both together.</p>
+
+            <h4><span class="n">2</span> Pick a style</h4>
+            <dl>
+              <dt>Surface</dt>
+              <dd>Solid molecular surface. Chunky, robust, prints without supports. Use it unless you have a reason not to.</dd>
+              <dt>Cartoon / Tubes</dt>
+              <dd>Textbook ribbons, or the backbone alone. Both are delicate &mdash; plan on supports, ideally resin.</dd>
+              <dt>Tube-slab</dt>
+              <dd>For DNA and RNA: a backbone with one rung per base. The three preset chips set the whole look in one click; backbone and bases can also be set separately.</dd>
+            </dl>
+
+            <h4><span class="n">3</span> Set the size</h4>
+            <dl>
+              <dt>Scale (mm/&#8491;)</dt>
+              <dd>How big it comes out. Estimated dimensions appear under the slider after the first build.</dd>
+              <dt>Grid spacing</dt>
+              <dd>Mesh resolution &mdash; smaller is finer and slower.</dd>
+              <dt>Min wall</dt>
+              <dd>Under Advanced: the thinnest feature allowed, grown to size as the model is built. Surface ignores it, being thick everywhere already.</dd>
+            </dl>
+            <p>What actually matters is grid spacing divided by scale, so dropping the
+            scale coarsens the mesh even though you never touched the grid.</p>
+
+            <h4><span class="n">4</span> Connect the chains</h4>
+            <p>Off by default. Turn on <b>Connect chains</b> and pick <b>Fixed joint</b>,
+            which welds them in plastic by growing them together (Inflate) or bridging them
+            with a rod (Bridge), or <b>Magnets</b>, which cuts a pocket in each side so the
+            parts snap together. Set diameter and thickness to the magnets you own; the
+            preview highlights where they land.</p>
+            <p>Press-fit clearance defaults to 0.2&nbsp;mm, which is right on a Prusa Core
+            One. FDM holes print undersize, so a nominal pocket will not take the magnet at
+            all &mdash; raise it if they won&rsquo;t go in, lower it if they fall out.</p>
+            <p><b>Connect DNA base pairs</b> fuses the two strands of a duplex at every
+            base pair. Leave it on unless you want the strands separate.</p>
+
+            <h4><span class="n">5</span> Download and slice</h4>
+            <p>Take the <b>3MF</b>. In PrusaSlicer each chain opens as its own named object:
+            right-click one, <b>Change extruder</b>, assign a filament, slice. Per-chain STLs
+            come as a zip if you would rather. With magnets, push one into each pocket after
+            printing.</p>
+
+            <h4>How long it takes</h4>
+            <p>Finished builds are cached, so a structure someone has already made at the
+            same settings comes back immediately. If you are the first to ask, a small
+            protein takes about a minute and a large complex several &mdash; it is a small
+            server and the meshing is the slow part.</p>
+
+            <h4>If it fails</h4>
+            <p>Try going coarser, not finer. A coarse grid smooths a thin neck shut; a fine
+            one can resolve it into two surfaces meeting at a point, which is not printable
+            and gets rejected. Meshes are checked before export, so you get a message rather
+            than a broken file.</p>
+
+            <p class="m-foot">Free and open source, MIT &mdash;
+            <a href="https://github.com/davidtheadmin/pdb2print" target="_blank" rel="noopener">source on GitHub</a>.
+            Structures from the <a href="https://www.rcsb.org/" target="_blank" rel="noopener">RCSB PDB</a>.</p>
+          </div>
+        </div>
         <div class="dl-group">
           <a id="dl-3mf" class="dl-top" aria-disabled="true" download title="Multi-object 3MF — one coloured object per chain, for PrusaSlicer">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
@@ -688,11 +941,87 @@
             <span>STL <span class="dl-sub">.zip</span></span>
           </a>
         </div>
-        <model-viewer id="viewer" camera-controls touch-action="pan-y" interaction-prompt="none" shadow-intensity="0" exposure="1.1" style="display:none"></model-viewer>
+        <div class="stand-group">
+          <button id="stand-btn" class="stand-btn" type="button" hidden
+                  title="Generate a display stand matching the orientation you are looking at">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M7 21v-7"/><path d="M17 21v-7"/><path d="M5 14h14"/><circle cx="12" cy="7" r="4"/></svg>
+            <span>Create display stand</span>
+          </button>
+        </div>
+        <div id="stand-sheet" class="stand-sheet" hidden>
+          <h4>Display stand</h4>
+
+          <div id="stand-step-lock">
+            <p class="hint">Turn the model to the pose you want it displayed in &mdash;
+            whatever ends up <b>down on your screen</b> becomes down on the desk.
+            Lock the view when it looks right.</p>
+            <div class="row" style="margin:0 0 2px">
+              <span>Roll</span>
+              <span style="font-size:11px;color:var(--muted)" id="stand-roll-val">0&deg;</span>
+            </div>
+            <input id="stand-roll" type="range" min="-180" max="180" step="1" value="0"
+                   style="width:100%;margin:0 0 4px">
+            <p class="hint" style="margin:0 0 11px">Spins the view in place &mdash; the one
+            turn the orbit cannot do. Note that while it is off zero, dragging to
+            orbit follows the rolled picture, so it is easiest to aim first and roll
+            last.</p>
+            <button id="stand-lock" class="stand-go" type="button">Lock this view</button>
+          </div>
+
+          <div id="stand-step-opts" hidden>
+            <div class="stand-lockbar">
+              <span>&#10003;&nbsp; View locked</span>
+              <button id="stand-unlock" type="button">Unlock</button>
+            </div>
+            <div class="row">
+              <span>Columns</span>
+              <div class="stand-seg" id="stand-columns">
+                <button type="button" data-n="0" aria-pressed="true">Auto</button>
+                <button type="button" data-n="1" aria-pressed="false">1</button>
+                <button type="button" data-n="2" aria-pressed="false">2</button>
+                <button type="button" data-n="3" aria-pressed="false">3</button>
+              </div>
+            </div>
+            <p class="hint" id="stand-col-hint" style="margin:-4px 0 10px"></p>
+            <div class="row">
+              <span>Shape</span>
+              <div class="stand-seg" id="stand-shape">
+                <button type="button" data-s="square" aria-pressed="true" style="min-width:52px">Square</button>
+                <button type="button" data-s="round" aria-pressed="false" style="min-width:52px">Round</button>
+              </div>
+            </div>
+            <div class="sep"></div>
+            <label class="chk"><input type="checkbox" id="stand-plaque" checked> Engrave the base</label>
+            <div id="stand-plaque-opts" style="padding-left:19px">
+              <label class="chk"><input type="checkbox" id="stand-pdb-id" checked> PDB ID</label>
+              <label class="chk"><input type="checkbox" id="stand-title" checked> Structure name</label>
+              <label class="chk"><input type="checkbox" id="stand-scalebar" checked> Scale bar and ratio</label>
+              <label class="chk"><input type="checkbox" id="stand-legend" checked> Chain legend, colour-matched</label>
+              <label class="chk"><input type="checkbox" id="stand-tile" checked> White tile behind the text</label>
+            </div>
+            <button id="stand-go" class="stand-go" type="button">Generate stand</button>
+          </div>
+
+          <button id="stand-cancel" class="stand-cancel" type="button">Cancel</button>
+        </div>
+        <!-- min/max-camera-orbit are set explicitly because the defaults stop
+             short: model-viewer clamps the polar angle away from the poles, so
+             you cannot look at a model straight down or straight up, which are
+             exactly the two views someone choosing a display orientation reaches
+             for. 0deg-180deg opens the full sweep; the azimuth is unbounded so
+             it can be spun continuously rather than hitting a wall. -->
+        <model-viewer id="viewer" camera-controls touch-action="pan-y"
+                      interaction-prompt="none" shadow-intensity="0" exposure="1.1"
+                      min-camera-orbit="-Infinity 0deg auto"
+                      max-camera-orbit="Infinity 180deg auto"
+                      style="display:none"></model-viewer>
         <div id="viewer-empty" class="viewer-empty">
           <svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
           <div>Enter a PDB ID or pick an example,<br>then press Generate to build a printable model.</div>
         </div>
+        <svg id="gizmo" class="gizmo" viewBox="0 0 84 84" hidden aria-hidden="true">
+          <g id="gz-axes"></g>
+        </svg>
         <div id="legend" class="legend"></div>
       </div>
       <pre id="report" class="report">No model built yet.</pre>
@@ -894,6 +1223,41 @@
   }
   $('#connect').addEventListener('change', updateConnOpts);
   $('#socket').addEventListener('change', updateConnOpts);
+
+  // ---- ligands ----
+  // The whole block goes away with the switch, and within it each control is
+  // shown only for the styles that actually read it. A slider that is visible
+  // but inert is worse than one that is absent: it invites you to set it, and
+  // then quietly disagrees with what you see.
+  //
+  //   ball & stick — atom size, bond size
+  //   spacefill    — atom size (as a floor), vdW fullness
+  //   sticks       — bond size only
+  //   surface      — neither; it is sized by the probe and padding controls,
+  //                  which live under Protein
+  const LIGAND_FIELDS = {
+    ball_stick: ['ligand_atom', 'ligand_bond'],
+    spacefill: ['ligand_atom', 'ligand_vdw_scale'],
+    sticks: ['ligand_bond'],
+    surface: [],
+  };
+
+  function updateLigandOpts() {
+    const on = $('#include_ligands').checked;
+    $('#ligand-opts').hidden = !on;
+    if (!on) return;
+    const style = groups.ligand_style();
+    const shown = LIGAND_FIELDS[style] || LIGAND_FIELDS.ball_stick;
+    ['ligand_atom', 'ligand_bond', 'ligand_vdw_scale'].forEach(key => {
+      const field = $(`.field[data-slider="${key}"]`);
+      if (field) field.hidden = !shown.includes(key);
+    });
+    const note = $('#ligand-surface-note');
+    if (note) note.hidden = (style !== 'surface');
+  }
+  $('#include_ligands').addEventListener('change', updateLigandOpts);
+  $('.seg[data-group="ligand_style"]').addEventListener('click', updateLigandOpts);
+  updateLigandOpts();
   $('.seg[data-group="use_magnets"]').addEventListener('click', updateConnOpts);
   $('.seg[data-group="no_magnet_method"]').addEventListener('click', updateConnOpts);
 
@@ -1129,6 +1493,16 @@
     fd.append('backbone_bond_radius', sliders.bb_bond_radius.value);
     fd.append('probe_radius', sliders.probe_radius.value);
     fd.append('surface_padding', sliders.surface_padding.value);
+    // Always sent, whatever it is set to: it changes which objects exist, so it
+    // is part of the cache key on both settings (see cache.canonical_params).
+    fd.append('include_ligands', $('#include_ligands').checked);
+    // A diameter, sent as-is — the builder halves it.  Deliberately not derived
+    // here the way cartoon_coil_radius is: a value the front end computes has to
+    // be reproduced byte-for-byte in presets.py or the cache stops hitting.
+    fd.append('ligand_style', groups.ligand_style());
+    fd.append('ligand_atom', sliders.ligand_atom.value);
+    fd.append('ligand_bond', sliders.ligand_bond.value);
+    fd.append('ligand_vdw_scale', sliders.ligand_vdw_scale.value);
     fd.append('connect', $('#connect').checked);
     fd.append('use_magnets', groups.use_magnets());
     fd.append('no_magnet_method', groups.no_magnet_method());
@@ -1178,6 +1552,7 @@
     renderLegend(data.chains);
     setDownload($('#dl-3mf'), data.threemf_url);
     setDownload($('#dl-stl'), data.stl_url);
+    if (data.ok) standReady(data);
 
     // Remember the structure's Å extent so the Scale slider can show live size.
     if (data.size_mm && data.scale_used) {
@@ -1199,6 +1574,40 @@
     setReport(text, !data.ok || !!data.warning);
   }
 
+  // Read one SSE response to completion and apply whatever it ends with.
+  // Shared by Generate and the display stand, which stream identically — the
+  // stand endpoint was written to the same contract precisely so this handling
+  // did not have to be written twice and kept in step.
+  async function consumeStream(res) {
+    const ctype = res.headers.get('content-type') || '';
+    if (!ctype.includes('text/event-stream') || !res.body) {
+      applyResult(await res.json());
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', finalResult = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const evt = parseSSE(buf.slice(0, idx));
+        buf = buf.slice(idx + 2);
+        if (!evt) continue;
+        if (evt.event === 'progress') {
+          showProgress(evt.data.frac);
+          setReport(evt.data.msg || '', false);
+        } else if (evt.event === 'result') {
+          finalResult = evt.data;
+        }
+      }
+    }
+    if (finalResult) applyResult(finalResult);
+    else setReport('No result received from the server.', true);
+  }
+
   // The AbortController for the build in flight, or null when idle.  Aborting
   // the fetch also drops the SSE stream, which the server reads as "client gone"
   // and uses to stop the build itself — so Cancel frees the machine, not just
@@ -1211,12 +1620,298 @@
     inflight = null;
   }
 
+  // ---- orientation gizmo ----
+  // Mirrors pdb2print/stand.py:view_basis exactly. It has to: the gizmo's whole
+  // job is to promise what the stand will do, and a reference that disagrees
+  // with the geometry is worse than none.
+  function viewBasis(thetaDeg, phiDeg) {
+    const th = thetaDeg * Math.PI / 180, ph = phiDeg * Math.PI / 180;
+    let pos = [Math.sin(ph) * Math.sin(th), Math.cos(ph), Math.sin(ph) * Math.cos(th)];
+    const n = Math.hypot(...pos) || 1;
+    const fwd = pos.map(v => -v / n);
+    const up0 = [0, 1, 0];
+    let right = [
+      fwd[1] * up0[2] - fwd[2] * up0[1],
+      fwd[2] * up0[0] - fwd[0] * up0[2],
+      fwd[0] * up0[1] - fwd[1] * up0[0],
+    ];
+    if (Math.hypot(...right) < 1e-6) right = [Math.cos(th), 0, -Math.sin(th)];
+    const rn = Math.hypot(...right); right = right.map(v => v / rn);
+    const up = [
+      right[1] * fwd[2] - right[2] * fwd[1],
+      right[2] * fwd[0] - right[0] * fwd[2],
+      right[0] * fwd[1] - right[1] * fwd[0],
+    ];
+    const un = Math.hypot(...up);
+    return { right, fwd, up: up.map(v => v / un) };
+  }
+
+  const AXES = [
+    { v: [1, 0, 0], name: 'X', color: '#e05c5c' },
+    { v: [0, 1, 0], name: 'Y', color: '#5ccf7a' },
+    { v: [0, 0, 1], name: 'Z', color: '#5c8fe0' },
+  ];
+
+  // NB: attribute, not the `.hidden` property. `hidden` is an IDL attribute of
+  // HTMLElement, and an <svg> is an SVGElement — which inherits from Element,
+  // not HTMLElement. Assigning `.hidden = false` on it sets a stray JS property
+  // and leaves the content attribute in place, so the CSS `[hidden]` rule goes
+  // on matching and the gizmo stays invisible however hard you look for it.
+  function showGizmo(on) {
+    const gz = $('#gizmo');
+    if (on) gz.removeAttribute('hidden');
+    else gz.setAttribute('hidden', '');
+  }
+
+  function drawGizmo() {
+    const gz = $('#gizmo');
+    if (gz.hasAttribute('hidden')) return;
+    const { theta, phi } = currentOrbit();
+    let b = viewBasis(theta, phi);
+    // The gizmo has to agree with the picture, and the picture is rolled by CSS.
+    if (standRoll) {
+      const r = standRoll * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+      const right = b.right.map((v, i) => c * v + s * b.up[i]);
+      const up = b.up.map((v, i) => c * v - s * b.right[i]);
+      b = { right, up, fwd: b.fwd };
+    }
+    const dot = (a, c) => a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+    const cx = 42, cy = 42, len = 24;
+
+    // Axes drawn back-to-front so the one pointing at you overlaps the rest.
+    const drawn = AXES.map(ax => {
+      const sx = dot(ax.v, b.right), sy = dot(ax.v, b.up), depth = dot(ax.v, b.fwd);
+      return { ...ax, sx, sy, depth };
+    }).sort((p, q) => q.depth - p.depth);
+
+    $('#gz-axes').innerHTML = drawn.map(a => {
+      const x = cx + a.sx * len, y = cy - a.sy * len;
+      const faded = a.depth > 0 ? .45 : 1;      // pointing away = dimmer
+      return `<line class="axis" x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}"
+                stroke="${a.color}" opacity="${faded}"/>
+              <text class="lbl" x="${(cx + a.sx * (len + 7)).toFixed(1)}"
+                    y="${(cy - a.sy * (len + 7) + 3).toFixed(1)}"
+                    fill="${a.color}" opacity="${faded}" text-anchor="middle">${a.name}</text>`;
+    }).join('');
+  }
+
+  // ---- display stand ----
+  // The button appears only once there is a model, because the stand is defined
+  // by the orientation of one.  ``standBuild`` holds what the last successful
+  // build needs to be stood up again: the token naming the meshes the server
+  // still has in memory, and the footprint used for the column recommendation.
+  let standBuild = null;
+  let standColumns = 0;                      // 0 = auto
+  let standLocked = false;
+  let lockedOrbit = null;
+  let standRoll = 0;
+
+  // Rotate the rendered picture. Scaled so the rotated corners still fill the
+  // frame — a plain rotate would show the background through them.
+  function applyRoll(deg) {
+    standRoll = deg;
+    const v = $('#viewer');
+    const w = v.clientWidth || 1, h = v.clientHeight || 1;
+    const r = Math.abs(deg) * Math.PI / 180;
+    const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
+    const scale = Math.max((w * c + h * s) / w, (w * s + h * c) / h);
+    v.style.transform = deg ? `rotate(${deg}deg) scale(${scale.toFixed(3)})` : '';
+    $('#stand-roll-val').textContent = `${deg}°`;
+    drawGizmo();
+  }
+
+  const standBtn = $('#stand-btn');
+  const standSheet = $('#stand-sheet');
+
+  function standReady(data) {
+    // A *stand* result must not become the thing the next stand is built from:
+    // its meshes are already rotated upright, and standing those would apply
+    // the orientation twice. So the token from the last ordinary build is kept
+    // and the button stays put, which is what makes "try three columns instead"
+    // a second click rather than a full rebuild.
+    showGizmo(true);
+    drawGizmo();
+    if (data.stand_notes) { standBtn.hidden = false; return; }
+    standBuild = { token: data.build_token || '', size: data.size_mm || null };
+    standBtn.hidden = false;
+    updateColumnHint();
+  }
+
+  // Mirrors ``stand.recommend_columns`` so the hint agrees with what Auto will
+  // actually do.  Kept in the same terms — the longest horizontal span — rather
+  // than guessed from the volume, so the two cannot drift apart quietly.
+  function recommendColumns(size) {
+    if (!size) return 2;
+    const span = Math.max(size[0], size[1], size[2]);
+    if (span < 45) return 1;
+    if (span < 110) return 2;
+    return 3;
+  }
+
+  function updateColumnHint() {
+    const rec = recommendColumns(standBuild && standBuild.size);
+    const hint = $('#stand-col-hint');
+    if (standColumns === 0) {
+      hint.textContent = `Auto picks ${rec} for a model this size.`;
+    } else if (standColumns === 1) {
+      hint.textContent = 'One column: compact models only — a long structure will rock on it.';
+    } else {
+      hint.textContent = `${standColumns} columns, spread to straddle the centre of mass.`;
+    }
+  }
+
+  let standShape = 'square';
+  $('#stand-shape').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    standShape = btn.dataset.s;
+    $('#stand-shape').querySelectorAll('button').forEach(b =>
+      b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+  });
+
+  $('#stand-columns').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    standColumns = parseInt(btn.dataset.n, 10) || 0;
+    $('#stand-columns').querySelectorAll('button').forEach(b =>
+      b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
+    updateColumnHint();
+  });
+
+  $('#stand-plaque').addEventListener('change', e => {
+    $('#stand-plaque-opts').style.opacity = e.target.checked ? '1' : '.4';
+    $('#stand-plaque-opts').querySelectorAll('input').forEach(
+      i => { i.disabled = !e.target.checked; });
+  });
+
+  function currentOrbit() {
+    // model-viewer reports the orbit in radians; the server wants degrees, and
+    // only the two angles matter — the radius is how far the camera sits back,
+    // which says nothing about which way is down.
+    const v = $('#viewer');
+    let theta = 0, phi = 75;
+    try {
+      const orbit = v.getCameraOrbit();
+      theta = orbit.theta * 180 / Math.PI;
+      phi = orbit.phi * 180 / Math.PI;
+    } catch (err) { /* viewer not ready; the defaults are a sane three-quarter view */ }
+    return { theta, phi };
+  }
+
+  // Locking freezes the camera as well as recording it. Reading the orbit at
+  // Generate time instead would mean a stray drag between choosing and clicking
+  // silently changed which way the stand faces — and the whole feature turns on
+  // that one number being the one the user meant.
+  function setStandLocked(on) {
+    standLocked = on;
+    const v = $('#viewer');
+    if (on) {
+      lockedOrbit = currentOrbit();
+      v.removeAttribute('camera-controls');
+    } else {
+      lockedOrbit = null;
+      v.setAttribute('camera-controls', '');
+    }
+    $('#stand-step-lock').hidden = on;
+    $('#stand-step-opts').hidden = !on;
+    standSheet.classList.toggle('choosing', !on);
+    standSheet.classList.toggle('locked', on);
+    if (on) updateColumnHint();
+  }
+
+  $('#stand-roll').addEventListener('input', e => applyRoll(parseInt(e.target.value, 10) || 0));
+
+  function showStandSheet(on) {
+    standSheet.hidden = !on;
+    if (!on) { $('#stand-roll').value = '0'; applyRoll(0); }
+    if (on) setStandLocked(false);
+    else if (standLocked) setStandLocked(false);   // never leave the view stuck
+  }
+  // While a stand is building this is the Cancel button: it is the control the
+  // user just came from, so it is where they look to stop it — not the Generate
+  // button on the far side of the window.
+  standBtn.addEventListener('click', () => {
+    if (inflight) { cancelBuild(); return; }
+    showStandSheet(standSheet.hidden);
+  });
+  $('#stand-cancel').addEventListener('click', () => showStandSheet(false));
+  $('#stand-lock').addEventListener('click', () => setStandLocked(true));
+  $('#stand-unlock').addEventListener('click', () => setStandLocked(false));
+
+  async function generateStand() {
+    if (inflight) return;
+    if (!standLocked || !lockedOrbit) {
+      setReport('Lock the view first — the stand is built around it.', true);
+      return;
+    }
+    const orbit = lockedOrbit;
+    const roll = standRoll;
+    standSheet.hidden = true;
+    setStandLocked(false);             // hand the camera back for the preview
+    $('#stand-roll').value = '0';
+    applyRoll(0);                      // the result arrives already rolled
+    const fd = collectForm();
+    fd.append('orbit_roll', String(roll));
+    fd.append('build_token', (standBuild && standBuild.token) || '');
+    fd.append('orbit_theta', orbit.theta.toFixed(3));
+    fd.append('orbit_phi', orbit.phi.toFixed(3));
+    fd.append('stand_columns', String(standColumns));
+    fd.append('column_shape', standShape);
+    fd.append('plaque_tile', $('#stand-tile').checked);
+    fd.append('plaque', $('#stand-plaque').checked);
+    fd.append('plaque_pdb_id', $('#stand-pdb-id').checked);
+    fd.append('plaque_title', $('#stand-title').checked);
+    fd.append('plaque_scalebar', $('#stand-scalebar').checked);
+    fd.append('plaque_legend', $('#stand-legend').checked);
+
+    const ctrl = new AbortController();
+    inflight = ctrl;
+    genBtn.classList.add('busy');
+    btnLabel.textContent = 'Standing…';
+    const standLabel = standBtn.querySelector('span');
+    standLabel.textContent = 'Cancel';
+    setReport('Building the display stand…', false);
+    showProgress(0.02);
+    try {
+      const res = await fetch('/api/stand', {
+        method: 'POST', body: fd, signal: ctrl.signal,
+      });
+      await consumeStream(res);
+    } catch (err) {
+      if (err && err.name === 'AbortError') setReport('Stand cancelled.', false);
+      else setReport('Stand failed: ' + err.message, true);
+    } finally {
+      inflight = null;
+      genBtn.classList.remove('busy');
+      btnLabel.textContent = 'Generate';
+      standLabel.textContent = 'Create display stand';
+      hideProgress();
+    }
+  }
+  $('#stand-go').addEventListener('click', generateStand);
+
+  // ---- manual overlay ----
+  // Covers the viewer only, so the settings stay usable with the text open.
+  const manualEl = $('#manual'), helpBtn = $('#help-btn');
+  function showManual(on) {
+    manualEl.hidden = !on;
+    helpBtn.classList.toggle('active', on);
+    helpBtn.setAttribute('aria-expanded', on ? 'true' : 'false');
+    if (on) manualEl.scrollTop = 0;
+  }
+  helpBtn.addEventListener('click', () => showManual(manualEl.hidden));
+  $('#manual-close').addEventListener('click', () => showManual(false));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !manualEl.hidden) showManual(false);
+  });
+
   async function generate() {
     if (inflight) return;              // already building; the button cancels
     if (!$('#pdb-id').value.trim() && !fileInput.files.length) {
       setReport('Enter a PDB ID or upload a .pdb/.cif file.', true);
       return;
     }
+    showManual(false);                 // the model is what you want to see next
     const ctrl = new AbortController();
     inflight = ctrl;
     genBtn.classList.add('busy');
@@ -1228,35 +1923,7 @@
       const res = await fetch('/api/generate', {
         method: 'POST', body: collectForm(), signal: ctrl.signal,
       });
-      const ctype = res.headers.get('content-type') || '';
-
-      if (!ctype.includes('text/event-stream') || !res.body) {
-        applyResult(await res.json());
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '', finalResult = null;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const evt = parseSSE(buf.slice(0, idx));
-          buf = buf.slice(idx + 2);
-          if (!evt) continue;
-          if (evt.event === 'progress') {
-            showProgress(evt.data.frac);
-            setReport(evt.data.msg || '', false);
-          } else if (evt.event === 'result') {
-            finalResult = evt.data;
-          }
-        }
-      }
-      if (finalResult) applyResult(finalResult);
-      else setReport('No result received from the server.', true);
+      await consumeStream(res);
     } catch (err) {
       if (err && err.name === 'AbortError') setReport('Build cancelled.', false);
       else setReport('Request failed: ' + err.message, true);
@@ -1271,6 +1938,33 @@
   // The main button is Generate when idle and Cancel while building; the ID
   // field's own go/Enter only ever *starts* a build, so a stray Enter cannot
   // kill one that is already running.
+  // model-viewer fires this on every frame of an orbit, so the gizmo tracks the
+  // drag rather than snapping when it ends.
+  $('#viewer').addEventListener('camera-change', drawGizmo);
+
+  // Re-apply the orbit limits every time a model finishes loading.
+  //
+  // This is why rotation felt freer *after* generating a stand. The limits are
+  // read when model-viewer sets its controls up, and the radius term is `auto`
+  // — resolved from the model's bounding sphere. Set up before a model exists,
+  // `auto` resolves against nothing and the clamp it produces sticks. Generating
+  // a stand happened to fix it by accident: locking the view removes
+  // `camera-controls` and unlocking puts it back, which rebuilds the controls
+  // against a model that is now loaded. Doing it deliberately on every load
+  // gives the same freedom from the first frame, without a stand.
+  function refreshCameraLimits() {
+    const v = $('#viewer');
+    v.setAttribute('min-camera-orbit', '-Infinity 0deg auto');
+    v.setAttribute('max-camera-orbit', 'Infinity 180deg auto');
+    if (v.hasAttribute('camera-controls') && !standLocked) {
+      v.removeAttribute('camera-controls');
+      requestAnimationFrame(() => {
+        if (!standLocked) v.setAttribute('camera-controls', '');
+      });
+    }
+  }
+  $('#viewer').addEventListener('load', refreshCameraLimits);
+
   genBtn.addEventListener('click', () => (inflight ? cancelBuild() : generate()));
   $('#pdb-id').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
 })();

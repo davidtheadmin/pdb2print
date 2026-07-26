@@ -14,7 +14,7 @@ from typing import List, Tuple
 import numpy as np
 import trimesh
 
-from .config import color_for_index
+from .config import color_for_index, MoleculeType
 from .chains import Chain
 
 # A built chain is the (Chain, repaired trimesh) pair produced by the pipeline.
@@ -24,6 +24,23 @@ BuiltChain = Tuple[Chain, trimesh.Trimesh]
 # --------------------------------------------------------------------------
 # 3MF (primary output)
 # --------------------------------------------------------------------------
+def object_colors(built: List[BuiltChain]) -> List[tuple]:
+    """The colour for each built object, in palette order.
+
+    Chains and ligands take the next palette entry by position, which is what
+    keeps a protein the same colour whether or not a drug was added after it.
+    An object that carries its own ``color`` — the display-stand parts — keeps
+    that instead, because a legend swatch is only useful if it is *the same
+    colour as the chain it names*, and the palette index of a stand part has
+    nothing to do with the chain it refers to.
+    """
+    colors = []
+    for i, (chain, _mesh) in enumerate(built):
+        own = getattr(chain, "color", None)
+        colors.append(tuple(own) if own is not None else color_for_index(i))
+    return colors
+
+
 def write_3mf(built: List[BuiltChain], path: str) -> str:
     """Write a multi-object, per-chain-coloured 3MF. Returns ``path``.
 
@@ -52,6 +69,15 @@ def write_3mf(built: List[BuiltChain], path: str) -> str:
     wrapper = lib3mf.get_wrapper()
     model = wrapper.CreateModel()
     color_group = model.AddColorGroup()
+    palette = object_colors(built)
+
+    # The display stand is several solids — plate, tiles, lettering, one object
+    # per legend colour — that are one *thing*. Left as loose build items they
+    # arrive in the slicer as a dozen peers of the protein, and dragging the
+    # stand aside means selecting all of them without catching a chain. Collected
+    # into a components object they arrive as a single object with parts: one
+    # click moves the whole stand, and each part still takes its own filament.
+    stand_components = []
 
     for i, (chain, mesh) in enumerate(built):
         mesh_obj = model.AddMeshObject()
@@ -69,12 +95,28 @@ def write_3mf(built: List[BuiltChain], path: str) -> str:
             triangles.append(tri)
         mesh_obj.SetGeometry(vertices, triangles)
 
-        r, g, b = color_for_index(i)
+        r, g, b = palette[i]
         color = wrapper.FloatRGBAToColor(float(r), float(g), float(b), 1.0)
         color_id = color_group.AddColor(color)
         mesh_obj.SetObjectLevelProperty(color_group.GetResourceID(), color_id)
 
-        model.AddBuildItem(mesh_obj, wrapper.GetIdentityTransform())
+        if getattr(chain, "mtype", None) == MoleculeType.STAND:
+            stand_components.append(mesh_obj)
+        else:
+            model.AddBuildItem(mesh_obj, wrapper.GetIdentityTransform())
+
+    if stand_components:
+        try:
+            group = model.AddComponentsObject()
+            group.SetName("Display stand")
+            for mesh_obj in stand_components:
+                group.AddComponent(mesh_obj, wrapper.GetIdentityTransform())
+            model.AddBuildItem(group, wrapper.GetIdentityTransform())
+        except Exception:
+            # Older lib3mf builds without components support: fall back to loose
+            # items, which is what shipped before. Worse to handle, not broken.
+            for mesh_obj in stand_components:
+                model.AddBuildItem(mesh_obj, wrapper.GetIdentityTransform())
 
     writer = model.QueryWriter("3mf")
     writer.WriteToFile(path)
@@ -141,9 +183,10 @@ def build_scene(built: List[BuiltChain], markers=None) -> trimesh.Scene:
     never part of the printable 3MF/STL.
     """
     scene = trimesh.Scene()
+    palette = object_colors(built)
     for i, (chain, mesh) in enumerate(built):
         m = mesh.copy()
-        r, g, b = color_for_index(i)
+        r, g, b = palette[i]
         rgba = (np.array([r, g, b, 1.0]) * 255).astype(np.uint8)
         m.visual = trimesh.visual.ColorVisuals(mesh=m, face_colors=rgba)
         scene.add_geometry(m, node_name=chain.label(), geom_name=chain.label())

@@ -81,6 +81,19 @@ _UI_UNTOUCHED = dict(
     cartoon_helix_width_mm=4.5,
     cartoon_strand_width_mm=4.0,
     cartoon_coil_radius_mm=0.9,     # UI "tube thickness" 1.8 mm diameter / 2
+    # The "Include ligands" checkbox, which loads checked.  This happens to equal
+    # the ``PrintParams`` default, so omitting it would work today — and would be
+    # a trap the first time the form's default and the dataclass default part
+    # company, because the two sides would then hash differently and the cache
+    # would stop hitting without anything appearing to be wrong.  Every field the
+    # form submits is stated here for exactly that reason.
+    include_ligands=False,          # the "Include ligands" switch, off as it loads
+    # Still listed although the switch above makes ``canonical_params`` drop it:
+    # the form submits it regardless of the switch, and if the mirror only held the
+    # fields that happen to reach the key today, turning ligands on would be the
+    # moment the two sides silently diverged.
+    ligand_atom_mm=2.2,             # the "Ligand atoms" slider's default
+    ligand_bond_mm=1.2,             # the "Ligand bonds" slider's default
 )
 
 #: Joinery is off until the user asks for it, exactly as the form loads.

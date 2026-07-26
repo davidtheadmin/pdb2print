@@ -35,6 +35,12 @@ class Representation(str, Enum):
     # SSE-dependent cross-sections (twisting helix/strand ribbons, β-arrowheads,
     # coil tube) into one watertight solid.  See ``representations/cartoon.py``.
     CARTOON = "cartoon"        # secondary-structure ribbon cartoon
+    #: Ball-and-stick, used for bound ligands.  Deliberately *not* offered as a
+    #: choice in the UI and not registered in ``geometry._BUILDERS``: it is the
+    #: only way a ligand is ever drawn, so there is nothing to select.  It exists
+    #: as a :class:`Representation` member so a ligand mesh still carries a
+    #: representation in its metadata and so ``needs_min_wall`` can exempt it.
+    BALL_STICK = "ball_stick"  # ligand ball-and-stick
 
 
 class BaseStyle(str, Enum):
@@ -60,6 +66,21 @@ class BackboneStyle(str, Enum):
 class MoleculeType(str, Enum):
     PROTEIN = "protein"
     NUCLEIC = "nucleic"
+    #: A bound small molecule — a drug, a cofactor, a substrate — exported as its
+    #: own object, one per residue, and drawn ball-and-stick.  It is a *molecule
+    #: type* rather than a chain type on purpose: everything downstream (mesh
+    #: dispatch, interference, export) keys off ``mtype``, so adding a member here
+    #: is what lets a ligand travel through the pipeline as a first-class object
+    #: without a parallel code path.
+    LIGAND = "ligand"
+    #: A piece of the display stand — base plate, columns, plaque, legend swatch.
+    #: Not molecular at all, and it never enters the mesh/interference/connection
+    #: passes: the stand is generated *after* a build, from the finished meshes,
+    #: and joins the object list only at export.  It is a member here for the same
+    #: reason ``LIGAND`` is — export, naming and colouring all branch on ``mtype``
+    #: — and having its own value keeps a stand part from ever being mistaken for
+    #: something with atoms in it.
+    STAND = "stand"
 
 
 class MinWallMode(str, Enum):
@@ -75,6 +96,43 @@ class NoMagnetMethod(str, Enum):
 
     INFLATE = "inflate"   # grow both surfaces at the contact until they merge
     BRIDGE = "bridge"     # a short cylinder spanning the gap (peg/strut)
+
+
+class LigandStyle(str, Enum):
+    """How a bound ligand is drawn.
+
+    Kept separate from :class:`Representation` because these are not
+    interchangeable with the polymer styles: a ligand has no backbone to trace
+    and no secondary structure to ribbon, so the only thing the two lists share
+    is the word "style".  A ligand does have atoms, though, which is why the
+    surface builder works on one unchanged.
+    """
+
+    #: Spheres at the atoms, sticks between them. Reads as *that molecule* —
+    #: the ring count, the linker, the substituent — and is the default.
+    BALL_STICK = "ball_stick"
+    #: Van der Waals spheres, fused. The most printable by a distance: nothing
+    #: thin to snap, no supports, and it sits beside a surface-rendered protein
+    #: as the same kind of object.
+    SPACEFILL = "spacefill"
+    #: The solvent-excluded surface, from the same builder the protein uses, so
+    #: a drug in a surface model's pocket matches the thing it is bound to.
+    SURFACE = "surface"
+    #: Bonds only, at a uniform radius — a licorice model. The clearest read of
+    #: the chemistry and the most fragile thing on the plate.
+    STICKS = "sticks"
+
+
+class ColumnShape(str, Enum):
+    """Cross-section of a display-stand column.
+
+    Square by default.  A round column reads as a laboratory clamp; a square one
+    reads as furniture, which is what a display stand is.  It also prints with
+    two flat faces to the build plate instead of a tangent.
+    """
+
+    SQUARE = "square"
+    ROUND = "round"
 
 
 class MagnetShape(str, Enum):
@@ -335,6 +393,141 @@ class ConnectionParams:
 
 
 @dataclass
+class StandParams:
+    """Display stand: a base plate, columns into a cradle, and a plaque.
+
+    The stand is generated **after** a build rather than during one.  Everything
+    it needs is in the finished meshes, and the orientation it is built around is
+    the one the user has just arranged in the viewer — which does not exist until
+    there is something to look at.  So this block is inert during a normal build
+    and only read by :mod:`pdb2print.stand`.
+
+    **Orientation.**  ``orbit_theta_deg``/``orbit_phi_deg`` are model-viewer's
+    camera orbit, in its own spherical convention (theta azimuthal about +Y, phi
+    polar from +Y).  The stand is built so that "down on the screen" becomes
+    down in the print — see :func:`stand.view_basis`.
+    """
+
+    #: Master switch.  Off for every ordinary build, which is what keeps the
+    #: whole block out of the cache key (``cache.canonical_params``).
+    enabled: bool = False
+
+    #: Number of columns, or 0 to let :func:`stand.recommend_columns` decide.
+    columns: int = 0
+
+    # --- orientation (model-viewer camera orbit, degrees) ----------------
+    orbit_theta_deg: float = 0.0
+    orbit_phi_deg: float = 75.0
+    #: Roll about the view axis, degrees clockwise as seen on screen.
+    #:
+    #: The orbit gives two degrees of freedom and an orientation needs three, so
+    #: without this there are poses that simply cannot be asked for: the camera
+    #: can be pointed at any face of the model, but the picture cannot be spun,
+    #: and spinning the picture is what decides which way the model leans once it
+    #: is standing.  This is the missing third.
+    roll_deg: float = 0.0
+
+    # --- base plate ------------------------------------------------------
+    #: Margin (mm) from the model's footprint to the edge of the plate.
+    plate_margin_mm: float = 7.0
+    #: Plate thickness (mm).  Structural, not decorative: it also carries the
+    #: bending load of every column.
+    plate_thickness_mm: float = 4.0
+    #: Corner radius (mm) of the plate.
+    plate_corner_mm: float = 4.0
+
+    # --- columns ---------------------------------------------------------
+    #: Cross-section of the columns.
+    column_shape: ColumnShape = ColumnShape.SQUARE
+    #: Column diameter (mm) at the top, where it meets the model — the across-
+    #: flats width for a square one.
+    column_diameter_mm: float = 8.0
+    #: How far inside the model's plan-view silhouette a column must sit (mm),
+    #: measured from the column's own outer edge to the silhouette boundary.
+    #:
+    #: Left to itself the search puts columns on the outermost points it can
+    #: find, because spreading them apart is what makes the model stable — and
+    #: the extreme edge of a molecular silhouette is a thin, glancing tangent
+    #: that looks precarious even when it is not, and gives the cradle almost
+    #: nothing to bite.
+    #:
+    #: Measured against the **footprint**, not against distance from the centre.
+    #: Those agree only for a round model: on anything elongated a radial rule
+    #: keeps points that are central lengthways while still hanging off the
+    #: narrow sides — which is the perched look it was meant to prevent.
+    column_edge_margin_mm: float = 5.0
+    #: The same rule expressed relatively: a column must sit at least this
+    #: fraction of the *deepest available* inset away from the silhouette edge.
+    #:
+    #: Whichever of the two is smaller applies. The absolute margin is what bites
+    #: on a large complex, where a fraction would be needlessly deep; the
+    #: fraction is what bites on a small model, where the absolute margin exceeds
+    #: the whole underside and would reject every candidate — taking the columns
+    #: with it. Higher pulls them further in at the cost of how far apart they
+    #: can get.
+    column_edge_frac: float = 0.45
+    #: Prefer to stand a mixed structure on its **protein**.  A nucleic backbone
+    #: is a thin tube: a column under it meets a cylinder tangentially, and the
+    #: cradle either grips almost nothing or swallows the strand. Protein
+    #: presents a broad surface that a seat can actually sit in. DNA is used only
+    #: when there is no protein candidate to be had.
+    column_prefer_protein: bool = True
+    #: How much wider each column is at the plate than at the model.  A slight
+    #: taper is stiffer for the same material and reads as intentional.
+    column_flare: float = 1.45
+    #: Clearance (mm) cut into the cradle so the model actually seats.  A plain
+    #: boolean gives a geometrically perfect zero-clearance mate, which on an FDM
+    #: part binds — the same lesson the magnet pockets already encode.
+    cradle_clearance_mm: float = 0.35
+    #: How deep (mm) the cradle wraps the model.  Deeper resists the model
+    #: rocking about the line through the columns; too deep and the pocket needs
+    #: supports of its own.
+    cradle_depth_mm: float = 4.0
+    #: Air gap (mm) between the plate top and the lowest point of the model.
+    stand_off_mm: float = 6.0
+    #: A support point is only usable where the surface faces downward.  This is
+    #: the cosine limit: 0.62 accepts anything within about 52 degrees of
+    #: straight down, past which a cradle becomes a knife edge that neither
+    #: prints nor holds.
+    column_normal_min: float = 0.62
+
+    # --- plaque ----------------------------------------------------------
+    plaque: bool = True
+    #: Show the four-character PDB ID (or the uploaded file's name).
+    plaque_pdb_id: bool = True
+    #: Show the structure title parsed from the header.
+    plaque_title: bool = True
+    #: Show a physical scale bar with its length in ångström.
+    plaque_scalebar: bool = True
+    #: Show one row per chain: a colour dot and the chain's name.  The dot is
+    #: exported as a **separate object carrying that chain's colour**, so the
+    #: slicer can be told to print it in the same filament as the chain itself.
+    plaque_legend: bool = True
+    #: Put a white tile behind the lettering — **both blocks, one switch**.
+    #:
+    #: This governed only the left-hand block at first, on the reasoning that a
+    #: colour dot wants a neutral field around it and so the legend's tile should
+    #: not be optional.  That was wrong twice over: it made a control labelled
+    #: "white tile" leave a white tile on the plate when it was switched off,
+    #: which reads as a bug however it is justified, and the justification was
+    #: only ever an argument for a good *default*.
+    plaque_tile: bool = True
+    #: How far (mm) the white backing tile stands off the plate.  Lower than the
+    #: lettering on it, so the text still reads as raised.
+    plaque_tile_mm: float = 0.45
+    #: Cap height (mm) of the largest line of plaque text.  Everything else is a
+    #: fixed fraction of it, and it shrinks automatically to fit the panel width.
+    plaque_text_mm: float = 5.0
+    #: How far (mm) the raised text stands off the plate.
+    plaque_emboss_mm: float = 0.7
+    #: Width (mm) of a text stroke.  Still wider than a single extrusion — a
+    #: 0.4 mm nozzle drawing a 0.4 mm line is one bead with nothing either side
+    #: of it to hold it down — but no wider than it has to be: heavier strokes
+    #: closed up the counters and made the lettering read as blocky.
+    plaque_stroke_mm: float = 0.6
+
+
+@dataclass
 class PrintParams:
     """All user-tunable parameters for one export."""
 
@@ -347,6 +540,64 @@ class PrintParams:
     # --- per molecule-type representation (defaults per the spec) -------
     protein_representation: Representation = Representation.SURFACE
     nucleic_representation: Representation = Representation.TUBE_SLAB
+
+    # --- bound ligands --------------------------------------------------
+    #: Export each bound ligand as its own object (ball-and-stick), and carve the
+    #: pocket it sits in out of its host so it lifts out and drops back in.
+    #:
+    #: **Off by default**, and the reason is that switching it on changes the
+    #: *protein*, not only what is in the box: the host gains a drug-shaped void,
+    #: which on a solvent-excluded surface is usually a fully enclosed cavity that
+    #: a slicer packs with support material.  Someone who came to print a protein
+    #: should get the protein they asked for.  Two lesser reasons it is opt-in
+    #: rather than a sensible default: what counts as a ligand is a judgement call
+    #: that :data:`LIGAND_BLOCKLIST` can only mostly automate, and every ligand is
+    #: another object and another filament change in the slicer.
+    #:
+    #: When it *is* on it is often the whole point of the structure — 9YMP's
+    #: inhibitor, 2HHB's four haems — so the switch is one click and the geometry
+    #: behind it is not a compromise.
+    #:
+    #: Water and lone ions are never included whatever this is set to — see
+    #: :data:`LIGAND_MIN_HEAVY_ATOMS` and :data:`LIGAND_BLOCKLIST`.
+    include_ligands: bool = False
+    #: How the ligand is drawn.  See :class:`LigandStyle`.
+    ligand_style: LigandStyle = LigandStyle.BALL_STICK
+    #: **Ligand atom size** — the *diameter* (mm) of the balls in ball-and-stick,
+    #: and the bead size the spacefill style scales its van der Waals radii from.
+    #:
+    #: It is a diameter and not a radius because that is what the control means to
+    #: the person moving it, and the halving belongs in the builder rather than in
+    #: the front end — ``cartoon_coil_radius_mm`` is halved in ``index.html``
+    #: instead, and the cost of that is a derived value the preset table has to
+    #: reproduce exactly or the cache silently stops hitting.
+    #:
+    #: **Why this is a control at all.**  Every dimension in this file is absolute
+    #: print millimetres while atom *positions* scale with
+    #: ``scale_mm_per_angstrom``, so the two only agree at one scale.  On a protein
+    #: that hardly shows: a surface has no internal spacing to disagree with.  On a
+    #: ligand it is the whole appearance — the atoms are 1.4–1.6 Å apart, which is
+    #: 2.1 mm at 1.5 mm/Å and 8.4 mm at 6 mm/Å, so a bead size that reads as a
+    #: molecule at one scale is a lattice of disconnected pinheads at the other.
+    #:
+    #: Deriving it from the scale automatically was the obvious alternative and is
+    #: wrong: the reason to raise the scale is usually that some *other* part of the
+    #: model is too small to print, and silently inflating the ligand to match
+    #: takes away the one adjustment that fixes what you were actually looking at.
+    ligand_atom_mm: float = 2.2
+    #: **Ligand bond size** — the *diameter* (mm) of the sticks, and the whole
+    #: thickness of the ``STICKS`` style.
+    #:
+    #: Independent of the atom size rather than a fixed fraction of it. The ratio
+    #: was fine as long as one number scaled the whole molecule, but it is the
+    #: ratio itself that decides whether the thing reads as atoms joined by bonds
+    #: or as a smooth worm — and at print scale the right answer moves, because
+    #: the bonds are what snap and the beads are what hold it together.
+    ligand_bond_mm: float = 1.2
+    #: Multiplier on the van der Waals radii in the ``SPACEFILL`` style.  Below 1
+    #: the atoms separate and the molecule reads as beads; at 1 they fuse into the
+    #: solid lump that prints best.
+    ligand_vdw_scale: float = 1.0
 
     # --- surface (solvent-excluded surface) tuning ---------------------
     #: Rolling-probe radius (ångström, pre-scale).  1.4 Å is the standard water
@@ -417,9 +668,26 @@ class PrintParams:
     # --- connector / joinery system ------------------------------------
     connections: ConnectionParams = field(default_factory=ConnectionParams)
 
+    # --- display stand --------------------------------------------------
+    #: Generated after the build from the finished meshes; inert unless
+    #: ``stand.enabled``.  See :class:`StandParams`.
+    stand: StandParams = field(default_factory=StandParams)
+
     def representation_for(self, mtype: MoleculeType) -> Representation:
         if mtype == MoleculeType.PROTEIN:
             return self.protein_representation
+        # A ligand has no choice of representation — ball-and-stick is the only
+        # thing that reads as a small molecule — but it must still answer this
+        # question, because callers outside the geometry core ask it about a
+        # chain's style (``connections._inflate_growth``, for one) and would
+        # otherwise be handed the *nucleic* representation and act on it.
+        if mtype == MoleculeType.LIGAND:
+            return Representation.BALL_STICK
+        # A stand part is not built by a representation at all — it arrives
+        # already meshed — but the same outside callers ask, so answer with
+        # something inert rather than handing back the nucleic style.
+        if mtype == MoleculeType.STAND:
+            return Representation.BALL_STICK
         return self.nucleic_representation
 
     # Convenience: convert a print-mm length back to angstrom (for callers
@@ -503,6 +771,66 @@ def resolve_surface_grid(params: "PrintParams", extent_mm=None) -> SurfaceGrid:
     return SurfaceGrid(probe_ang=probe, spacing_mm=spacing, notes=notes)
 
 
+# --- bound ligands ---------------------------------------------------------
+#
+# A "ligand" here is any residue that is not an amino acid, not a nucleotide and
+# not water.  That definition on its own is far too generous: a crystal structure
+# is full of things that are in the file because of how it was grown, not because
+# they are part of the molecule, and printing those gives you a bag of anonymous
+# blobs floating around the protein.  Two filters cut it down, and they are
+# deliberately different in kind so they catch different mistakes:
+#
+# * a **size** floor, below which something cannot be a drug or a cofactor;
+# * a **name** blocklist, for additives big enough to pass the size floor.
+#
+#: Minimum heavy (non-hydrogen) atom count for a residue to count as a ligand.
+#:
+#: Six is the point where the two filters meet.  Everything smaller is a lone ion
+#: or a fragment — a zinc, a chloride, a sulfate (5 atoms), a phosphate (5), an
+#: acetate (4), a formate (3), a DMSO (4), an imidazole (5), an ethylene glycol
+#: (4) — so the blocklist does not need to name any of those and stays short.  It
+#: is also below every real ligand worth printing: the smallest interesting ones
+#: (a nucleotide fragment, a short peptide-like inhibitor, a haem's porphyrin) run
+#: well into double figures.
+LIGAND_MIN_HEAVY_ATOMS: int = 6
+
+#: Residue names that are never treated as ligands however big they are.
+#:
+#: These are the reagents of crystallography rather than the biology: cryo- and
+#: precipitant molecules, buffers, reducing agents, detergents.  They pass the
+#: size floor above (glycerol has exactly 6 heavy atoms, PEG fragments and MPD
+#: more) which is precisely why the list has to exist.
+#:
+#: What is *deliberately absent* matters as much as what is here.  Sugars are not
+#: blocked — glucose, maltose and acarbose are amylase's substrate, mannose is
+#: what a lectin structure is *for* — so the only glycosylation codes listed are
+#: the two N-linked GlcNAc stubs, which are essentially never the point of a
+#: structure and otherwise litter a glycoprotein with a dozen tiny objects.
+#: Nucleotides and cofactors (ATP, ADP, GTP, NAD, FAD, SAM, haem, ...) are not
+#: blocked either: they are usually exactly what someone wants to see bound.
+LIGAND_BLOCKLIST = frozenset({
+    # polyols / cryoprotectants
+    "GOL", "EDO", "PGO", "PGR", "PDO", "MPD", "MRD", "BU3", "BU1", "HEZ",
+    "TBU", "IPA", "IPH", "MOH", "EOH", "DIO", "12P", "15P",
+    # polyethylene glycols (the many CCD codes for "some length of PEG")
+    "PEG", "PGE", "PG4", "PG5", "PG6", "P6G", "P33", "1PE", "2PE", "XPE",
+    "PE3", "PE4", "PE5", "PE8", "7PE", "M2M", "TOE",
+    # buffers
+    "TRS", "EPE", "MES", "PIN", "BTB", "TAM", "NHE", "CXS", "IMD", "MPO",
+    # salts / small anions big enough to reach the size floor
+    "SO4", "PO4", "PO3", "NO3", "CO3", "CAC", "MLI", "MLA", "TLA", "TAR",
+    "SIN", "OXL", "FLC", "CIT", "ACT", "ACY", "FMT",
+    # reducing agents / thiols
+    "BME", "DTT", "DTU", "DTV", "TCE",
+    # solvents
+    "DMS", "DMF", "ACN", "ETA", "GAI",
+    # detergents (membrane-protein crystallography)
+    "LDA", "LMT", "BOG", "BNG", "HTG", "OGA", "C8E", "P4C", "LI1",
+    # N-linked glycosylation stubs — a modification, not a bound ligand
+    "NAG", "NDG",
+})
+
+
 # Van der Waals radii in angstrom, used to size the metaball kernels.
 VDW_RADII_ANG: Dict[str, float] = {
     "H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "P": 1.80,
@@ -532,16 +860,20 @@ def color_for_index(i: int):
 
 
 # Representations that must NOT receive the voxel ``enforce_min_wall`` pass.
-# Both current representations already own their wall thickness *at build time*:
-#   • SURFACE   — a solvent-excluded surface is thick everywhere by construction.
-#   • TUBE_SLAB — min-wall is now a parametric offset applied to the analytic
+# Every current representation already owns its wall thickness *at build time*:
+#   • SURFACE    — a solvent-excluded surface is thick everywhere by construction.
+#   • TUBE_SLAB  — min-wall is now a parametric offset applied to the analytic
 #     primitives before the mesh boolean (see ``tube_slab.build``), so its tube,
 #     slabs and connectors are already ≥ min-wall.  Re-voxelising either here
 #     would only reintroduce the grid stairstep we moved off of.
+#   • BALL_STICK — same deal, and with more at stake: a ligand is the smallest
+#     object in the file, so a voxel pass at the grid spacing chosen for a whole
+#     protein would blur its rings shut and lose the one thing it is there for.
 # The pass therefore stays in ``meshops`` only as a fallback for hypothetical
 # future representations that build a thin shell and cannot self-thicken.
 MIN_WALL_EXEMPT = frozenset({
     Representation.SURFACE, Representation.TUBE_SLAB, Representation.CARTOON,
+    Representation.BALL_STICK,
 })
 
 
