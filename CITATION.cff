@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "pdb2print: 3D-printable multi-material molecular models from PDB structures"
+authors:
+  - family-names: "Häckes"
+    given-names: "David"
+type: software
+license: MIT
+repository-code: "https://github.com/davidtheadmin/pdb2print"
+url: "https://pdb2print.org"
+doi: "10.5281/zenodo.21599702"
+year: 2026
+keywords:
+  - 3D printing
+  - protein structure
+  - molecular models
+  - DNA
+  - science education
+  - Protein Data Bank

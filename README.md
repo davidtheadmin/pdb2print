@@ -4,6 +4,7 @@ Turn a PDB structure into a 3D print. Type an ID, pick a style, download a file
 your slicer understands.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21599702.svg)](https://doi.org/10.5281/zenodo.21599702)
 
 ### **[pdb2print.org →](https://pdb2print.org)**
 
@@ -224,10 +225,23 @@ writing the 3MF export by hand.
 
 ## Citing
 
-<!-- TODO(david): add a Zenodo DOI once minted. -->
-
 ```
-Häckes, D. pdb2print. https://github.com/davidtheadmin/pdb2print
+Häckes, D. (2026). pdb2print: 3D-printable multi-material molecular models
+from PDB structures. Zenodo. https://doi.org/10.5281/zenodo.21599702
+```
+
+BibTeX:
+
+```bibtex
+@software{haeckes_pdb2print,
+  author    = {Häckes, David},
+  title     = {pdb2print: 3D-printable multi-material molecular models
+               from PDB structures},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.21599702},
+  url       = {https://pdb2print.org}
+}
 ```
 
 ## Acknowledgements
