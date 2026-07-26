@@ -28,8 +28,11 @@ Two independent switches (see :class:`~pdb2print.config.ConnectionParams`):
 * **connect** — join chains whose surfaces come within ``contact_threshold_mm``:
   - **magnets**: seat a press-fit magnet pocket in each side, so parts printed
     separately snap together;
-  - **inflate**: grow both surfaces at the contact until they merge (organic,
-    no visible strut) — the default;
+  - **inflate**: grow the surfaces at the contact until they merge (organic,
+    no visible strut) — the default.  The growth is placed on the protein
+    wherever there is one, and a nucleic chain only ever grows its *backbone*:
+    a base is a recognisable shape at a fixed scale, so padding it distorts it
+    rather than enlarging it (see :func:`_inflate_growth`);
   - **bridge**: the same joint minus the pocket — a clean cylinder split on the
     shared face.
 
@@ -86,7 +89,7 @@ from scipy.spatial import cKDTree
 
 from .config import (
     PrintParams, ConnectionParams, NoMagnetMethod, MagnetShape,
-    MoleculeType, BaseStyle, InterferenceRule,
+    MoleculeType, BaseStyle, InterferenceRule, Representation,
 )
 from .chains import Chain
 from .representations import _manifold, tube_slab
@@ -1176,40 +1179,149 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     return False, f"no {what} placed — " + (joined or "no contact")
 
 
+#: Weld overlap added on top of the measured gap, so the two surfaces actually
+#: intersect rather than kissing at a single tangent point.
+_INFLATE_WELD_MM = 0.05
+
+#: Most any one chain may grow.  A wide gap closed by inflation would balloon a
+#: thin chain out of all proportion; use a bridge for those instead.
+_INFLATE_MAX_MM = 1.0
+
+
+def _inflate_growth(chain: Chain, params: PrintParams, amount_mm: float):
+    """``params`` with ``chain``'s *structural* geometry grown by ``amount_mm``.
+
+    Returns ``None`` when this chain has no knob that moves its whole surface
+    outward by a known distance — the caller then leaves it alone and puts the
+    growth on its neighbour.
+
+    **Only structural dimensions grow, and for a nucleic chain that means the
+    backbone alone.**  The bases are recognisable shapes drawn at a fixed scale,
+    and padding them is not a size increase but a distortion:
+
+    * the slab has a fixed footprint (``4.5 x 3.0 Å``) and only its *thickness*
+      is a parameter, so growing it fattens the plate through-plane without
+      moving its edges outward at all — the join does not get any closer to
+      welding, and a flat rung turns into a brick;
+    * in the molecule style the ring atoms sit ~1.4 Å apart, so an atom radius
+      grown by even half a millimetre at print scale swallows the hole in the
+      middle of the ring and the base reads as a blob;
+    * the base-to-backbone connector grows past the slab it lands on and spikes.
+
+    A fatter backbone welds just as well and leaves the bases reading as bases.
+    """
+    import dataclasses
+    rep = params.representation_for(chain.mtype)
+
+    if chain.mtype == MoleculeType.PROTEIN:
+        if rep == Representation.SURFACE:
+            # Padding every atom's vdW radius moves the whole solvent-excluded
+            # surface out by that distance — an exact uniform offset.
+            return dataclasses.replace(
+                params,
+                surface_atom_padding_ang=params.surface_atom_padding_ang
+                + amount_mm / params.scale_mm_per_angstrom,
+            )
+        if rep == Representation.TUBE_SLAB:
+            return dataclasses.replace(
+                params,
+                protein_tube_radius_mm=params.protein_tube_radius_mm + amount_mm,
+            )
+        # Cartoon: a ribbon's thickness is locked to its width by a fixed
+        # aspect, so there is no way to push its surface out uniformly without
+        # visibly changing the ribbon's proportions.  Leave it be.
+        return None
+
+    return dataclasses.replace(
+        params,
+        nucleic_radius_mm=params.nucleic_radius_mm + amount_mm,
+        # The backbone ball-and-stick has its own radii, so it has to be grown
+        # here too — otherwise a molecule-backbone strand is the one style that
+        # silently refuses to inflate.
+        backbone_atom_radius_mm=params.backbone_atom_radius_mm + amount_mm,
+        backbone_bond_radius_mm=params.backbone_bond_radius_mm + amount_mm,
+    )
+
+
+def _can_inflate(chain: Chain, params: PrintParams) -> bool:
+    """True if inflating ``chain`` would actually move its surface."""
+    return _inflate_growth(chain, params, 1.0) is not None
+
+
 def _rebuild_inflated(chain: Chain, params: PrintParams, amount_mm: float):
     """Rebuild one chain's mesh grown outward by ``amount_mm`` (the inflate join).
 
-    "Inflate" is a small, uniform size increase applied at *build* time — exactly
-    the surface-padding knob for a protein and the tube/base radii for DNA — so
-    two neighbours swell until their surfaces overlap and weld, with no strut and
-    no re-meshing artefact.  The growth is bounded by the contact threshold, so
-    it stays small.
+    "Inflate" is a small size increase applied at *build* time, so two
+    neighbours swell until their surfaces overlap and weld, with no strut and no
+    re-meshing artefact.  The growth is bounded by the contact threshold, so it
+    stays small.  Returns ``None`` if this chain cannot be grown.
     """
-    import dataclasses
     from . import geometry, meshops
-    if chain.mtype == MoleculeType.PROTEIN:
-        q = dataclasses.replace(
-            params,
-            surface_atom_padding_ang=params.surface_atom_padding_ang
-            + amount_mm / params.scale_mm_per_angstrom,
-        )
-    else:
-        q = dataclasses.replace(
-            params,
-            nucleic_radius_mm=params.nucleic_radius_mm + amount_mm,
-            slab_thickness_mm=params.slab_thickness_mm + 2.0 * amount_mm,
-            connector_radius_mm=params.connector_radius_mm + amount_mm,
-            atom_radius_mm=params.atom_radius_mm + amount_mm,
-            bond_radius_mm=params.bond_radius_mm + amount_mm,
-            # The backbone ball-and-stick has its own radii, so it has to be
-            # grown here too — otherwise a molecule-backbone strand is the one
-            # style that silently refuses to inflate.
-            backbone_atom_radius_mm=params.backbone_atom_radius_mm + amount_mm,
-            backbone_bond_radius_mm=params.backbone_bond_radius_mm + amount_mm,
-        )
+    q = _inflate_growth(chain, params, amount_mm)
+    if q is None:
+        return None
     mesh = geometry.generate_chain_mesh(chain, q)
     mesh = meshops.enforce_min_wall(mesh, q)
     return meshops.repair(mesh)
+
+
+def _inflate_shares(i: int, j: int, gap: float, chains, params: PrintParams):
+    """How much each side of one contact should grow: ``[(index, amount), ...]``.
+
+    The gap is closed **protein first**.  A protein surface swells smoothly and
+    the two parts read as having melted together; all a nucleic chain can move
+    is its backbone tube, which thickens the strand without making the join look
+    any better.  So the protein takes as much of the gap as it can carry, and
+    the nucleic side is only called on for whatever is left over — which for an
+    ordinary sub-millimetre contact is nothing at all, leaving the DNA exactly as
+    it was drawn.
+
+    Within one tier the growth is split evenly, so protein↔protein still swells
+    symmetrically from both sides.  No chain ever grows more than
+    ``_INFLATE_MAX_MM``, so a wide gap closes exactly as far as it used to —
+    what changed is only *where* that growth is placed.  Returns ``[]`` when
+    neither side can grow.
+    """
+    remaining = max(0.0, gap) + _INFLATE_WELD_MM
+    can = [k for k in (i, j) if _can_inflate(chains[k], params)]
+    tiers = [
+        [k for k in can if chains[k].mtype == MoleculeType.PROTEIN],
+        [k for k in can if chains[k].mtype != MoleculeType.PROTEIN],
+    ]
+    out = []
+    for tier in tiers:
+        if remaining <= 1e-9:
+            break
+        if not tier:
+            continue        # no protein in this contact — fall through to DNA
+        share = min(remaining / len(tier), _INFLATE_MAX_MM)
+        out.extend((k, share) for k in tier)
+        remaining -= share * len(tier)
+    return out
+
+
+def _unify_nucleic_growth(grow: List[float], chains) -> List[float]:
+    """Level every nucleic chain's inflate growth to the largest one. In place.
+
+    The nucleic backbone is a uniform *gauge* — one tube radius for the whole
+    model — so two strands of a duplex coming out at different thicknesses is a
+    visible defect, not a subtlety.  Per-chain amounts drift apart easily: with
+    ``basepair_connect`` on there is no strand↔strand contact to keep a pair in
+    step, so each strand's growth comes only from its own protein contacts, and
+    a strand facing a wide gap ends up far fatter than its partner facing a
+    close one.
+
+    Protein has no equivalent and is left per-chain: padding an irregular
+    solvent-excluded surface is a local offset, not a gauge, and two proteins
+    padded differently is not something you can see.
+    """
+    nucleic = [k for k, c in enumerate(chains)
+               if c.mtype != MoleculeType.PROTEIN]
+    if nucleic:
+        uniform = max(grow[k] for k in nucleic)
+        for k in nucleic:
+            grow[k] = uniform
+    return grow
 
 
 # --------------------------------------------------------------------------
@@ -1555,24 +1667,54 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     # 1b) Inflate rebuilds each contacting object slightly larger (before the
     #     manifold conversion) so neighbours swell until they overlap.
     if inflate and contacts:
+        # Work out who grows and by how much *before* rebuilding anything: a
+        # chain in several contacts is rebuilt once, at the largest amount any
+        # of them asked for.  Kept deliberately gentle — just enough to overlap.
         grow = [0.0] * len(built)
+        shares = []
         for i, j, gap in contacts:
-            # Half the gap on each side, plus a small weld; capped so a wide gap
-            # can't balloon a thin chain (use bridge for those instead).  Kept
-            # deliberately gentle — just enough to overlap.
-            amt = min(max(0.0, gap) / 2.0 + 0.05, 1.0)
-            grow[i] = max(grow[i], amt)
-            grow[j] = max(grow[j], amt)
+            sides = _inflate_shares(i, j, gap, chains, params)
+            shares.append(sides)
+            for idx, amt in sides:
+                grow[idx] = max(grow[idx], amt)
+
+        _unify_nucleic_growth(grow, chains)
+
+        grown = set()
         for idx, amt in enumerate(grow):
             if amt > 0:
                 try:
-                    meshes[idx] = _rebuild_inflated(chains[idx], params, amt)
+                    rebuilt = _rebuild_inflated(chains[idx], params, amt)
                 except Exception:
-                    pass
-        for i, j, gap in contacts:
-            applied.append(Connection(
-                chains[i].chain_id, chains[j].chain_id,
-                _kind(chains[i], chains[j]), "inflate", gap_mm=gap, applied=True))
+                    rebuilt = None
+                if rebuilt is not None:
+                    meshes[idx] = rebuilt
+                    grown.add(idx)
+        for (i, j, gap), sides in zip(contacts, shares):
+            # Only claim the join if this contact was allocated growth *and* a
+            # side actually swelled — a contact between two chains that cannot
+            # be offset is reported as skipped rather than silently shipped as a
+            # weld that never happened.  The note is written from what really
+            # grew, which is not the same as what this contact asked for: a
+            # strand can also have been thickened to match its partner.
+            did = [idx for idx in (i, j) if idx in grown]
+            if sides and did:
+                note = ""
+                if len(did) == 1:
+                    note = (f"grown on {chains[did[0]].display_name()} only — "
+                            f"its neighbour keeps its shape")
+                applied.append(Connection(
+                    chains[i].chain_id, chains[j].chain_id,
+                    _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
+                    applied=True, note=note))
+            else:
+                applied.append(Connection(
+                    chains[i].chain_id, chains[j].chain_id,
+                    _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
+                    applied=False,
+                    note="neither part can be grown without changing its "
+                         "proportions (a cartoon ribbon's thickness is tied to "
+                         "its width) — use magnets or a bridge for this joint"))
 
     mans = [_manifold.from_trimesh(m) for m in meshes]
 

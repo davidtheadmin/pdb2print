@@ -215,6 +215,160 @@ def test_inflate_grows_and_closes_gap():
     assert min(after) < 0.5                                     # closest pair welds
 
 
+# --------------------------------------------------------------------------
+# Inflate must not deform a nucleic base
+# --------------------------------------------------------------------------
+#: Base-shape parameters.  Inflate grew all of these, which is not a size
+#: increase but a distortion: the slab's *footprint* is fixed at 4.5 x 3.0 Å and
+#: only its thickness is a parameter, so growing it fattened the plate
+#: through-plane without moving its edges any closer to the neighbour; and in
+#: the molecule style the ring atoms sit ~1.4 Å apart, so a grown atom radius
+#: swallowed the hole in the middle of the ring.
+_BASE_SHAPE_PARAMS = (
+    "slab_thickness_mm", "connector_radius_mm", "atom_radius_mm",
+    "bond_radius_mm", "slab_scale",
+)
+
+
+def _nucleic_chain(path=BNA):
+    from pdb2print import io, chains as chains_mod
+    from pdb2print.config import MoleculeType
+    atoms = io.load_any(path)
+    return [c for c in chains_mod.split_chains(atoms)
+            if c.mtype == MoleculeType.NUCLEIC][0]
+
+
+def test_inflate_leaves_base_shape_parameters_alone():
+    """A nucleic chain inflates its *backbone*; every base dimension is frozen."""
+    from pdb2print.connections import _inflate_growth
+    p = PrintParams(scale_mm_per_angstrom=0.6, min_wall_mm=1.0,
+                    base_style=BaseStyle.ROD, backbone_style=BackboneStyle.TUBE)
+    grown = _inflate_growth(_nucleic_chain(), p, 1.0)
+    for name in _BASE_SHAPE_PARAMS:
+        assert getattr(grown, name) == getattr(p, name), name
+    # ...and the backbone did move, so the join can still weld.
+    assert grown.nucleic_radius_mm > p.nucleic_radius_mm
+    assert grown.backbone_atom_radius_mm > p.backbone_atom_radius_mm
+    assert grown.backbone_bond_radius_mm > p.backbone_bond_radius_mm
+
+
+@pytest.mark.parametrize("style", [BaseStyle.SLAB, BaseStyle.ROD, BaseStyle.MOLECULE])
+def test_inflate_does_not_fatten_the_bases(style):
+    """Measured, not asserted by construction: how much solid sits at a base.
+
+    A ball at the base-ring centre is intersected with the built mesh.  Growing
+    the base parameters filled it in — the rod rung went from 9% solid to 74%,
+    and the molecule style's ring hole closed completely — which is what "weird
+    stuff to the DNA" looked like.  Inflating the backbone alone leaves the
+    reading essentially where it started.
+    """
+    import numpy as np
+    from pdb2print import geometry, meshops
+    from pdb2print.representations import tube_slab, _manifold
+    from pdb2print.connections import _inflate_growth
+
+    chain = _nucleic_chain()
+    p = PrintParams(scale_mm_per_angstrom=0.6, grid_spacing_mm=0.9, min_wall_mm=1.0,
+                    base_style=style, backbone_style=BackboneStyle.TUBE)
+    radius = 2.0
+    centres = tube_slab.base_link_frames_mm(chain, p)[0][2:10]
+    ball = 4.0 / 3.0 * np.pi * radius ** 3
+
+    def fill(params):
+        mesh = geometry.generate_chain_mesh(chain, params)
+        mesh = meshops.repair(meshops.enforce_min_wall(mesh, params))
+        man = _manifold.from_trimesh(mesh)
+        return np.mean([
+            _manifold.to_trimesh(man ^ _manifold.sphere(c, radius)).volume / ball
+            for c in centres
+        ])
+
+    before = fill(p)
+    after = fill(_inflate_growth(chain, p, 1.0))
+    # A fatter backbone tube reaches a little way into the probe ball, so allow
+    # a small rise; the old behaviour was several times the original reading.
+    assert after < before + 0.03, f"bases fattened: {before:.3f} -> {after:.3f}"
+
+
+def test_inflate_puts_the_growth_on_the_protein():
+    """A DNA↔protein contact is closed by growing the protein, not the DNA."""
+    from pdb2print import connections as cx
+    from pdb2print.config import MoleculeType
+
+    class _Stub:
+        def __init__(self, mtype):
+            self.mtype = mtype
+
+    p = PrintParams()
+    chains = [_Stub(MoleculeType.NUCLEIC), _Stub(MoleculeType.PROTEIN)]
+    # An ordinary close contact: the protein carries all of it.
+    shares = dict(cx._inflate_shares(0, 1, 0.4, chains, p))
+    assert set(shares) == {1}
+    assert shares[1] == pytest.approx(0.4 + cx._INFLATE_WELD_MM)
+    # A gap wider than one chain may grow spills onto the DNA backbone, so the
+    # join still reaches exactly as far as it did before.
+    wide = dict(cx._inflate_shares(0, 1, 3.0, chains, p))
+    assert wide[1] == cx._INFLATE_MAX_MM
+    assert 0 < wide[0] <= cx._INFLATE_MAX_MM
+    # Protein↔protein still swells symmetrically from both sides.
+    both = dict(cx._inflate_shares(
+        0, 1, 0.6, [_Stub(MoleculeType.PROTEIN)] * 2, p))
+    assert both[0] == both[1] == pytest.approx((0.6 + cx._INFLATE_WELD_MM) / 2)
+
+
+def test_inflate_growth_is_the_same_on_every_nucleic_chain():
+    """The backbone is one gauge: no strand may come out fatter than another."""
+    from pdb2print import connections as cx
+    from pdb2print.config import MoleculeType
+
+    class _Stub:
+        def __init__(self, mtype):
+            self.mtype = mtype
+
+    chains = [_Stub(MoleculeType.NUCLEIC), _Stub(MoleculeType.NUCLEIC),
+              _Stub(MoleculeType.PROTEIN), _Stub(MoleculeType.PROTEIN)]
+    grow = cx._unify_nucleic_growth([1.0, 0.0, 0.7, 0.2], chains)
+    assert grow[0] == grow[1] == 1.0        # both strands levelled up
+    assert grow[2:] == [0.7, 0.2]           # proteins stay per-chain
+    # Nothing to level when no strand grew at all.
+    assert cx._unify_nucleic_growth([0.0, 0.0, 0.5, 0.0], chains)[:2] == [0.0, 0.0]
+
+
+def test_inflate_grows_both_strands_of_a_duplex_equally():
+    """Regression: with base-pairing on, one strand inflated and the other did not.
+
+    ``basepair_connect`` suppresses the strand↔strand contact, so each strand's
+    growth came only from its own protein contacts.  In ``mini_complex`` those
+    gaps are 3.44 mm and 0.06 mm, so chain A grew by the full cap while chain B
+    barely moved — the duplex printed with two different backbone gauges.
+    """
+    base = build_all(COMPLEX, _params())
+    inflated = build_all(COMPLEX, _params(
+        connect=True, no_magnet_method=NoMagnetMethod.INFLATE,
+        contact_threshold_mm=3.5, basepair_connect=True))
+    before = {c.chain_id: m.volume for c, m in base.built}
+    ratio = {c.chain_id: m.volume / before[c.chain_id]
+             for c, m in inflated.built if c.mtype.value == "nucleic"}
+    assert len(ratio) == 2
+    a, b = ratio["A"], ratio["B"]
+    assert a > 1.05, "the duplex did not inflate at all"
+    # Was 3.07 vs 1.09.  The strands differ slightly in length, so compare the
+    # growth *ratio* rather than demanding identical volumes.
+    assert abs(a - b) / max(a, b) < 0.02, f"strands inflated unequally: {a} vs {b}"
+
+
+def test_inflate_reports_a_cartoon_only_joint_as_skipped():
+    """Two cartoon ribbons cannot be offset, so the joint is reported, not faked."""
+    from pdb2print import connections as cx
+    from pdb2print.config import MoleculeType, Representation
+
+    class _Stub:
+        mtype = MoleculeType.PROTEIN
+
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    assert cx._inflate_shares(0, 1, 0.5, [_Stub(), _Stub()], p) == []
+
+
 def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
     """Bare magnets can only meet if 2×thickness spans the gap; else skip + explain.
 
