@@ -233,6 +233,12 @@ __marimo__/
 # Same again for the server's bind-mounted copy.
 /deploy/cache/
 
+# Working notes, build briefs and the hosting handover. Kept locally, never
+# published: they carry server and infrastructure detail that is nobody else's
+# business, and they are written for whoever is building next rather than for
+# anyone reading the project.
+/private/
+
 # Staging area for files removed from the repo but not yet deleted from disk
 # (the Cowork device bridge cannot unlink, so removals land here first).
 /_to_delete/

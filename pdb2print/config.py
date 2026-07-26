@@ -376,7 +376,7 @@ class PrintParams:
     cartoon_coil_radius_mm: float = 0.9
     # Internal cartoon shape constants (not surfaced in the UI).  Path/twist
     # smoothing is fixed in ``cartoon._SMOOTH`` — it was briefly a slider and is
-    # not one any more, see NOTES.md.
+    # not one any more.
     #: How much wider the β-strand arrowhead barbs are than the strand body.
     cartoon_arrow_width_factor: float = 1.7
     #: Length of the strand arrowhead, in residues, from the strand C-terminus.

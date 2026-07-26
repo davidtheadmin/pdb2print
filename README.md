@@ -199,8 +199,9 @@ pdb2print/
 tests/
 ```
 
-`NOTES.md` has the design decisions and — more useful, honestly — the approaches
-that got tried and thrown away.
+The code carries its reasoning in comments, particularly `connections.py` and
+`representations/tube_slab.py`, where several approaches were tried and thrown
+away before the current one.
 
 ## Built with AI
 
