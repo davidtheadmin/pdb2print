@@ -93,13 +93,6 @@
   }
   .id-field:focus { border-color: var(--accent); }
   .id-field::placeholder { color: var(--muted); font-weight: 400; letter-spacing: 0; text-transform: none; }
-  .search-go {
-    display: inline-flex; align-items: center; justify-content: center;
-    background: var(--accent); color: #fff; border: none; border-radius: 9px;
-    padding: 0 16px; font-size: 13px; font-weight: 600; font-family: inherit;
-    cursor: pointer; flex: none; transition: background .12s;
-  }
-  .search-go:hover { background: var(--accent-d); }
 
   .upload-sec {
     display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -373,9 +366,8 @@
             <svg class="s-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
             <input id="pdb-id" class="id-field" type="text" placeholder="e.g. 1ZAA" spellcheck="false" autocomplete="off" maxlength="8">
           </div>
-          <button id="pdb-go" class="search-go" type="button">Fetch</button>
         </div>
-        <div class="hint">The 4-character code from <a href="https://www.rcsb.org" target="_blank" rel="noopener">rcsb.org</a> — the quickest way to start.</div>
+        <div class="hint">The 4-character code from <a href="https://www.rcsb.org" target="_blank" rel="noopener">rcsb.org</a> — press Enter or hit Generate.</div>
 
         <div id="upload-btn" class="upload-sec" title="Upload a structure file" role="button" tabindex="0">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg>
@@ -1280,7 +1272,6 @@
   // field's own go/Enter only ever *starts* a build, so a stray Enter cannot
   // kill one that is already running.
   genBtn.addEventListener('click', () => (inflight ? cancelBuild() : generate()));
-  $('#pdb-go').addEventListener('click', generate);
   $('#pdb-id').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
 })();
 </script>
