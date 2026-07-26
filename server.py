@@ -17,7 +17,9 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import uuid
+from typing import Optional
 
 from fastapi import FastAPI, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -50,7 +52,21 @@ OUTPUT_ROOT = tempfile.mkdtemp(prefix="pdb2print_out_")
 CACHE_DIR = os.environ.get("PDB2PRINT_CACHE_DIR", DEFAULT_CACHE_DIR)
 CACHE_READ_ONLY = os.environ.get("PDB2PRINT_CACHE_RO", "").strip().lower() in {
     "1", "true", "on", "yes"}
-cache = Cache(CACHE_DIR, read_only=CACHE_READ_ONLY)
+
+
+def _cache_max_bytes():
+    """Cache ceiling from PDB2PRINT_CACHE_MAX_GB, or the module default."""
+    raw = os.environ.get("PDB2PRINT_CACHE_MAX_GB", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(float(raw) * 1024 ** 3)
+    except ValueError:
+        return None
+
+
+cache = Cache(CACHE_DIR, read_only=CACHE_READ_ONLY,
+              max_bytes=_cache_max_bytes())
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
@@ -151,6 +167,46 @@ def _map_params(fields: dict) -> PrintParams:
     )
 
 
+#: How long an uncached build's files stay downloadable under /files/.
+#:
+#: Most builds are cached and their temp copy is deleted immediately. This only
+#: covers the ones that are not — uploads, and builds whose 3MF the watertight
+#: gate refused — which would otherwise sit in the container until it restarted.
+#: Two hours is far longer than the gap between a build finishing and someone
+#: clicking download, while still bounding the leak.
+OUTPUT_TTL_SECONDS = 2 * 60 * 60
+
+
+def _sweep_output_root(now: Optional[float] = None) -> int:
+    """Delete per-build output directories older than the TTL.
+
+    Cheap enough to run on every build: one ``stat`` per directory, against work
+    that takes tens of seconds. Doing it here rather than on a timer avoids a
+    background task that has to be shut down cleanly.
+
+    A build in progress is safe — its directory was created moments ago, so it
+    cannot be older than the TTL.
+    """
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(OUTPUT_ROOT)
+    except OSError:
+        return 0
+    for name in names:
+        path = os.path.join(OUTPUT_ROOT, name)
+        try:
+            if not os.path.isdir(path):
+                continue
+            if now - os.path.getmtime(path) < OUTPUT_TTL_SECONDS:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
+
+
 def _cached_result(meta: dict) -> dict:
     """Rebuild the result payload for a cache hit.
 
@@ -209,6 +265,7 @@ def _run_and_export(source: str, params: PrintParams, progress,
         return _error_payload(str(exc))
 
     progress(0.96, "Writing export files…")
+    _sweep_output_root()
     token = uuid.uuid4().hex
     out_dir = os.path.join(OUTPUT_ROOT, token)
     os.makedirs(out_dir, exist_ok=True)
@@ -217,9 +274,20 @@ def _run_and_export(source: str, params: PrintParams, progress,
     # uuid directory (not the filename) is what keeps concurrent builds apart.
     stem = _download_stem(source, params)
 
-    export.write_glb(report.built, os.path.join(out_dir, f"{stem}.glb"),
-                     markers=report.connection_markers)
-    export.write_stl_zip(report.built, os.path.join(out_dir, f"{stem}_stl.zip"))
+    # A full disk surfaces here first, because the exporters write before the
+    # cache does. Caught explicitly so it reports as a server problem the
+    # operator can act on, rather than as an unhandled traceback that reads like
+    # the structure was at fault.
+    try:
+        export.write_glb(report.built, os.path.join(out_dir, f"{stem}.glb"),
+                         markers=report.connection_markers)
+        export.write_stl_zip(report.built, os.path.join(out_dir, f"{stem}_stl.zip"))
+    except OSError as exc:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return _error_payload(
+            "The server ran out of disk space while writing the export files. "
+            f"This is not a problem with your structure. ({exc.strerror or exc})"
+        )
 
     threemf_url = None
     warning = None
@@ -229,6 +297,8 @@ def _run_and_export(source: str, params: PrintParams, progress,
     except RuntimeError as exc:
         # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
         warning = str(exc)
+    except OSError as exc:
+        warning = f"Could not write the 3MF: {exc.strerror or exc}"
 
     chains = [
         {"id": chain.chain_id, "name": chain.name,
@@ -263,8 +333,9 @@ def _run_and_export(source: str, params: PrintParams, progress,
     # place of a retry that might succeed. Caching is strictly an optimisation,
     # so any failure here is swallowed: the user already has their files.
     if threemf_url:
+        stored = None
         try:
-            cache.store(
+            stored = cache.store(
                 source, params,
                 files={
                     "threemf": os.path.join(out_dir, f"{stem}.3mf"),
@@ -281,6 +352,16 @@ def _run_and_export(source: str, params: PrintParams, progress,
             )
         except Exception:
             pass
+
+        # Once the files are in the cache, the copy under OUTPUT_ROOT is dead
+        # weight — the cache serves the same bytes from a stable URL. Keeping
+        # both doubled disk use per build, and nothing ever deleted the temp
+        # copy, so it accumulated until the container restarted.
+        if stored:
+            result["glb_url"] = f"/cache/{stored}/{stem}.glb"
+            result["threemf_url"] = f"/cache/{stored}/{stem}.3mf"
+            result["stl_url"] = f"/cache/{stored}/{stem}_stl.zip"
+            shutil.rmtree(out_dir, ignore_errors=True)
 
     return result
 

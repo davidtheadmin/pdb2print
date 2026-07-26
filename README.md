@@ -157,7 +157,16 @@ otherwise have been fine.
 
 **The cache** stores finished builds and serves them instantly when someone asks
 for the same structure at the same settings. It fills up on its own as people use
-it. If you want something warm ahead of time (a demo, a workshop), see
+it, and is capped at 20 GB — past that, least-recently-used entries are dropped,
+so it stays bounded no matter how much traffic arrives. It also stops writing if
+free disk falls below 2 GB, because a slow site is better than one that cannot
+write an export or renew its certificate.
+
+- `PDB2PRINT_CACHE_MAX_GB` — change the cap.
+- `PDB2PRINT_CACHE_RO=1` — serve the cache but never write to it.
+- `PDB2PRINT_CACHE_DIR` — where entries live (default `./cache`).
+
+If you want something warm ahead of time (a demo, a workshop), see
 `scripts/cache_spec.json`.
 
 ## Deploying

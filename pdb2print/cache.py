@@ -45,6 +45,24 @@ from .io import looks_like_pdb_id
 DEFAULT_CACHE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 
+#: Default ceiling on the whole store, overridable with ``PDB2PRINT_CACHE_MAX_GB``.
+#:
+#: 20 GB is chosen against a 100 GB disk that also carries the OS, a multi-GB
+#: Docker image and Caddy's certificate storage.  It holds roughly a thousand
+#: entries at the measured average of ~20 MB — far more than the handful of
+#: structures that actually repeat — while leaving the machine plenty of room
+#: to keep working.
+DEFAULT_MAX_BYTES = 20 * 1024 ** 3
+
+#: Free space below which the cache stops writing, regardless of its own cap.
+#:
+#: The cap alone is not enough: the disk is shared with the OS, the Docker image
+#: and Caddy's certificate storage, so it can fill for reasons that have nothing
+#: to do with the cache. Caching is only ever an optimisation, so it is the first
+#: thing that should give way — better a slow site than one that cannot renew its
+#: certificate or write an export.
+MIN_FREE_BYTES = 2 * 1024 ** 3
+
 #: Bumped when a change to the geometry code invalidates previously built
 #: artefacts.  The parameters can be identical across such a change, so the
 #: params hash alone cannot notice it — this is the manual escape hatch.
@@ -222,16 +240,24 @@ def is_cacheable(source: str) -> bool:
 # store
 # --------------------------------------------------------------------------
 class Cache:
-    """A directory of finished builds.
+    """A directory of finished builds, bounded by a total size cap.
 
     ``read_only`` is the setting to use on a deployment with an ephemeral disk:
     the shipped entries are still served, and misses are simply built each time
     rather than written to a filesystem that will not survive a restart.
+
+    ``max_bytes`` bounds the store.  Without it the cache grows forever, and the
+    failure is nastier than it sounds: the exporters write before the cache does,
+    so a disk filled by cached builds takes *new builds* down with it, and Caddy
+    loses the room it needs to renew its certificate.  When the cap is exceeded,
+    least-recently-used entries are deleted until the store fits again.
     """
 
-    def __init__(self, root: str = DEFAULT_CACHE_DIR, read_only: bool = False):
+    def __init__(self, root: str = DEFAULT_CACHE_DIR, read_only: bool = False,
+                 max_bytes: Optional[int] = None):
         self.root = os.path.abspath(root)
         self.read_only = read_only
+        self.max_bytes = DEFAULT_MAX_BYTES if max_bytes is None else max_bytes
 
     # -- paths ----------------------------------------------------------
     def entry_dir(self, key: str) -> str:
@@ -240,6 +266,81 @@ class Cache:
     def _index_path(self) -> str:
         return os.path.join(self.root, "index.json")
 
+    def _stamp_path(self, key: str) -> str:
+        """The file whose mtime records when this entry was last served.
+
+        A separate marker rather than the directory's own mtime, because reading
+        a file does not update the directory, and rewriting ``meta.json`` on
+        every hit would mean a write on the hot path just to record a read.
+        """
+        return os.path.join(self.entry_dir(key), ".last-used")
+
+    # -- size and recency ------------------------------------------------
+    def entry_size(self, key: str) -> int:
+        """Bytes on disk for one entry."""
+        total = 0
+        d = self.entry_dir(key)
+        try:
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    total += os.path.getsize(p)
+        except OSError:
+            return 0
+        return total
+
+    def total_size(self) -> int:
+        """Bytes on disk for the whole store."""
+        if not os.path.isdir(self.root):
+            return 0
+        total = 0
+        for name in os.listdir(self.root):
+            d = os.path.join(self.root, name)
+            if os.path.isdir(d):
+                total += self.entry_size(name)
+        return total
+
+    def touch(self, key: str) -> None:
+        """Record that this entry was just served.
+
+        Failures are ignored on purpose: a read-only store, or a full disk, must
+        still be able to *serve* a cached build.  The cost of not recording a hit
+        is that the entry looks staler than it is and may be evicted early —
+        which is a far better outcome than refusing to serve it.
+        """
+        try:
+            path = self._stamp_path(key)
+            with open(path, "a"):
+                os.utime(path, None)
+        except OSError:
+            pass
+
+    def free_bytes(self) -> Optional[int]:
+        """Free space on the filesystem holding the cache, or ``None`` if unknown."""
+        try:
+            return shutil.disk_usage(self.root).free
+        except OSError:
+            return None
+
+    def has_headroom(self) -> bool:
+        """True if there is enough free disk to be worth writing another entry."""
+        free = self.free_bytes()
+        return free is None or free > MIN_FREE_BYTES
+
+    def last_used(self, key: str) -> float:
+        """When this entry was last served, as a POSIX timestamp.
+
+        Falls back to the entry directory's own mtime — roughly its creation
+        time — so an entry that has never been hit still has a sensible age
+        rather than sorting as epoch zero.
+        """
+        for path in (self._stamp_path(key), self.entry_dir(key)):
+            try:
+                return os.path.getmtime(path)
+            except OSError:
+                continue
+        return 0.0
+
     # -- read -----------------------------------------------------------
     def lookup(self, source: str, params: PrintParams) -> Optional[dict]:
         """Return the stored metadata for a complete entry, else ``None``."""
@@ -247,7 +348,14 @@ class Cache:
             return None
         return self.lookup_key(key_for(source, params))
 
-    def lookup_key(self, key: str) -> Optional[dict]:
+    def lookup_key(self, key: str, touch: bool = True) -> Optional[dict]:
+        """Metadata for a complete entry, else ``None``.
+
+        ``touch=False`` inspects an entry without counting it as a use — needed
+        by anything that walks the whole store, such as :meth:`index`, which
+        would otherwise mark every entry as freshly used and destroy the LRU
+        ordering the moment the index was written.
+        """
         d = self.entry_dir(key)
         if not os.path.isdir(d):
             return None
@@ -265,6 +373,8 @@ class Cache:
             return None
         meta["key"] = key
         meta["dir"] = d
+        if touch:
+            self.touch(key)
         return meta
 
     def index(self) -> List[dict]:
@@ -275,8 +385,10 @@ class Cache:
         for name in sorted(os.listdir(self.root)):
             if not os.path.isdir(os.path.join(self.root, name)):
                 continue
-            meta = self.lookup_key(name)
+            meta = self.lookup_key(name, touch=False)
             if meta:
+                meta["size_bytes"] = self.entry_size(name)
+                meta["last_used"] = self.last_used(name)
                 out.append(meta)
         return out
 
@@ -305,6 +417,13 @@ class Cache:
         if os.path.isdir(final):
             return key
 
+        # Free the space first if we are over the cap, so a store on a nearly
+        # full disk succeeds by making room rather than failing. Only if there
+        # is still no headroom afterwards do we decline.
+        self.enforce_limit()
+        if not self.has_headroom():
+            return None
+
         staging = final + ".tmp"
         shutil.rmtree(staging, ignore_errors=True)
         os.makedirs(staging, exist_ok=True)
@@ -328,7 +447,54 @@ class Cache:
         except OSError:
             shutil.rmtree(staging, ignore_errors=True)
             return None
+        self.touch(key)
+        self.enforce_limit()
         return key
+
+    # -- eviction --------------------------------------------------------
+    def evict(self, key: str) -> int:
+        """Delete one entry; returns the bytes reclaimed."""
+        size = self.entry_size(key)
+        shutil.rmtree(self.entry_dir(key), ignore_errors=True)
+        return size
+
+    def enforce_limit(self) -> List[str]:
+        """Drop least-recently-used entries until the store fits the cap.
+
+        Returns the keys evicted.  Called after every store, so the cap holds
+        continuously rather than needing a scheduled sweep.
+
+        Least-recently-*used*, not least-recently-created: the point is to keep
+        whatever people actually keep asking for.  A structure built once six
+        months ago and never revisited is exactly what should go; one built long
+        ago and fetched daily should not.
+
+        Sorting the whole store on each store is affordable — the work is a
+        ``stat`` per entry against a build that took tens of seconds, and it
+        only ever runs on a miss.
+        """
+        if self.read_only or not self.max_bytes:
+            return []
+        total = self.total_size()
+        if total <= self.max_bytes:
+            return []
+
+        keys = [n for n in os.listdir(self.root)
+                if os.path.isdir(os.path.join(self.root, n))]
+        keys.sort(key=self.last_used)          # oldest first
+
+        evicted = []
+        for key in keys:
+            if total <= self.max_bytes:
+                break
+            # Never evict the entry down to an empty store; if a single entry is
+            # bigger than the whole cap, the cap is misconfigured and deleting
+            # everything would not help.
+            if len(evicted) >= len(keys) - 1:
+                break
+            total -= self.evict(key)
+            evicted.append(key)
+        return evicted
 
     def write_index(self) -> str:
         """Write ``index.json`` — a human-readable listing of what is cached."""
@@ -338,5 +504,7 @@ class Cache:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"cache_version": CACHE_VERSION,
                        "count": len(entries),
+                       "total_bytes": self.total_size(),
+                       "max_bytes": self.max_bytes,
                        "entries": entries}, fh, indent=2, sort_keys=True)
         return path
