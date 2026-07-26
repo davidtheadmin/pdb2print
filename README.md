@@ -5,8 +5,7 @@ your slicer understands.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<!-- TODO(david): live demo link once the Space is up -->
-**[Try it →](#)**
+### **[pdb2print.org →](https://pdb2print.org)**
 
 ![PDB 9MBB printed as two chains in two filaments on a Prusa Core One](docs/img/9mbb-assembled-front.jpg)
 
@@ -162,9 +161,23 @@ it. If you want something warm ahead of time (a demo, a workshop), see
 
 ## Deploying
 
-The `Dockerfile` targets a Hugging Face **Docker** Space — not the Gradio SDK,
-since this is FastAPI serving a static page. Free CPU tier is plenty, no GPU
-needed. It does need outbound network access to fetch structures from RCSB.
+`pdb2print.org` runs on a small VPS with Docker and Caddy. Everything needed is
+in `deploy/`:
+
+```bash
+git clone https://github.com/davidtheadmin/pdb2print.git
+cd pdb2print/deploy
+mkdir -p cache && chown -R 1000:1000 cache   # the container runs as UID 1000
+nano Caddyfile                               # put your own domain on line 4
+docker compose up -d --build
+```
+
+Caddy fetches and renews the certificate itself, so there is no certbot step.
+The first build takes 10–20 minutes — it compiles scipy, scikit-image and
+pymeshlab. 8 GB of RAM is the number that matters; the surface path holds
+several large arrays at once and 4 GB will fail on big structures.
+
+To deploy an update: `git pull && docker compose up -d --build`.
 
 ## Project layout
 
