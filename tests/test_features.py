@@ -1028,8 +1028,24 @@ def test_magnets_seat_where_the_parts_were_interpenetrating():
     assert all(m["axis_source"] == "overlap" for m in from_lobe)
 
     # And the raw nearest-point line — the noisy quantity that tilted a magnet
-    # whenever the surfaces crossed — is never what a seated joint falls back on.
-    assert not [m for m in marks if m["axis_source"] == "contact"]
+    # whenever the surfaces crossed — is never what an *interpenetrating* joint
+    # falls back on.
+    #
+    # This used to forbid the contact-line axis outright, anywhere in the build,
+    # and that was stricter than the contract the code actually offers.
+    # ``_choose_axis`` documents the contact line as its fallback for an
+    # interface with no interference lobe to take an axis from, and
+    # ``overlap_complex`` has one such interface (A–U). So the blanket ban failed
+    # on a case the design intends, while the thing it was written to catch — a
+    # magnet tilted by the contact line *at a lobe* — is the assertion above.
+    #
+    # What is still worth pinning down is that the fallback stays a fallback: it
+    # may only appear where there was no lobe. Relaxing this to "the fallback is
+    # allowed" would let a real regression through, which is why the assertion is
+    # narrowed rather than deleted.
+    fallback = [m for m in marks if m["axis_source"] == "contact"]
+    assert all(m["overlap_mm3"] <= 0.0 for m in fallback), (
+        "a magnet seated on an interference lobe fell back to the contact line")
 
     # Connectors are added after the fit pass, so a collar driven through a thin
     # backbone can leave interference the closing sweep will not cut out (that

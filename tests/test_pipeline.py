@@ -45,13 +45,23 @@ def test_min_wall_thickens_tube_slab_parametrically():
     min-wall is now a parametric offset inside ``tube_slab.build`` (not a voxel
     post-pass), so a bigger target must yield a thicker, higher-volume solid.
     The tiny fixture is protein-only, so we force the tube-slab representation
-    onto it and use a thin base radius so the wall target actually dominates.
+    onto it and use a thin tube radius so the wall target actually dominates.
+
+    That thin radius has to be ``protein_tube_radius_mm``.  It was
+    ``nucleic_radius_mm`` when this test was written, and at the time the two
+    were one knob; they were later split so a protein tube and a nucleic backbone
+    could be sized independently, and ``tube_slab.build`` reads only the protein
+    one for a protein chain.  Turning the nucleic radius down therefore stopped
+    reaching the geometry at all — both builds fell back to the 1.2 mm protein
+    default, came out byte-identical, and the assertion below failed on a volume
+    it had no way to move.  min-wall was never broken; the test was aiming at a
+    control that had been disconnected from it.
     """
     from pdb2print.representations import tube_slab
     chain = chains_mod.split_chains(_load(TINY_PDB))[0]
 
     def solid(min_wall):
-        p = _fast_params(min_wall_mm=min_wall, nucleic_radius_mm=0.4,
+        p = _fast_params(min_wall_mm=min_wall, protein_tube_radius_mm=0.4,
                          connector_radius_mm=0.2)
         return meshops.repair(tube_slab.build(chain, p))
 
