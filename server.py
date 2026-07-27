@@ -82,7 +82,7 @@ UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = "2026-07-27.17"
+CODE_STAMP = "2026-07-27.18"
 
 #: When this process started, for /api/health.
 _STARTED = time.time()

@@ -2338,7 +2338,7 @@
   // the real one taken at the moment the view was locked, so what is standing on
   // the columns is the structure, in the pose it will be built for.
   // Must match server.CODE_STAMP. See the comment there for why this exists.
-  const CODE_STAMP = '2026-07-27.17';
+  const CODE_STAMP = '2026-07-27.18';
 
   const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
   let standLayout = null;                     // last /api/stand/preview payload
@@ -2889,14 +2889,11 @@
     const infoLeft = plate.x0 + pad;
     const legendRight = plate.x1 - pad;
 
-    // Small caps because that is what the stroke font actually draws — it has
-    // no lowercase, it sets it as small capitals — and because caps have no
-    // descenders to drop into the row below. A sketch set in ordinary
-    // lowercase overlaps its own lines and reports a clash that is not there.
     // The nearest thing a browser has to the face the plaque will be set in.
     // Small caps for the stroke font because that is literally what it draws —
-    // it has no lowercase — and a bold weight for the other two, because both
-    // bundled faces are bold.
+    // it has no lowercase, it sets it as small capitals, and caps have no
+    // descenders to drop into the row below. A bold weight for the other two,
+    // because both bundled faces are bold.
     const CANVAS_FONT = {
       line: (px) => `small-caps 600 ${px}px ui-sans-serif, system-ui, sans-serif`,
       sans: (px) => `700 ${px}px ui-sans-serif, system-ui, sans-serif`,
@@ -2916,7 +2913,22 @@
       return px;
     };
 
-    const legendLeft = legendRight - (lay.apron.legend_width || 0);
+    // Block right-bound, rows left-set inside it: the tile is cut to the
+    // lettering, so anchoring only the allotted width would leave it floating
+    // clear of the plate edge whenever the legend had room to spare.
+    const inkWidth = (rows) => {
+      let widest = 0;
+      (rows || []).forEach(row => {
+        let lead = 0;
+        if (row.kind === 'legend') lead = row.cap_mm * 1.6;
+        else if (row.kind === 'scalebar') lead = row.bar_mm + row.cap_mm * 0.7;
+        fontFor(row.cap_mm, row.text, avail0 - lead);
+        widest = Math.max(widest, lead + (row.text ? ctx.measureText(row.text).width : 0));
+      });
+      return widest;
+    };
+    const avail0 = lay.apron.legend_width || 0;
+    const legendLeft = legendRight - Math.min(avail0, inkWidth(lay.plaque.legend) || avail0);
     const block = (rows, xLeft, avail) => {
       if (!rows || !rows.length) return;
       let s = pad, minX = null, maxX = null, endS = pad;

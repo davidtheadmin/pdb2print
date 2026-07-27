@@ -1948,9 +1948,30 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 tiles.append(_tile(used["x0"] - pad * 0.5, used["x1"] + pad * 0.5,
                                    cursor - pad * 0.45, block_top + pad * 0.45))
 
+        def _ink_width(rows) -> float:
+            """How wide a block's widest row actually draws."""
+            widest = 0.0
+            for row in rows:
+                lead = 0.0
+                if row.kind == "legend":
+                    lead = row.cap_mm * 1.6
+                elif row.kind == "scalebar":
+                    lead = row.bar_mm + row.cap_mm * 0.7
+                text_w = (typeset.text_width(face, row.text, row.cap_mm)
+                          if row.text else 0.0)
+                widest = max(widest, lead + text_w)
+            return widest
+
         info_left = layout.plate_x0 + pad
         legend_right = layout.plate_x1 - pad
-        legend_left = legend_right - layout.legend_width
+        # The block is anchored to the right margin, the rows are set from its
+        # left. Setting the rows themselves flush right lined the *names* up and
+        # left the colour dots down a ragged edge, which is the wrong thing to
+        # line up; but anchoring nothing at all let the tile — which is cut to
+        # the lettering, not to the space allotted — drift away from the edge of
+        # the plate whenever the legend had width to spare.
+        legend_left = legend_right - min(layout.legend_width,
+                                         _ink_width(legend_rows) or layout.legend_width)
 
         def _legend_target(row, solids):
             """Route a legend row's dot *and* its lettering into one object.
