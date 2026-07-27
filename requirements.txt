@@ -20,3 +20,9 @@ pygltflib>=1.16
 
 # Web UI (not imported by the pdb2print package itself)
 gradio>=4.44
+
+# Real plaque lettering: outline fonts read with fontTools and
+# triangulated with mapbox_earcut. Without them the plaque falls back to the
+# built-in stroke font, so neither is required for the pipeline to run.
+fonttools>=4.40
+mapbox_earcut>=1.0

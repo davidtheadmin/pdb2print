@@ -8,7 +8,7 @@ chains plus a small report so callers can surface progress and warnings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from . import io, chains as chains_mod, geometry, meshops, connections
 from .config import PrintParams, InterferenceRule, MoleculeType
@@ -32,6 +32,13 @@ class BuildReport:
     connections: List[dict] = field(default_factory=list)
     #: Magnet marker placements (center/axis/size) for the preview highlight.
     connection_markers: List[dict] = field(default_factory=list)
+    #: Where the structure was actually read from, and what its header called
+    #: it.  Read here because here is the one moment both are certainly
+    #: available: an uploaded file is deleted when the build finishes, and a
+    #: fetched one costs a download to see again.  The display stand's plaque
+    #: wants the title and used to go and find it for itself, twice.
+    source_path: Optional[str] = None
+    title: Optional[str] = None
 
     def summary(self) -> str:
         lines = [f"Built {len(self.built)} object(s):"]
@@ -70,9 +77,18 @@ def build_all(source: str, params: PrintParams,
         if should_cancel is not None and should_cancel():
             raise BuildCancelled("Build cancelled.")
 
+    out = BuildReport()
+
     check_cancel()
     report(0.05, "Loading structure…")
-    atoms, names = io.load_with_names(source)
+    path = io.resolve_source(source)
+    out.source_path = path
+    atoms, names = io.load_with_names(path)
+    try:
+        from .names import structure_title
+        out.title = structure_title(path)
+    except Exception:
+        out.title = None
 
     report(0.15, "Identifying chains…")
     chain_list = chains_mod.split_chains(
@@ -88,7 +104,6 @@ def build_all(source: str, params: PrintParams,
         if chain.mtype != MoleculeType.LIGAND:
             chain.name = names.get(chain.chain_id)
 
-    out = BuildReport()
     not_watertight = []
     n = len(chain_list)
     for i, chain in enumerate(chain_list):

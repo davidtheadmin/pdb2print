@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pdb2print.config import (
     PrintParams, Representation, MinWallMode, BaseStyle, BackboneStyle,
     ConnectionParams, NoMagnetMethod, MagnetShape, StandParams, ColumnShape,
+    PlaqueRelief, PlaqueFont,
     MoleculeType, LigandStyle, color_for_index,
 )
 from pdb2print.pipeline import build_all, BuildCancelled
@@ -74,6 +75,18 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
 
+#: Bumped whenever the front end and the server change together.
+#:
+#: The front end carries the same string, and the preview compares them. Three
+#: separate rounds were lost to the same misreading: index.html is refetched on
+#: every page load and server.py is not, so a change to both shows up as the new
+#: control appearing and doing the old thing — which is indistinguishable from a
+#: bug in the new control, and sends everybody looking in the wrong place.
+CODE_STAMP = "2026-07-27.17"
+
+#: When this process started, for /api/health.
+_STARTED = time.time()
+
 app = FastAPI(title="pdb2print")
 app.mount("/files", StaticFiles(directory=OUTPUT_ROOT), name="files")
 app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
@@ -95,6 +108,102 @@ def index() -> FileResponse:
         os.path.join(FRONTEND_DIR, "index.html"),
         headers={"Cache-Control": "no-store, must-revalidate"},
     )
+
+
+@app.get("/api/health")
+def health() -> JSONResponse:
+    """What the *running process* actually has. Open it in a browser.
+
+    Written after losing two rounds to the same misdiagnosis twice over: a
+    setting appears in the panel, does nothing, and there is no way to tell from
+    the outside whether the cause is a missing dependency, a stale process still
+    running last week's code, or a real bug. All three look identical, and
+    guessing between them costs a round trip each time.
+
+    So this reports the loaded code rather than the code on disk — the fields
+    actually present on the dataclasses, the fonts that actually resolve, the
+    dependencies that actually import — and compares the newest source file
+    against the process start time, which is the one question a person cannot
+    answer by looking at their editor.
+    """
+    import dataclasses
+
+    from pdb2print import config as cfg, typeset
+    from pdb2print.pipeline import BuildReport
+
+    def version(name: str) -> str:
+        try:
+            module = __import__(name)
+            return str(getattr(module, "__version__", "present"))
+        except Exception as exc:
+            return f"MISSING — {type(exc).__name__}: {exc}"
+
+    newest, newest_name = 0.0, ""
+    package = os.path.dirname(os.path.abspath(cfg.__file__))
+    sources = [os.path.abspath(__file__)]
+    for dirpath, _dirs, names in os.walk(package):
+        sources.extend(os.path.join(dirpath, n) for n in names
+                       if n.endswith(".py"))
+    for path in sources:
+        try:
+            stamp = os.path.getmtime(path)
+        except OSError:
+            continue
+        if stamp > newest:
+            newest, newest_name = stamp, path
+    stale = newest > _STARTED
+
+    stand_fields = {f.name for f in dataclasses.fields(cfg.StandParams)}
+    report_fields = {f.name for f in dataclasses.fields(BuildReport)}
+    code = {
+        "plaque_split": "plaque_split" in stand_fields,
+        "plaque_relief": "plaque_relief" in stand_fields,
+        "plaque_font": "plaque_font" in stand_fields,
+        "column_pins": "column_pins" in stand_fields,
+        "apron_rake": "apron_rake_deg" in stand_fields,
+        "build_report_carries_title": "title" in report_fields,
+        "stand_preview_endpoint": any(
+            getattr(route, "path", "") == "/api/stand/preview"
+            for route in app.routes),
+    }
+
+    fonts = {}
+    for key in ("line", "sans", "serif"):
+        face = typeset.face(key)
+        fonts[key] = {"using": face.key, "ok": face.key == key,
+                      "why": typeset.unavailable(face)}
+
+    problems = []
+    if stale:
+        problems.append(
+            f"This process started {time.strftime('%H:%M:%S', time.localtime(_STARTED))} "
+            f"but {os.path.basename(newest_name)} was changed at "
+            f"{time.strftime('%H:%M:%S', time.localtime(newest))} — it is running "
+            f"older code than you have on disk. Restart the server.")
+    problems.extend(f["why"] for f in fonts.values() if f["why"])
+    problems.extend(f"{name} is missing" for name in
+                    ("fontTools", "mapbox_earcut")
+                    if version(name).startswith("MISSING"))
+
+    return JSONResponse({
+        "ok": not problems,
+        "code_stamp": CODE_STAMP,
+        "problems": problems or ["nothing — the running server is up to date."],
+        "process_started": time.strftime("%Y-%m-%d %H:%M:%S",
+                                         time.localtime(_STARTED)),
+        "newest_source": {
+            "file": os.path.relpath(newest_name, os.path.dirname(
+                os.path.abspath(__file__))) if newest_name else None,
+            "changed": time.strftime("%Y-%m-%d %H:%M:%S",
+                                     time.localtime(newest)) if newest else None,
+            "newer_than_this_process": stale,
+        },
+        "code_loaded": code,
+        "fonts": fonts,
+        "dependencies": {name: version(name) for name in
+                         ("fontTools", "mapbox_earcut", "manifold3d",
+                          "trimesh", "biotite")},
+    })
 
 
 def _error_payload(message: str) -> dict:
@@ -248,10 +357,15 @@ _RECENT_LOCK = threading.Lock()
 _RECENT_MAX = 2
 
 
-def _remember_build(token: str, source: str, params: PrintParams, built) -> None:
+def _remember_build(token: str, source: str, params: PrintParams, built,
+                    meta: Optional[dict] = None) -> None:
     with _RECENT_LOCK:
         _RECENT_BUILDS[token] = {
             "built": built, "params": params, "source": source,
+            # What the plaque would print. Kept with the build because that is
+            # the last moment it is cheap: an uploaded file is deleted when the
+            # build finishes, and a fetched one is a download away.
+            "meta": dict(meta or {}),
         }
         _RECENT_BUILDS.move_to_end(token)
         while len(_RECENT_BUILDS) > _RECENT_MAX:
@@ -268,7 +382,7 @@ def _recall_build(token: str):
         return entry
 
 
-def _cached_result(meta: dict) -> dict:
+def _cached_result(meta: dict, source: str = "") -> dict:
     """Rebuild the result payload for a cache hit.
 
     Everything except the three URLs was stored verbatim at build time, so a hit
@@ -284,6 +398,18 @@ def _cached_result(meta: dict) -> dict:
         return f"/cache/{key}/{name}" if name else None
 
     result = dict(meta.get("result") or {})
+
+    # Entries written before the plaque carried its own text have no
+    # ``plaque_meta``, and a cache hit skips the build that would have read it —
+    # so a structure served from cache arrived with no name on its plaque and no
+    # hint as to why. Backfilled here rather than by throwing the cache away:
+    # the pre-generated entries are the whole reason a popular structure is
+    # instant, and re-reading one header is cheaper than re-meshing a complex by
+    # several orders of magnitude. ``resolve_source`` memoises the fetch, so an
+    # ID costs at most one download per process however many hits it serves.
+    if source and not (result.get("plaque_meta") or {}).get("pdb_id"):
+        result["plaque_meta"] = _plaque_meta(source)
+
     result.update({
         "ok": True,
         "glb_url": url("glb"),
@@ -314,7 +440,7 @@ def _run_and_export(source: str, params: PrintParams, progress,
         hit = None          # a broken cache must never take the app down
     if hit:
         progress(1.0, "Loaded from cache.")
-        return _cached_result(hit)
+        return _cached_result(hit, source)
 
     try:
         report = build_all(source, params, progress=progress,
@@ -335,7 +461,13 @@ def _run_and_export(source: str, params: PrintParams, progress,
     # meshing the whole structure again. Done before the export rather than
     # after, so an export that fails on disk space still leaves the build
     # reachable.
-    _remember_build(token, source, params, report.built)
+    plaque_meta = {
+        "pdb_id": _plaque_id(source),
+        "title": report.title,
+        "why": "" if report.title else
+               "this structure's header has no title record",
+    }
+    _remember_build(token, source, params, report.built, plaque_meta)
 
     # Files are named after the structure so a download is self-describing; the
     # uuid directory (not the filename) is what keeps concurrent builds apart.
@@ -393,6 +525,12 @@ def _run_and_export(source: str, params: PrintParams, progress,
         "connections": report.connections,
         "size_mm": size_mm,
         "scale_used": params.scale_mm_per_angstrom,
+        # What a plaque would print for this structure. Sent with every build so
+        # the stand sketch can show the real ID and the real title from the
+        # moment it opens, rather than the words "Structure name" standing in
+        # for them until the first solve comes back — a preview whose whole
+        # point is showing what you get should not be showing a placeholder.
+        "plaque_meta": plaque_meta,
         # Names the in-memory meshes for a follow-up stand request. Deliberately
         # excluded from what gets cached below: a token identifies one process's
         # memory, and serving a stale one from disk would send the client
@@ -619,33 +757,72 @@ def _map_stand(fields: dict) -> StandParams:
         roll_deg=float(fields.get("orbit_roll", 0.0) or 0.0),
         plate_margin_mm=float(fields.get("plate_margin", 7.0) or 7.0),
         plate_thickness_mm=float(fields.get("plate_thickness", 4.0) or 4.0),
+        plate_corner_mm=float(fields.get("plate_corner", 4.0) or 4.0),
         column_diameter_mm=float(fields.get("column_diameter", 8.0) or 8.0),
+        column_flared=_bool(fields.get("column_flared", True)),
+        column_capital=_bool(fields.get("column_capital", False)),
+        column_edge_frac=float(fields.get("column_edge_frac", 0.45) or 0.45),
         cradle_clearance_mm=float(fields.get("cradle_clearance", 0.35) or 0.35),
         cradle_depth_mm=float(fields.get("cradle_depth", 4.0) or 4.0),
         stand_off_mm=float(fields.get("stand_off", 6.0) or 6.0),
         plaque=_bool(fields.get("plaque", True)),
         plaque_pdb_id=_bool(fields.get("plaque_pdb_id", True)),
-        plaque_title=_bool(fields.get("plaque_title", True)),
+        plaque_title_text=str(fields.get("plaque_title_text", "") or "")[:120],
+        plaque_note=str(fields.get("plaque_note", "") or "")[:80],
         plaque_scalebar=_bool(fields.get("plaque_scalebar", True)),
         plaque_legend=_bool(fields.get("plaque_legend", True)),
         plaque_tile=_bool(fields.get("plaque_tile", True)),
+        plaque_relief=PlaqueRelief(fields.get("plaque_relief", "raised")),
         plaque_text_mm=float(fields.get("plaque_text", 5.0) or 5.0),
+        plaque_font=PlaqueFont(fields.get("plaque_font", "sans")),
+        plaque_info_mm=max(0.0, min(200.0,
+                                    float(fields.get("plaque_info_mm", 0) or 0))),
+        plaque_min_stroke_mm=float(fields.get("plaque_min_stroke", 0.45) or 0.45),
+        apron_rake_deg=float(fields.get("apron_rake", 0.0) or 0.0),
         column_shape=ColumnShape(fields.get("column_shape", "square")),
+        column_pins=_bool(fields.get("column_pins", False)),
+        pin_diameter_mm=float(fields.get("pin_diameter", 4.0) or 4.0),
+        pin_depth_mm=float(fields.get("pin_depth", 3.0) or 3.0),
     )
 
 
+def _plaque_id(source: str) -> str:
+    """What the plaque calls this structure: its ID, or an uploaded file's name."""
+    stem = os.path.splitext(os.path.basename(source))[0]
+    return stem.upper() if len(stem) <= 8 else stem
+
+
 def _plaque_meta(source: str) -> dict:
-    """The PDB ID and structure title the plaque prints, best-effort."""
+    """The PDB ID and structure title the plaque prints, from scratch.
+
+    The slow path, and the fallback. Prefer :func:`_stand_meta`, which uses what
+    the build already read: this one re-resolves the source, which for a PDB ID
+    means going back to RCSB and for a deleted upload means failing.
+
+    ``why`` records what went wrong rather than dropping it. A title that is
+    absent because the header has none and a title that is absent because the
+    file could not be opened look identical on a plaque, and only one of them is
+    the user's problem.
+    """
     from pdb2print import io as p2p_io
     from pdb2print.names import structure_title
 
-    stem = os.path.splitext(os.path.basename(source))[0]
-    meta = {"pdb_id": stem.upper() if len(stem) <= 8 else stem, "title": None}
+    meta = {"pdb_id": _plaque_id(source), "title": None, "why": ""}
     try:
         meta["title"] = structure_title(p2p_io.resolve_source(source))
-    except Exception:
-        pass
+        if not meta["title"]:
+            meta["why"] = "this structure's header has no title record"
+    except Exception as exc:
+        meta["why"] = f"the structure could not be re-read ({exc})"
     return meta
+
+
+def _stand_meta(source: str, token: str) -> dict:
+    """The plaque's text, from the build that produced these meshes if possible."""
+    entry = _recall_build(token)
+    if entry and entry.get("meta", {}).get("pdb_id"):
+        return dict(entry["meta"])
+    return _plaque_meta(source)
 
 
 def _built_from_cache(hit: dict):
@@ -709,6 +886,35 @@ def _built_from_cache(hit: dict):
     return built or None
 
 
+def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
+    """``(built, base_params, where)`` for a stand, without ever rebuilding.
+
+    Two routes, in cost order: the meshes this process still has in memory for
+    ``token``, then the disk cache entry for this exact build — whose per-chain
+    STL zip *is* the finished geometry. Returns ``(None, params, None)`` when
+    neither has it, and leaves the decision about whether a rebuild is worth it
+    to the caller: it is, for a stand the user asked for and is watching a
+    progress bar for; it is not, for a preview that has to answer in a moment or
+    not at all.
+    """
+    entry = _recall_build(token)
+    if entry is not None:
+        if progress:
+            progress(0.30, "Using the model already built…")
+        return entry["built"], entry["params"], "meshes in memory"
+    try:
+        hit = cache.lookup(source, params)
+    except Exception:
+        hit = None
+    if hit:
+        if progress:
+            progress(0.20, "Reopening the cached model…")
+        built = _built_from_cache(hit)
+        if built is not None:
+            return built, params, "the cached build"
+    return None, params, None
+
+
 def _run_stand(source: str, params: PrintParams, token: str, progress,
                should_cancel=None) -> dict:
     """Generate a display stand and export the model standing on it.
@@ -730,24 +936,7 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
     """
     from pdb2print import stand as stand_mod
 
-    entry = _recall_build(token)
-    built = None
-    base_params = params
-    if entry is not None:
-        progress(0.30, "Using the model already built…")
-        built = entry["built"]
-        base_params = entry["params"]
-    else:
-        # Not in memory. Before rebuilding, see whether this exact build is
-        # already sitting in the disk cache — a hit there serves finished
-        # per-chain meshes, which is all the stand needs.
-        try:
-            hit = cache.lookup(source, params)
-        except Exception:
-            hit = None
-        if hit:
-            progress(0.20, "Reopening the cached model…")
-            built = _built_from_cache(hit)
+    built, base_params, where = _stand_meshes(source, params, token, progress)
 
     if built is None:
         progress(0.02, "Rebuilding the model to stand it…")
@@ -760,6 +949,7 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
             return _error_payload(str(exc))
         built = report.built
         base_params = params
+        where = "a fresh build"
 
     # The stand block is the only thing that may differ from the build that
     # produced these meshes: everything else has to match, or the stand would be
@@ -770,7 +960,7 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
     progress(0.62, "Placing the stand…")
     try:
         oriented, stand_parts, notes = stand_mod.build_stand(
-            built, effective, meta=_plaque_meta(source))
+            built, effective, meta=_stand_meta(source, token))
     except Exception as exc:
         return _error_payload(f"Could not build the display stand: {exc}")
 
@@ -828,13 +1018,20 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
     lines = [
         f"Display stand: {len(stand_parts)} object(s) — "
         + ", ".join(part.object_name() for part, _m in stand_parts),
-        f"  from {'meshes in memory' if entry is not None else 'the cached build'}"
+        f"  from {where or 'a fresh build'}"
         f" · columns {sp.columns or 'auto'} {sp.column_shape.value}"
+        f"{' flared' if sp.column_flared else ' straight'}"
+        f"{' + capital' if sp.column_capital else ''}"
         f" · orbit {sp.orbit_theta_deg:.0f}/{sp.orbit_phi_deg:.0f}"
         f" roll {sp.roll_deg:.0f}",
-        f"  plaque={sp.plaque} id={sp.plaque_pdb_id} title={sp.plaque_title} "
+        f"  plaque={sp.plaque} id={sp.plaque_pdb_id} "
+        f"name={sp.plaque_title_text!r} "
         f"scale={sp.plaque_scalebar} legend={sp.plaque_legend} "
-        f"tile={sp.plaque_tile}",
+        f"tile={sp.plaque_tile} {sp.plaque_relief.value} "
+        f"font={sp.plaque_font.value} "
+        f"rake={sp.apron_rake_deg:.0f}°"
+        f"{' · pinned columns' if sp.column_pins else ''}"
+        + (f" note={sp.plaque_note!r}" if sp.plaque_note else ""),
     ]
     lines.extend(f"  ! {n}" for n in notes)
     return {
@@ -853,6 +1050,89 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
         # the already-rotated meshes and tilt it twice.
         "build_token": token,
     }
+
+
+def _stand_form(form: dict) -> dict:
+    """The stand routes take the form wholesale, so they owe it the defaults.
+
+    ``_map_params`` indexes the fields the generate endpoint declares with a
+    ``Form(...)`` default, so those defaults have to be supplied here too —
+    rather than have a second thirty-parameter signature drift out of step with
+    the first.
+    """
+    fields = {
+        "scale": 1.5, "grid_spacing": 0.5, "min_wall": 1.0,
+        "min_wall_mode": "uniform", "protein_rep": "surface",
+        "nucleic_rep": "tube_slab", "backbone_style": "tube",
+        "base_style": "slab", "nucleic_radius": 1.2, "slab_thickness": 1.2,
+        "base_width": 1.0, "connector_radius": 0.6, "atom_radius": 1.0,
+        "bond_radius": 0.5, "probe_radius": 1.4, "surface_padding": 0.0,
+    }
+    fields.update({k: v for k, v in form.items() if v != ""})
+    return fields
+
+
+@app.post("/api/stand/preview")
+async def stand_preview(request: Request):
+    """Solve a stand's layout — and nothing else — for the live sketch.
+
+    Everything expensive about a stand happens *after* the layout: carving a
+    cradle out of a surface mesh, sweeping a few hundred stroke solids, meshing
+    and writing the result. The arithmetic that decides where the plate goes,
+    how deep the apron has to be and which points on the underside the columns
+    will rise to is a fraction of a second, and it is the whole of what a
+    preview needs.
+
+    The point is that the front end does not *re-derive* any of it. A sketch
+    that solves for its own column positions is a second implementation of the
+    hardest judgement in this module, and the day the two disagree the picture
+    will be confidently wrong — which is worse than a picture that admits it is
+    generic.
+
+    Never rebuilds. If the meshes are neither in memory nor in the cache this
+    answers ``ready: false`` at once and the sketch falls back to its generic
+    drawing, because a preview that takes a minute is not a preview.
+    """
+    form = dict(await request.form())
+    token = str(form.get("build_token", "")).strip()
+    source = str(form.get("pdb_id", "")).strip()
+    if not source:
+        remembered = _recall_build(token)
+        if remembered is not None:
+            source = remembered["source"]
+    if not source:
+        return JSONResponse({"ok": True, "ready": False, "reason": "no-model"})
+
+    try:
+        params = _map_params(_stand_form(form))
+        params.stand = _map_stand(_stand_form(form))
+    except (ValueError, TypeError, KeyError) as exc:
+        return JSONResponse(
+            _error_payload(f"Invalid parameter: {exc}"), status_code=400)
+
+    def work():
+        from pdb2print import stand as stand_mod
+        import dataclasses
+
+        built, base_params, _where = _stand_meshes(source, params, token)
+        if built is None:
+            return {"ok": True, "ready": False, "reason": "not-in-memory",
+                "stamp": CODE_STAMP}
+        effective = dataclasses.replace(base_params, stand=params.stand)
+        layout = stand_mod.solve_layout(built, effective,
+                                        meta=_stand_meta(source, token))
+        if layout is None:
+            return {"ok": True, "ready": False, "reason": "empty"}
+        summary = stand_mod.layout_summary(layout, effective)
+        summary.update({"ok": True, "ready": True, "stamp": CODE_STAMP})
+        return summary
+
+    loop = asyncio.get_running_loop()
+    try:
+        payload = await loop.run_in_executor(None, work)
+    except Exception as exc:                 # a preview must never take the page down
+        return JSONResponse({"ok": True, "ready": False, "reason": str(exc)})
+    return JSONResponse(payload)
 
 
 @app.post("/api/stand")
@@ -882,19 +1162,7 @@ async def stand(request: Request):
                            "then add the stand."),
             status_code=400)
 
-    # ``_map_params`` indexes the fields the generate endpoint declares with a
-    # ``Form(...)`` default, so those defaults have to be supplied here too —
-    # this route takes the form wholesale rather than field by field, to avoid a
-    # second thirty-parameter signature drifting out of step with the first.
-    fields = {
-        "scale": 1.5, "grid_spacing": 0.5, "min_wall": 1.0,
-        "min_wall_mode": "uniform", "protein_rep": "surface",
-        "nucleic_rep": "tube_slab", "backbone_style": "tube",
-        "base_style": "slab", "nucleic_radius": 1.2, "slab_thickness": 1.2,
-        "base_width": 1.0, "connector_radius": 0.6, "atom_radius": 1.0,
-        "bond_radius": 0.5, "probe_radius": 1.4, "surface_padding": 0.0,
-    }
-    fields.update({k: v for k, v in form.items() if v != ""})
+    fields = _stand_form(form)
 
     try:
         params = _map_params(fields)

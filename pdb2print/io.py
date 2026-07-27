@@ -70,12 +70,28 @@ def load_any(source: str) -> struc.AtomArray:
     return load_with_names(source)[0]
 
 
+#: PDB IDs already fetched by this process, and where they landed.
+#:
+#: ``fetch_pdb_id`` makes a fresh temp directory per call, so without this every
+#: caller that wanted anything from a structure — the build, the plaque's title,
+#: a display stand generated an hour later — downloaded the whole entry again.
+#: Three round trips to RCSB to read one line of header is not a cache miss, it
+#: is a bug that happens to work.
+_FETCHED: dict = {}
+
+
 def resolve_source(source: str) -> str:
     """Return a local file path for ``source`` (fetching a PDB ID if needed)."""
     if os.path.exists(source):
         return source
     if looks_like_pdb_id(source):
-        return fetch_pdb_id(source)
+        key = source.strip().upper()
+        path = _FETCHED.get(key)
+        if path and os.path.exists(path):
+            return path
+        path = fetch_pdb_id(source)
+        _FETCHED[key] = path
+        return path
     raise ValueError(
         f"'{source}' is neither an existing file nor a 4-character PDB ID."
     )

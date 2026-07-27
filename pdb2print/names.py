@@ -126,7 +126,9 @@ def _prettify_title(title: Optional[str]) -> Optional[str]:
     if not text:
         return None
     if text.isupper():
-        text = _prettify(text) or text
+        # Re-cased but never cut: a title is the name of the whole entry, and
+        # the end of it is as much a part of that name as the beginning.
+        text = _prettify(text, truncate=False) or text
     return text
 
 
@@ -274,7 +276,7 @@ def _recase_word(match: "re.Match") -> str:
     return "".join(out)
 
 
-def _prettify(name: Optional[str]) -> Optional[str]:
+def _prettify(name: Optional[str], truncate: bool = True) -> Optional[str]:
     """Tidy a raw header name for display, or ``None`` if it is empty/uninformative.
 
     Strips raw nucleotide-sequence descriptors (so "DNA (5'-D(*CP*GP...)-3')"
@@ -282,6 +284,14 @@ def _prettify(name: Optional[str]) -> Optional[str]:
     "HEMOGLOBIN (ALPHA CHAIN)" reads as "Hemoglobin (Alpha Chain)" and
     "DNA-BINDING DOMAIN" as "DNA-binding Domain") while keeping known acronyms
     and identifiers, and ellipsis-truncates very long names.
+
+    ``truncate`` is the last of those and the only optional one, because the
+    length limit belongs to a *legend row* — one line beside a colour dot, where
+    a name that will not fit has nowhere to go — and not to everything that
+    passes through here. A structure title borrowed this function for its
+    re-casing and inherited the cut with it, which is how "THE CRYSTAL STRUCTURE
+    OF HUMAN DEOXYHAEMOGLOBIN AT 1.74 ANGSTROMS RESOLUTION" reached the plaque
+    as "The Crystal Structure Of Human Deoxyhaemoglobin…".
     """
     if not name:
         return None
@@ -293,6 +303,6 @@ def _prettify(name: Optional[str]) -> Optional[str]:
         return None
     if name == name.upper():  # biotite/PDB convention is ALL CAPS
         name = _WORD.sub(_recase_word, name)
-    if len(name) > _MAX_NAME_LEN:
+    if truncate and len(name) > _MAX_NAME_LEN:
         name = name[: _MAX_NAME_LEN - 1].rstrip() + "…"
     return name

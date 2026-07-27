@@ -45,9 +45,10 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import trimesh
 
-from . import strokefont
+from . import typeset
 from .config import (
-    ColumnShape, MoleculeType, PrintParams, StandParams, color_for_index,
+    ColumnShape, MoleculeType, PlaqueRelief, PrintParams, StandParams,
+    color_for_index,
 )
 from .representations import _manifold
 
@@ -78,6 +79,16 @@ TEXT_ON_PLATE = (0.93, 0.94, 0.95)
 #: "37 Å" is a measurement; one reading "50 Å" is a scale.
 _SCALEBAR_STEPS_ANG = (5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000)
 
+#: Clear space (mm) between the two white tiles, at their closest.
+#:
+#: The blocks were separated by exactly one ``pad`` and each tile is cut half a
+#: pad wider than its own lettering, so when both blocks filled their width the
+#: two tiles met edge to edge — one white shape with a seam down it, rather than
+#: two panels. This is the gap that survives that, and it is added to the plate
+#: rather than taken out of either block: neither of them has width to spare at
+#: the point where this starts to matter.
+_TILE_GAP_MM = 2.5
+
 #: The apron is never shallower than this (mm), so there is always somewhere for
 #: the lettering to go even on a small model.
 _APRON_MIN_MM = 22.0
@@ -85,6 +96,19 @@ _APRON_MIN_MM = 22.0
 #: The most the lettering may be shrunk to fit.  Below this a stroke drops under
 #: one extrusion width and prints as a smudge, so the apron is deepened instead.
 _TEXT_MIN_SHRINK = 0.62
+
+#: The most the plaque face may be tipped toward the viewer.  Past about
+#: twenty-five degrees the apron is a ramp rather than a lectern, the wedge
+#: needed to make it starts to crowd the model, and the lettering — which is
+#: laid out in the plan view and then projected — begins to look foreshortened.
+_RAKE_MAX_DEG = 25.0
+#: How thick a raked apron still is at its front edge (mm).  Tapering it to
+#: nothing gives a knife edge that chips, prints as a stringy first layer, and
+#: reads as a mistake next to a plate with a 4 mm corner radius.
+_RAKE_LIP_MM = 0.8
+#: And no wedge is ever taller than this at the back (mm), however deep the
+#: apron or however generous the stand-off.
+_RAKE_MAX_RISE_MM = 10.0
 
 #: Smallest cap height (mm) worth setting a one-line title at.  Below this the
 #: title stops being small and starts being unprintable, and two balanced lines
@@ -679,27 +703,156 @@ def _rounded_slab(x0: float, x1: float, y0: float, y1: float,
     return _manifold.union(parts)
 
 
-def _column_solid(x: float, y: float, z0: float, z1: float,
-                  top_half: float, foot_half: float, shape: ColumnShape):
-    """One column, square or round, flaring from ``foot_half`` to ``top_half``.
+#: A flared foot is a fixed height, not a fraction of the column (mm).
+#:
+#: Proportional was the obvious first choice and the wrong one: the columns on a
+#: stand are all different heights, because each one rises to whatever part of
+#: the underside is above it. A foot at 16% of the column gives every column a
+#: different foot, and a set of feet that disagree with each other reads as a
+#: fault rather than as a taper. One height for all of them is what makes them
+#: look like a set. Clamped on a very short column, where a 2.6 mm foot would be
+#: most of it.
+_FOOT_HEIGHT_MM = 2.6
+#: Likewise the base disc under a fluted shaft, and the capital at the top.
+_FLUTE_BASE_MM = 2.2
+_CAPITAL_MM = 2.0
 
-    A square column cannot be a single tapered primitive the way a frustum can,
-    so the flare is a short plinth at the base rather than a continuous taper.
-    That is arguably the better look anyway — it reads as a deliberate foot
-    rather than as a cone someone truncated.
+#: Flutes round a classical column, and how deep each one is cut as a fraction
+#: of the shaft radius.  Twenty-four would be Doric; at 8 mm across, twenty-four
+#: flutes is a texture rather than a profile, and a 0.4 mm nozzle rounds them
+#: off into one.  Eight reads as fluting at the size these actually print.
+_FLUTE_COUNT = 8
+_FLUTE_DEPTH = 0.16
+#: Points per flute.  The scallop is a smooth curve, so it needs enough segments
+#: not to read as a polygon — but every one of them is a face on every column.
+_FLUTE_STEPS = 9
+
+
+def _profile_polygon(shape: ColumnShape, segments: int = 20) -> np.ndarray:
+    """A column's cross-section as an ordered CCW ``(N, 2)`` polygon of unit size.
+
+    "Unit" means *half the across-flats width*, so a square column and a round
+    one asked for the same diameter measure the same across the flats — which is
+    what someone comparing them on a slider means by the same thickness.
     """
-    if shape == ColumnShape.ROUND:
-        return _manifold.frustum([x, y, z0], [x, y, z1], foot_half, top_half)
+    if shape in (ColumnShape.SQUARE, ColumnShape.TAPER):
+        return np.array([[1.0, 1.0], [-1.0, 1.0], [-1.0, -1.0], [1.0, -1.0]])
+    if shape == ColumnShape.FLUTED:
+        theta = np.linspace(0.0, 2.0 * np.pi, _FLUTE_COUNT * _FLUTE_STEPS,
+                            endpoint=False)
+        # Scalloped, never re-entrant: the radius is a smooth function of the
+        # angle, so the polygon is star-shaped about its centre and cannot
+        # self-intersect however deep the flutes are cut.
+        radius = 1.0 - _FLUTE_DEPTH * (0.5 + 0.5 * np.cos(_FLUTE_COUNT * theta)) ** 2
+        return np.column_stack([radius * np.cos(theta), radius * np.sin(theta)])
+    theta = np.linspace(0.0, 2.0 * np.pi, max(8, int(segments)), endpoint=False)
+    return np.column_stack([np.cos(theta), np.sin(theta)])
 
-    axes = np.eye(3)
-    shaft = _manifold.oriented_box(
-        [x, y, 0.5 * (z0 + z1)], axes,
-        [top_half, top_half, max(1e-4, 0.5 * (z1 - z0))])
-    plinth_h = min(max(2.0, (z1 - z0) * 0.16), max(1e-3, (z1 - z0) * 0.5))
-    plinth = _manifold.oriented_box(
-        [x, y, z0 + plinth_h * 0.5], axes,
-        [foot_half, foot_half, plinth_h * 0.5])
-    return _manifold.union([shaft, plinth])
+
+def _tapered_prism(profile: np.ndarray, x: float, y: float,
+                   z0: float, z1: float, half0: float, half1: float):
+    """``profile`` swept from ``half0`` at ``z0`` to ``half1`` at ``z1``.
+
+    Written out as an explicit closed mesh rather than assembled from booleans.
+    A square frustum has no primitive here and the kernel's convex hull would
+    only cover the convex cases — this covers a scalloped section too, exactly,
+    for the cost of two rings of vertices.  Watertight by construction: every
+    edge is shared by exactly two triangles.
+    """
+    profile = np.asarray(profile, float)
+    count = len(profile)
+    z0, z1 = float(z0), float(z1)
+    if z1 - z0 < 1e-6:
+        z1 = z0 + 1e-6
+
+    lower = np.column_stack([x + profile[:, 0] * half0,
+                             y + profile[:, 1] * half0,
+                             np.full(count, z0)])
+    upper = np.column_stack([x + profile[:, 0] * half1,
+                             y + profile[:, 1] * half1,
+                             np.full(count, z1)])
+    verts = np.vstack([lower, upper,
+                       [[x, y, z0]], [[x, y, z1]]])
+    hub_low, hub_high = 2 * count, 2 * count + 1
+
+    faces = []
+    for i in range(count):
+        j = (i + 1) % count
+        faces.append([i, j, count + j])              # side, lower triangle
+        faces.append([i, count + j, count + i])      # side, upper triangle
+        faces.append([j, i, hub_low])                # bottom fan (facing -z)
+        faces.append([count + i, count + j, hub_high])   # top fan (facing +z)
+    mesh = trimesh.Trimesh(vertices=verts, faces=np.array(faces, np.int64),
+                           process=False)
+    return _manifold.from_trimesh(mesh)
+
+
+def _column_solid(x: float, y: float, z0: float, z1: float,
+                  top_half: float, foot_half: float, stand: StandParams):
+    """One column in the requested style, from the plate at ``z0`` to ``z1``.
+
+    Four profiles, one rule: whatever the style does, the shaft measures
+    ``top_half`` across the flats where it meets the model, because that is the
+    number the cradle, the reachability filter and the slider all agree on.
+    Everything else — plinth, flare, flutes, capital — happens below or around
+    it.
+    """
+    shape = stand.column_shape
+    flared = bool(getattr(stand, "column_flared", True))
+    foot = float(foot_half) if flared else float(top_half)
+    height = max(1e-4, z1 - z0)
+    square = _profile_polygon(ColumnShape.SQUARE)
+    round_ = _profile_polygon(ColumnShape.ROUND)
+    parts = []
+
+    if shape == ColumnShape.ROUND:
+        parts.append(_manifold.frustum([x, y, z0], [x, y, z1], foot, top_half))
+
+    elif shape == ColumnShape.TAPER:
+        # An obelisk: one continuous square taper, no plinth to interrupt it.
+        parts.append(_tapered_prism(square, x, y, z0, z1, foot, top_half))
+
+    elif shape == ColumnShape.FLUTED:
+        base_h = min(_FLUTE_BASE_MM, height * 0.40) if flared else 0.0
+        # A whisper of entasis. Straight-sided, a fluted shaft reads as a pipe;
+        # the classical remedy is to have it swell slightly and narrow toward
+        # the top, and a few per cent is enough for the eye to notice without
+        # anyone being able to name what they noticed.
+        parts.append(_tapered_prism(
+            _profile_polygon(shape), x, y, z0 + base_h, z1,
+            top_half * (1.05 if flared else 1.0), top_half * 0.94))
+        if base_h > 0.0:
+            parts.append(_tapered_prism(round_, x, y, z0, z0 + base_h,
+                                        foot, top_half * 1.08))
+
+    else:                                            # SQUARE
+        parts.append(_tapered_prism(square, x, y, z0, z1, top_half, top_half))
+        if flared:
+            # A square column cannot be one tapered primitive the way a frustum
+            # can, so its flare is a short plinth rather than a continuous
+            # taper — arguably the better look anyway, reading as a deliberate
+            # foot rather than as a cone someone truncated.
+            plinth_h = min(_FOOT_HEIGHT_MM, max(1e-3, height * 0.45))
+            parts.append(_tapered_prism(square, x, y, z0, z0 + plinth_h,
+                                        foot, foot))
+
+    if bool(getattr(stand, "column_capital", False)):
+        # Never wider than the foot: the reachability filter cleared a corridor
+        # the width of the foot and nothing about the capital was checked.
+        cap_h = min(_CAPITAL_MM, max(1e-3, height * 0.30))
+        cap_half = min(top_half * 1.32, max(top_half * 1.04, foot))
+        profile = round_ if shape in (ColumnShape.ROUND, ColumnShape.FLUTED) else square
+        parts.append(_tapered_prism(profile, x, y, z1 - cap_h, z1,
+                                    top_half * 1.02, cap_half))
+
+    return _manifold.union(parts) if len(parts) > 1 else parts[0]
+
+
+def _place(solid, transform: np.ndarray):
+    """A manifold moved by a 3x4 affine ``transform`` (identity fast-pathed)."""
+    if transform is None:
+        return solid
+    return solid.transform(np.asarray(transform, float).tolist())
 
 
 def _stroke_solids(polylines, origin: np.ndarray, axis_u: np.ndarray,
@@ -735,6 +888,103 @@ def _stroke_solids(polylines, origin: np.ndarray, axis_u: np.ndarray,
         for p in pts:
             solids.append(_manifold.frustum(
                 p - normal * sink, p + normal * depth, half_w, half_w))
+    return solids
+
+
+def _filled_solid(outer, holes, origin: np.ndarray, axis_u: np.ndarray,
+                  axis_v: np.ndarray, normal: np.ndarray,
+                  depth: float, sink: float):
+    """A closed ring with holes, extruded into a solid on a plane.
+
+    This is what a real typeface needs and a stroke font does not: a glyph is an
+    *area*, not a path, so it has to be triangulated before it can be given a
+    thickness.  ``mapbox_earcut`` does the triangulation — the same ear-clipping
+    every 2D renderer uses, and the one dependency the real-font work adds
+    besides ``fontTools``.
+
+    Watertight by construction, like everything else here: the top is the
+    triangulation, the bottom is the same triangulation reversed, and the walls
+    are one quad per edge of every ring, so each edge belongs to exactly two
+    faces.
+    """
+    import mapbox_earcut
+
+    rings = [np.asarray(outer, float)] + [np.asarray(h, float) for h in holes]
+    rings = [r for r in rings if len(r) >= 3]
+    if not rings:
+        return None
+    verts2d = np.vstack(rings)
+    ends = np.cumsum([len(r) for r in rings]).astype(np.uint32)
+    try:
+        tri = np.asarray(
+            mapbox_earcut.triangulate_float64(verts2d, ends), np.int64
+        ).reshape(-1, 3)
+    except Exception:
+        return None
+    if not len(tri):
+        return None
+
+    # Every top triangle must face the same way as the plane's normal. Ear
+    # clipping follows the winding it was given, and a ring that arrived wound
+    # the other way would otherwise put a hole in the letter.
+    a, b, c = verts2d[tri[:, 0]], verts2d[tri[:, 1]], verts2d[tri[:, 2]]
+    flip = ((b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1])
+            - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])) < 0
+    tri[flip] = tri[flip][:, ::-1]
+
+    count = len(verts2d)
+    plane = (origin + np.outer(verts2d[:, 0], axis_u)
+             + np.outer(verts2d[:, 1], axis_v))
+    vertices = np.vstack([plane + normal * float(depth),
+                          plane - normal * float(sink)])
+
+    faces = [tri, tri[:, ::-1] + count]
+    start = 0
+    for ring in rings:
+        n = len(ring)
+        idx = np.arange(n)
+        i = start + idx
+        j = start + (idx + 1) % n
+        faces.append(np.column_stack([i + count, j + count, j]))
+        faces.append(np.column_stack([i + count, j, i]))
+        start += n
+
+    mesh = trimesh.Trimesh(vertices=vertices, faces=np.vstack(faces),
+                           process=False)
+    try:
+        return _manifold.from_trimesh(mesh)
+    except Exception:
+        return None
+
+
+def _text_solids(face, text: str, cap_mm: float, origin: np.ndarray,
+                 axis_u: np.ndarray, axis_v: np.ndarray, normal: np.ndarray,
+                 stroke_mm: float, depth: float, sink: float, grow: float):
+    """One line of type as solids, whichever kind of font it is set in.
+
+    A stroke font is swept; an outline font is filled.  ``grow`` fattens a
+    filled outline by sweeping its own contours as well — a Minkowski sum with a
+    disc, done the cheap way — which is how a face whose stems are thinner than
+    the nozzle is made printable without leaving the typeface behind.
+    """
+    if not getattr(face, "outline", False):
+        return _stroke_solids(face.strokes(text, cap_mm), origin, axis_u,
+                              axis_v, normal, stroke_mm, depth, sink)
+
+    solids = []
+    rings: List = []
+    for outer, holes in face.contours(text, cap_mm):
+        filled = _filled_solid(outer, holes, origin, axis_u, axis_v, normal,
+                               depth, sink)
+        if filled is not None:
+            solids.append(filled)
+        rings.append(outer)
+        rings.extend(holes)
+    if grow > 1e-4 and rings:
+        closed = [[(float(p[0]), float(p[1])) for p in ring] + [
+            (float(ring[0][0]), float(ring[0][1]))] for ring in rings]
+        solids.extend(_stroke_solids(closed, origin, axis_u, axis_v, normal,
+                                     2.0 * grow, depth, sink))
     return solids
 
 
@@ -810,14 +1060,15 @@ def _info_rows(stand: StandParams, params: PrintParams, meta: dict,
     """The left-hand block: what this is, and how big it is."""
     rows: List[_Row] = []
     cap = float(stand.plaque_text_mm)
+    face = typeset.face(getattr(stand, "plaque_font", "sans"))
 
     if stand.plaque_pdb_id and meta.get("pdb_id"):
         text = str(meta["pdb_id"]).upper()
-        size = strokefont.fit_cap_height([text], width_mm, cap)
+        size = typeset.fit_cap_height(face, [text], width_mm, cap)
         rows.append(_Row("text", text, size, size * 1.6))
 
-    if stand.plaque_title and meta.get("title"):
-        title = str(meta["title"])
+    title = str(getattr(stand, "plaque_title_text", "") or "").strip()
+    if title:
         preferred = cap * 0.46
         # One line if it can be had. A title set across three lines competes with
         # the ID above it for the eye; the same words on one line read as a
@@ -825,24 +1076,36 @@ def _info_rows(stand: StandParams, params: PrintParams, meta: dict,
         # is worth it down to the point where the strokes stop printing — below
         # that a single line is legible only in the sense that it exists.
         floor = max(_TITLE_MIN_CAP_MM, cap * 0.26)
-        single = strokefont.fit_cap_height([title], width_mm, preferred,
-                                           min_cap_mm=0.1)
+        single = typeset.fit_cap_height(face, [title], width_mm, preferred,
+                                        min_cap_mm=0.1)
         if single >= floor:
             rows.append(_Row("text", title, single, single * 1.55))
         else:
-            # Wrapping is second choice; wrapping *and* truncating is third. Give
-            # up a little type size first, because losing the end of a structure
-            # name to an ellipsis is losing information, and a tenth of a
-            # millimetre of cap height is losing nothing.
+            # Wrapping is second choice; truncating is not a choice at all.
+            # Give up a little type size first, because a tenth of a millimetre
+            # of cap height is losing nothing and the end of a structure's name
+            # is losing the name. If four lines at the smallest printable size
+            # still will not hold it, it takes as many lines as it takes and the
+            # apron gets deeper — the apron is sized from this content, so that
+            # costs a few millimetres of plate and nothing else.
             size, lines = preferred, []
             for factor in (1.0, 0.86, 0.74, 0.64):
                 size = max(floor, preferred * factor)
-                lines = strokefont.wrap_balanced(title, size, width_mm,
-                                                 max_lines=3)
-                if not any(line.endswith("...") for line in lines):
+                lines = typeset.wrap_balanced(face, title, size, width_mm,
+                                              max_lines=4, truncate=False)
+                if len(lines) <= 3:
                     break
             for line in lines:
                 rows.append(_Row("text", line, size, size * 1.55))
+
+    note = str(getattr(stand, "plaque_note", "") or "").strip()
+    if note:
+        # Set at the scale line's size, below the title: it is the user's own
+        # line, and a line of your own competing with the structure's name for
+        # the eye reads as a correction to it rather than as an addition.
+        size = cap * 0.42
+        for line in typeset.wrap(face, note, size, width_mm, max_lines=2):
+            rows.append(_Row("text", line, size, size * 1.6))
 
     if stand.plaque_scalebar:
         size = cap * 0.42
@@ -856,6 +1119,81 @@ def _info_rows(stand: StandParams, params: PrintParams, meta: dict,
     return rows
 
 
+def _info_natural_width(stand: StandParams, params: PrintParams,
+                        meta: dict) -> float:
+    """The width past which the left block stops getting anything out of it.
+
+    Every line the block holds, measured at the size it is set at, unwrapped.
+    Give the block this much and nothing wraps; give it more and nothing
+    changes — the lettering cannot get any wider, so the white tile behind it
+    stops growing and the extra millimetres go into pushing the plate out for
+    no return.
+
+    Which makes it the natural top of the width control, and that is what it is
+    used for: the slider ends here, and a value past it is clamped back to it.
+    """
+    if not stand.plaque:
+        return 0.0
+    face = typeset.face(getattr(stand, "plaque_font", "sans"))
+    cap = float(stand.plaque_text_mm)
+    widest = 0.0
+    if stand.plaque_pdb_id and meta.get("pdb_id"):
+        widest = max(widest, typeset.text_width(
+            face, str(meta["pdb_id"]).upper(), cap))
+    title = str(getattr(stand, "plaque_title_text", "") or "").strip()
+    if title:
+        # The size ``_info_rows`` sets a title at when it fits on one line.
+        widest = max(widest, typeset.text_width(face, title, cap * 0.46))
+    note = str(getattr(stand, "plaque_note", "") or "").strip()
+    if note:
+        widest = max(widest, typeset.text_width(face, note, cap * 0.42))
+    if stand.plaque_scalebar:
+        widest = max(widest, typeset.text_width(
+            face, f"1 Å = {params.scale_mm_per_angstrom:g} mm", cap * 0.42))
+    return min(widest * 1.04 + 1.0, 200.0) if widest else 0.0
+
+
+def _info_floor_width(stand: StandParams, meta: dict) -> float:
+    """The narrowest the left block may be before it starts shrinking its own type.
+
+    Every row on the plaque shrinks to fit the column it is given — right for a
+    title that is a sentence long, wrong for a four-character PDB ID that is
+    meant to be the headline. Without this floor the width control quietly sets
+    the type size instead of the width, and a 5 mm ID comes out at 2.9 mm.
+    """
+    if not stand.plaque:
+        return 0.0
+    face = typeset.face(getattr(stand, "plaque_font", "sans"))
+    cap = float(stand.plaque_text_mm)
+    wanted = 0.0
+    if stand.plaque_pdb_id and meta.get("pdb_id"):
+        wanted = typeset.text_width(face, str(meta["pdb_id"]).upper(), cap)
+    return min(max(14.0, wanted + 1.0), 44.0)
+
+
+def _legend_natural_width(stand: StandParams, chain_rows: List[dict]) -> float:
+    """How wide the legend would like to be: its longest row, unshortened.
+
+    Asked before the plate is sized, so the plate can be made wide enough for
+    both blocks instead of one of them being squeezed to fit what is left. The
+    legend is the block with a natural width — a chain's name is as long as it
+    is — where the information block is happy at any width and merely wraps
+    differently.
+    """
+    if not (stand.plaque and stand.plaque_legend and chain_rows):
+        return 0.0
+    face = typeset.face(getattr(stand, "plaque_font", "sans"))
+    size = float(stand.plaque_text_mm) * 0.42
+    widest = 0.0
+    for row in chain_rows:
+        widest = max(widest,
+                     size * 2.2 + typeset.text_width(face, row["label"], size))
+    # A hair over, because ``_legend_rows`` shortens anything that is not
+    # *strictly* narrower than the space it has, and a name that measures its
+    # own width exactly would be truncated by a rounding error.
+    return widest + 0.6 if widest else 0.0
+
+
 def _legend_rows(stand: StandParams, chain_rows: List[dict],
                  width_mm: float) -> List[_Row]:
     """The right-hand block: one colour-matched row per printed object."""
@@ -863,6 +1201,7 @@ def _legend_rows(stand: StandParams, chain_rows: List[dict],
     if not (stand.plaque_legend and chain_rows):
         return rows
     size = float(stand.plaque_text_mm) * 0.42
+    face = typeset.face(getattr(stand, "plaque_font", "sans"))
     # A to Z down the page. The build order is whatever the file listed — polymers
     # then ligands, chains in header order — which is fine for colour assignment
     # and useless for finding a row: someone reading the legend is looking up the
@@ -870,8 +1209,8 @@ def _legend_rows(stand: StandParams, chain_rows: List[dict],
     for row in sorted(chain_rows, key=lambda r: str(r["chain_id"])):
         label = row["label"]
         available = width_mm - size * 2.2
-        if strokefont.text_width(label, size) > available:
-            shortened = strokefont.wrap(label, size, available, max_lines=1)
+        if typeset.text_width(face, label, size) > available:
+            shortened = typeset.wrap(face, label, size, available, max_lines=1)
             label = shortened[0] if shortened else label
         rows.append(_Row("legend", label, size, size * 1.85,
                          built_index=row["index"]))
@@ -879,22 +1218,70 @@ def _legend_rows(stand: StandParams, chain_rows: List[dict],
 
 
 # --------------------------------------------------------------------------
-# Main entry point
+# Layout: everything decided before any geometry is built
 # --------------------------------------------------------------------------
-def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
-    """Rotate ``built`` upright and generate the stand around it.
+@dataclass
+class StandLayout:
+    """The stand, decided but not yet made.
 
-    Returns ``(oriented_built, stand_parts, notes)``:
+    Everything here is arithmetic on the finished meshes: where the plate goes,
+    how deep the apron has to be to hold the lettering, which points on the
+    underside the columns will rise to.  None of it builds a solid, and the
+    expensive half of :func:`build_stand` — carving four cradles out of a surface
+    mesh, sweeping a few hundred stroke segments, meshing the result — happens
+    entirely after it.
 
-    * ``oriented_built`` is the same list of ``(chain, mesh)`` pairs with every
-      mesh rotated into stand space and set down above the plate;
-    * ``stand_parts`` is a list of ``(StandPart, mesh)`` ready to be appended to
-      it for export;
-    * ``notes`` are warnings for the user — a column that could not be sited, a
-      plaque that had to shrink.
+    Split out so the front end can draw the stand it is about to ask for.  A
+    preview that re-derives any of this in JavaScript is a second implementation
+    that will disagree with the first one eventually, and the disagreement will
+    surface as a column that is not where the picture promised.
+    """
 
-    Never raises for a geometric reason: a model that defeats the column search
-    still gets its plate and its plaque, and the note says what is missing.
+    oriented_built: list
+    meshes: list
+    chains: list
+    chain_rows: List[dict]
+    model_min: np.ndarray
+    model_max: np.ndarray
+
+    plate_x0: float
+    plate_x1: float
+    plate_y0: float
+    plate_y1: float
+    plate_top: float
+    corner_mm: float
+
+    apron: float
+    apron_top: float
+    pad: float
+    info_width: float
+    legend_width: float
+    rake_deg: float
+    rake_rise: float
+    rake_lip: float
+
+    info_rows: List[_Row]
+    legend_rows: List[_Row]
+    shrink: float
+
+    meta: dict
+    columns: List[_Candidate]
+    wanted: int
+    radius: float
+    foot: float
+    hull: Optional[np.ndarray]
+
+    notes: List[str]
+
+
+def solve_layout(built, params: PrintParams,
+                 meta: Optional[dict] = None) -> Optional[StandLayout]:
+    """Work out the whole stand without building any of it.
+
+    Returns ``None`` when there is nothing to stand.  Never raises for a
+    geometric reason: a model that defeats the column search comes back with no
+    columns and a note saying so, because a plate and a plaque are still worth
+    having.
     """
     meta = dict(meta or {})
     stand = params.stand
@@ -902,10 +1289,9 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
 
     chains = [c for c, _m in built]
     rotation = stand_rotation(stand)
-
     rotated = [_apply_rotation(m, rotation, np.zeros(3)) for _c, m in built]
     if not rotated:
-        return list(built), [], ["Nothing to stand: the build produced no objects."]
+        return None
 
     lows = np.array([m.bounds[0] for m in rotated])
     highs = np.array([m.bounds[1] for m in rotated])
@@ -927,7 +1313,6 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
     model_min = lows.min(axis=0)
     model_max = highs.max(axis=0)
 
-    plate_bottom = 0.0
     plate_top = float(stand.plate_thickness_mm)
     margin = float(stand.plate_margin_mm)
 
@@ -943,17 +1328,63 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             "color": color_for_index(i),
         })
 
-    plate_x0 = float(model_min[0]) - margin
-    plate_x1 = float(model_max[0]) + margin
-    plate_width = plate_x1 - plate_x0
+    # The plate is at least wide enough for the model, and wider if the plaque
+    # needs it to be. One rule, in one place:
+    #
+    #   the left block is as wide as it was asked to be (or half, on auto);
+    #   the legend keeps the width its own names need;
+    #   the plate grows only if those two do not fit side by side.
+    #
+    # Two earlier versions of this tried to be clever — a fraction of the plate,
+    # then a fraction interpolated between measured anchors — and the cleverness
+    # was the problem both times: it could not be checked by looking at it, and
+    # when it disagreed with what somebody expected there was no way to tell
+    # which of the three moving parts had done it.
     pad = max(3.0, float(stand.plaque_text_mm) * 0.6)
-    column_width = plate_width * 0.5 - pad * 1.5
+    # A margin at each edge, and between the blocks a gap wide enough that the
+    # two tiles still have ``_TILE_GAP_MM`` of plate between them once each has
+    # taken its own half-pad of surround.
+    spare = pad * 2.0 + (pad + _TILE_GAP_MM)
+    natural_half = max(abs(float(model_min[0])), abs(float(model_max[0]))) + margin
+    natural_usable = max(12.0, 2.0 * natural_half - spare)
+
+    # What the legend needs is what its longest name is. Only an absolute
+    # backstop, against a pathological header.
+    legend_need = 0.0
+    if stand.plaque:
+        legend_need = min(_legend_natural_width(stand, chain_rows), 90.0)
+
+    # Bounded at both ends by something real. Below the floor the control would
+    # be shrinking the headline rather than narrowing the block; above the
+    # natural width it would be pushing the plate out to hold lettering that
+    # cannot get any wider, which is where the legend used to start paying for
+    # width nobody was using.
+    info_max = _info_natural_width(stand, params, meta)
+    asked = float(getattr(stand, "plaque_info_mm", 0.0) or 0.0)
+    info_width = asked if asked > 0.0 else natural_usable * 0.5
+    if info_max > 0.0:
+        info_width = min(info_width, info_max)
+    info_width = max(info_width, _info_floor_width(stand, meta))
+
+    half = max(natural_half, 0.5 * (info_width + legend_need + spare))
+    plate_x0, plate_x1 = -half, half
+    plate_width = plate_x1 - plate_x0
+    usable = plate_width - spare
+    legend_width = max(6.0, usable - info_width)
 
     info_rows: List[_Row] = []
     legend_rows: List[_Row] = []
     if stand.plaque:
-        info_rows = _info_rows(stand, params, meta, column_width)
-        legend_rows = _legend_rows(stand, chain_rows, column_width)
+        info_rows = _info_rows(stand, params, meta, info_width)
+        legend_rows = _legend_rows(stand, chain_rows, legend_width)
+
+    if stand.plaque:
+        # Said once, here, so it reaches the build report *and* the live sketch:
+        # both go through this function.
+        missing = typeset.unavailable(typeset.face(
+            getattr(stand, "plaque_font", "sans")))
+        if missing:
+            notes.append(missing)
 
     content = max(sum(r.height_mm for r in info_rows),
                   sum(r.height_mm for r in legend_rows))
@@ -961,18 +1392,52 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
     if content > 0:
         apron = max(_APRON_MIN_MM, content + 2.0 * pad)
 
+    shrink = 1.0
+    if content > 0 and content + 2.0 * pad > apron:
+        shrink = max(_TEXT_MIN_SHRINK, (apron - 2.0 * pad) / max(content, 1e-6))
+        for row in info_rows + legend_rows:
+            row.cap_mm *= shrink
+            row.height_mm *= shrink
+            row.bar_mm *= shrink
+
     plate_y0 = float(model_min[1]) - margin - apron
     plate_y1 = float(model_max[1]) + margin
+    apron_top = plate_y0 + apron
 
-    parts = [_rounded_slab(plate_x0, plate_x1, plate_y0, plate_y1,
-                           plate_bottom, plate_top,
-                           float(stand.plate_corner_mm))]
+    # ---- how far the plaque face is tipped toward the viewer -------------
+    rake_deg = max(0.0, min(float(getattr(stand, "apron_rake_deg", 0.0) or 0.0),
+                            _RAKE_MAX_DEG))
+    rake_rise = 0.0
+    rake_lip = 0.0
+    if apron > 0.0 and rake_deg > 1e-6:
+        rake_lip = _RAKE_LIP_MM
+        rake_rise = apron * math.tan(math.radians(rake_deg))
+        # The wedge is highest at the back, right in front of the model, so past
+        # a point it stops being a lectern and starts being a wall you look at
+        # the model over. The stand-off is the model's own ground clearance and
+        # so the natural ceiling: keep the wedge below the lowest thing it could
+        # hide.
+        ceiling = min(_RAKE_MAX_RISE_MM,
+                      max(4.0, float(stand.stand_off_mm)) - rake_lip)
+        if rake_rise > ceiling:
+            rake_rise = max(0.0, ceiling)
+            capped = math.degrees(math.atan2(rake_rise, apron))
+            if rake_deg - capped > 1.5:
+                notes.append(
+                    f"The plaque rake was limited to about {capped:.0f}° so the "
+                    f"wedge stays below the model; raise the stand-off, or "
+                    f"shorten the plaque, for more.")
+            rake_deg = capped
+        if rake_rise <= 1e-6:
+            rake_deg, rake_lip = 0.0, 0.0
 
-    # ---- columns -------------------------------------------------------
+    # ---- where the columns land -----------------------------------------
     wanted = int(stand.columns) if int(stand.columns) > 0 else recommend_columns(meshes)
     radius = max(1.0, float(stand.column_diameter_mm) * 0.5)
-    foot = radius * float(stand.column_flare)
+    foot = radius * (float(stand.column_flare)
+                     if bool(getattr(stand, "column_flared", True)) else 1.0)
     model_centre = _centre_of_mass_xy(meshes)
+    hull = footprint_hull(meshes)
     candidates = _underside_candidates(
         meshes, stand, cell_mm=max(2.0, radius),
         mtypes=[getattr(c, "mtype", None) for c in chains])
@@ -986,7 +1451,7 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         if stand.column_prefer_protein:
             candidates = _prefer_protein(candidates, minimum=max(1, wanted))
         candidates = _drop_edge_candidates(
-            candidates, footprint_hull(meshes),
+            candidates, hull,
             cap_mm=foot + float(stand.column_edge_margin_mm),
             edge_frac=float(stand.column_edge_frac),
             minimum=max(4, wanted + 2))
@@ -995,7 +1460,7 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             "No column could be placed: in this orientation there is no "
             "downward-facing surface with a clear path down to the plate. Turn "
             "the model so a flatter, more exposed face points down.")
-        columns = []
+        columns: List[_Candidate] = []
     else:
         columns = _choose_columns(candidates, wanted, model_centre)
         if len(columns) < wanted:
@@ -1004,8 +1469,215 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 f"underside did not offer enough separated, unobstructed spots "
                 f"in this orientation.")
 
+    return StandLayout(
+        oriented_built=oriented_built, meshes=meshes, chains=chains,
+        chain_rows=chain_rows, model_min=model_min, model_max=model_max,
+        plate_x0=plate_x0, plate_x1=plate_x1, plate_y0=plate_y0,
+        plate_y1=plate_y1, plate_top=plate_top,
+        corner_mm=float(stand.plate_corner_mm),
+        apron=apron, apron_top=apron_top, pad=pad,
+        info_width=info_width, legend_width=legend_width,
+        rake_deg=rake_deg, rake_rise=rake_rise, rake_lip=rake_lip,
+        info_rows=info_rows, legend_rows=legend_rows, shrink=shrink, meta=meta,
+        columns=columns, wanted=wanted, radius=radius, foot=foot, hull=hull,
+        notes=notes,
+    )
+
+
+def layout_summary(layout: StandLayout, params: PrintParams) -> dict:
+    """A JSON-ready description of a solved layout, for the live sketch.
+
+    Millimetres throughout, in stand space: ``+x`` right, ``+y`` away from the
+    viewer, ``+z`` up, plate underside on ``z = 0``.  Row heights and cap sizes
+    are the *final* ones, after any shrink-to-fit, so a preview drawing them at
+    face value draws what will be printed.
+    """
+    stand = params.stand
+
+    def _rows(rows: List[_Row], colours: Optional[dict] = None) -> List[dict]:
+        out = []
+        for row in rows:
+            item = {"kind": row.kind, "text": row.text,
+                    "cap_mm": round(float(row.cap_mm), 3),
+                    "height_mm": round(float(row.height_mm), 3),
+                    "bar_mm": round(float(row.bar_mm), 3)}
+            if colours is not None and row.built_index >= 0:
+                meta = colours.get(row.built_index)
+                if meta:
+                    item["color"] = _rgb_hex(meta["color"])
+                    item["chain_id"] = meta["chain_id"]
+            out.append(item)
+        return out
+
+    by_index = {r["index"]: r for r in layout.chain_rows}
+    model_min = [round(float(v), 3) for v in layout.model_min]
+    model_max = [round(float(v), 3) for v in layout.model_max]
+
+    return {
+        "plate": {
+            "x0": round(layout.plate_x0, 3), "x1": round(layout.plate_x1, 3),
+            "y0": round(layout.plate_y0, 3), "y1": round(layout.plate_y1, 3),
+            "top": round(layout.plate_top, 3),
+            "corner_mm": round(layout.corner_mm, 3),
+        },
+        "apron": {
+            "depth": round(layout.apron, 3),
+            "top": round(layout.apron_top, 3),
+            "pad": round(layout.pad, 3),
+            "info_width": round(layout.info_width, 3),
+            "legend_width": round(layout.legend_width, 3),
+            "info_mm": round(float(getattr(stand, "plaque_info_mm", 0.0) or 0.0), 1),
+            # Where the width control should stop: past this the lettering
+            # cannot get wider, so neither can the tile behind it.
+            "info_max_mm": round(_info_natural_width(stand, params, layout.meta), 1),
+            "info_floor_mm": round(_info_floor_width(stand, layout.meta), 1),
+            "rake_deg": round(layout.rake_deg, 3),
+            "rise": round(layout.rake_rise, 3),
+            "lip": round(layout.rake_lip, 3),
+        },
+        "model": {"min": model_min, "max": model_max,
+                  "stand_off": round(float(stand.stand_off_mm), 3)},
+        "hull": ([[round(float(x), 2), round(float(y), 2)]
+                  for x, y in layout.hull] if layout.hull is not None else []),
+        "columns": [{"x": round(float(c.point[0]), 3),
+                     "y": round(float(c.point[1]), 3),
+                     "top": round(float(c.point[2])
+                                  + float(stand.cradle_depth_mm), 3),
+                     "seat": round(float(c.point[2]), 3)}
+                    for c in layout.columns],
+        "column": {
+            "shape": stand.column_shape.value,
+            "radius": round(layout.radius, 3),
+            "foot": round(layout.foot, 3),
+            "flared": bool(getattr(stand, "column_flared", True)),
+            "capital": bool(getattr(stand, "column_capital", False)),
+            "pins": bool(getattr(stand, "column_pins", False)),
+            "wanted": int(layout.wanted),
+            "placed": len(layout.columns),
+        },
+        # The plaque's text as text, not only as geometry. A preview at panel
+        # size renders a 2 mm line about five pixels tall, which is honest about
+        # the print and useless for answering "is my structure's name in there".
+        "meta": {"pdb_id": layout.meta.get("pdb_id") or "",
+                 "title": layout.meta.get("title") or "",
+                 "why": layout.meta.get("why") or ""},
+        "plaque": {
+            "on": bool(stand.plaque),
+            "relief": getattr(stand, "plaque_relief", PlaqueRelief.RAISED).value,
+            "font": typeset.face(getattr(stand, "plaque_font", "sans")).key,
+            "font_note": typeset.unavailable(
+                typeset.face(getattr(stand, "plaque_font", "sans"))),
+            "tile": bool(stand.plaque_tile),
+            "info": _rows(layout.info_rows),
+            "legend": _rows(layout.legend_rows, by_index),
+        },
+        "notes": list(layout.notes),
+    }
+
+
+def _rgb_hex(color) -> str:
+    r, g, b = (max(0, min(255, int(round(float(c) * 255)))) for c in color)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+# --------------------------------------------------------------------------
+# Main entry point
+# --------------------------------------------------------------------------
+def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
+    """Rotate ``built`` upright and generate the stand around it.
+
+    Returns ``(oriented_built, stand_parts, notes)``:
+
+    * ``oriented_built`` is the same list of ``(chain, mesh)`` pairs with every
+      mesh rotated into stand space and set down above the plate;
+    * ``stand_parts`` is a list of ``(StandPart, mesh)`` ready to be appended to
+      it for export;
+    * ``notes`` are warnings for the user — a column that could not be sited, a
+      plaque that had to shrink.
+
+    Never raises for a geometric reason: a model that defeats the column search
+    still gets its plate and its plaque, and the note says what is missing.
+    """
+    stand = params.stand
+    layout = solve_layout(built, params, meta)
+    if layout is None:
+        return list(built), [], ["Nothing to stand: the build produced no objects."]
+
+    notes = layout.notes
+    meshes = layout.meshes
+    plate_top = layout.plate_top
+    apron = layout.apron
+    apron_top = layout.apron_top
+    pad = layout.pad
+
+    parts = [_rounded_slab(layout.plate_x0, layout.plate_x1,
+                           layout.plate_y0, layout.plate_y1,
+                           0.0, plate_top, layout.corner_mm)]
+
+    # ---- the raked apron, if any ----------------------------------------
+    # A wedge *added* to the plate rather than cut into it. The cut version can
+    # never be deeper than the plate is thick, which runs out at about five
+    # degrees on a 4 mm plate — and five degrees is not a rake, it is a defect.
+    # Adding material has no such ceiling, and every face of the wedge slopes
+    # upward from the bed, so none of it needs support.
+    cos_a, sin_a = 1.0, 0.0
+    surface_z = plate_top
+    if layout.rake_rise > 1e-6:
+        angle = math.atan2(layout.rake_rise, apron)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        surface_z = plate_top + layout.rake_lip + layout.rake_rise
+        slope = apron / max(cos_a, 1e-6)
+        thickness = surface_z + 20.0
+        centre_top = np.array([
+            0.5 * (layout.plate_x0 + layout.plate_x1),
+            0.5 * (layout.plate_y0 + apron_top),
+            plate_top + layout.rake_lip + 0.5 * layout.rake_rise])
+        axis_v = np.array([0.0, cos_a, sin_a])
+        normal = np.array([0.0, -sin_a, cos_a])
+        wedge = _manifold.oriented_box(
+            centre_top - normal * (thickness * 0.5),
+            np.array([[1.0, 0.0, 0.0], axis_v, normal]),
+            [0.5 * (layout.plate_x1 - layout.plate_x0), 0.5 * slope,
+             0.5 * thickness])
+        # Clipped to the plate's own rounded plan, so the wedge inherits the
+        # corner radius instead of poking square corners out of a round plate,
+        # and squared off at the back where it meets the rest of the plate.
+        plan = _rounded_slab(layout.plate_x0, layout.plate_x1,
+                             layout.plate_y0, layout.plate_y1,
+                             0.0, surface_z + 1.0, layout.corner_mm)
+        back = _manifold.oriented_box(
+            [0.5 * (layout.plate_x0 + layout.plate_x1),
+             0.5 * (layout.plate_y0 - 2.0 + apron_top),
+             0.5 * (surface_z + 2.0)],
+            np.eye(3),
+            [0.5 * (layout.plate_x1 - layout.plate_x0) + 1.0,
+             0.5 * (apron_top - layout.plate_y0 + 2.0),
+             0.5 * (surface_z + 4.0)])
+        try:
+            wedge = _manifold.intersection(_manifold.intersection(wedge, plan),
+                                           back)
+            if not wedge.is_empty():
+                parts.append(wedge)
+            else:
+                cos_a, sin_a, surface_z = 1.0, 0.0, plate_top
+        except Exception:
+            notes.append("The plaque rake could not be built; the apron is flat.")
+            cos_a, sin_a, surface_z = 1.0, 0.0, plate_top
+
+    #: Maps plaque-layout coordinates ``(x, y, lift)`` onto the apron face,
+    #: where ``lift`` is height above that face.  The identity-plus-translation
+    #: when the apron is flat, which is why every plaque solid below can be
+    #: built in one frame and placed in another.
+    face_xf = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, cos_a, -sin_a, apron_top * (1.0 - cos_a)],
+        [0.0, sin_a, cos_a, surface_z - apron_top * sin_a],
+    ])
+
+    # ---- columns -------------------------------------------------------
+    radius, foot = layout.radius, layout.foot
     model_manifold = None
-    if columns:
+    if layout.columns:
         try:
             model_manifold = _manifold.union(
                 [_manifold.from_trimesh(m) for m in meshes])
@@ -1014,9 +1686,28 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
 
     from . import interference
 
-    for column in columns:
+    # Pinned, the columns leave the plate and become parts in their own right —
+    # which is the whole point: a plate nobody has welded columns to can be
+    # turned over and printed with its lettering face down against the build
+    # sheet, and a plaque printed against a smooth sheet is as good as the
+    # sheet. Everything about that is decided here.
+    pins = bool(getattr(stand, "column_pins", False))
+    pin_radius = max(0.8, min(float(getattr(stand, "pin_diameter_mm", 4.0)) * 0.5,
+                              radius * 0.8))
+    pin_depth = float(getattr(stand, "pin_depth_mm", 3.0))
+    if pins and pin_depth > plate_top - 1.0:
+        pin_depth = max(1.0, plate_top - 1.0)
+        notes.append(
+            f"The assembly pins were shortened to {pin_depth:.1f} mm so the "
+            f"sockets do not break through the underside of the plate — which "
+            f"is the face you are turning over to print.")
+    pin_clear = float(getattr(stand, "pin_clearance_mm", 0.15))
+    column_parts: List = []
+    plate_cuts: List = []
+
+    for index, column in enumerate(layout.columns):
         px, py, pz = (float(v) for v in column.point)
-        if py < plate_y0 + apron:
+        if py < apron_top:
             # Cannot happen while the apron sits in front of the model's own
             # footprint, but the plaque is laid out before the columns are sited
             # and a future change to either could quietly break that. Say so
@@ -1034,8 +1725,34 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         # anyway. The column grows from the plate until it reaches the surface,
         # and stops there.
         top = pz + float(stand.cradle_depth_mm)
-        solid = _column_solid(px, py, plate_top - 0.5, top, radius, foot,
-                              stand.column_shape)
+        # Unpinned the column is fused to the plate, so it starts just inside it
+        # to guarantee the union has volume to work with. Pinned it starts *on*
+        # the plate, because the two are about to be separate objects and a
+        # column buried half a millimetre into its own plate would not seat.
+        solid = _column_solid(px, py, plate_top - (0.0 if pins else 0.5),
+                              top, radius, foot, stand)
+        if pins:
+            tip = min(0.6, pin_depth * 0.3)
+            solid = _manifold.union([
+                solid,
+                _manifold.frustum([px, py, plate_top - pin_depth],
+                                  [px, py, plate_top - pin_depth + tip],
+                                  max(0.3, pin_radius - tip), pin_radius),
+                _manifold.frustum([px, py, plate_top - pin_depth + tip],
+                                  [px, py, plate_top + 0.01],
+                                  pin_radius, pin_radius),
+            ])
+            plate_cuts.append(_manifold.union([
+                _manifold.frustum([px, py, plate_top - pin_depth - 0.15],
+                                  [px, py, plate_top + 0.02],
+                                  pin_radius + pin_clear, pin_radius + pin_clear),
+                # A lead-in at the mouth, so the pin finds the hole instead of
+                # catching the first-layer elephant's foot around its rim.
+                _manifold.frustum([px, py, plate_top - 0.45],
+                                  [px, py, plate_top + 0.02],
+                                  pin_radius + pin_clear,
+                                  pin_radius + pin_clear + 0.45),
+            ]))
         if model_manifold is not None:
             try:
                 # Carve only against the model *near this column*. The whole
@@ -1048,7 +1765,7 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 low, high = pz - 4.0, top + 2.0
                 window = _manifold.oriented_box(
                     [px, py, 0.5 * (low + high)], np.eye(3),
-                    [radius * 2.2, radius * 2.2, 0.5 * (high - low)])
+                    [radius * 2.4, radius * 2.4, 0.5 * (high - low)])
                 local = _manifold.intersection(model_manifold, window)
                 if not local.is_empty():
                     tool = interference.dilate(
@@ -1059,68 +1776,109 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             except Exception:
                 notes.append("One column could not be carved to fit the model; "
                              "it will meet it flat.")
-        parts.append(solid)
+        if pins:
+            column_parts.append((
+                StandPart("column", f"stand_column_{index + 1}", STAND_COLOR,
+                          chain_id=str(index + 1)), solid))
+        else:
+            parts.append(solid)
 
-    # ---- plaque, lying flat on the apron --------------------------------
+    # ---- plaque, lying on the apron -------------------------------------
+    # Built in the apron's own frame — ``z`` is height above the face, not above
+    # the plate — and placed onto the face at the end.  One transform at the
+    # bottom is the whole cost of a raked plaque; without it every dot, bar and
+    # stroke below would need its own trigonometry.
+    info_rows, legend_rows = layout.info_rows, layout.legend_rows
+    relief = getattr(stand, "plaque_relief", PlaqueRelief.FLUSH)
+    engrave = relief == PlaqueRelief.ENGRAVED
+    flush = relief == PlaqueRelief.FLUSH
+
     # Each entry is ``(part, solid, sits_on_a_tile)``.
     text_parts: List[Tuple[StandPart, "object", bool]] = []
-    if info_rows or legend_rows:
-        shrink = 1.0
-        if content + 2.0 * pad > apron:
-            shrink = max(_TEXT_MIN_SHRINK, (apron - 2.0 * pad) / max(content, 1e-6))
-            for row in info_rows + legend_rows:
-                row.cap_mm *= shrink
-                row.height_mm *= shrink
-                row.bar_mm *= shrink
+    cutters: List = []                      # engraved lettering, to subtract
+    tile_solid = None
 
+    if info_rows or legend_rows:
+        shrink = layout.shrink
         axis_u = np.array([1.0, 0.0, 0.0])
         axis_v = np.array([0.0, 1.0, 0.0])
         normal = np.array([0.0, 0.0, 1.0])
         emboss = float(stand.plaque_emboss_mm)
         stroke = float(stand.plaque_stroke_mm) * (0.7 + 0.3 * shrink)
+        face = typeset.face(getattr(stand, "plaque_font", "sans"))
+        min_stroke = float(getattr(stand, "plaque_min_stroke_mm", 0.45))
         tile_h = float(stand.plaque_tile_mm)
         sink = 0.5
+        tiled = bool(stand.plaque_tile)
         # Lettering on a tile can only sink as far as the tile is thick, or the
         # recess cut to receive it goes clean through and opens a letter-shaped
         # hole into the plate underneath.
         tile_sink = min(sink, tile_h * 0.6)
 
+        # Engraved, the cut wants to go *through* a tile and stop on the plate
+        # beneath it: the letters then read in the plate's colour on a white
+        # field, with no second object involved and nothing that can come loose.
+        # Straight onto the plate it is an ordinary groove.
+        cut_depth = (tile_h + sink) if tiled else emboss
+        cut_proud = 0.4                     # start the cutter above the face
+        # Flush, everything is sunk instead: the tile drops into the apron until
+        # its face is level with the plate, and the lettering drops into the
+        # tile until it is level with that. Nothing stands proud, nothing is
+        # hollow, and the whole apron is one plane whose colour changes partway
+        # through a layer — which is the thing a multi-material printer is
+        # actually good at, and the thing a flat top surface prints best as.
+        flush_sink = min(emboss, tile_h * 0.75) if tiled else emboss
+        # Where the tile sits relative to the face, and therefore what height
+        # the lettering on it is measured from.
+        tile_lo, tile_hi = (-tile_h, 0.0) if flush else (-sink, tile_h)
+
         info_text: List = []
         legend_solids: dict = {}
         tiles: List = []
-        apron_top = plate_y0 + apron
 
         def _tile(x0, x1, y0, y1):
-            """A white field the lettering sits on, standing just off the plate."""
-            return _rounded_slab(x0, x1, y0, y1,
-                                 plate_top - sink, plate_top + tile_h,
+            """A white field for the lettering — proud of the face, or level with it."""
+            return _rounded_slab(x0, x1, y0, y1, tile_lo, tile_hi,
                                  min(2.2, max(1e-3, (y1 - y0)) * 0.2))
 
-        def _emit(rows, x_left, x_right, target, align_right, tiled):
+        def _emit(rows, x_left, target, tiled):
             """Lay one block out from the back of the apron toward the front.
 
-            ``align_right`` sets each row flush to ``x_right`` instead of
-            ``x_left``. The legend uses it so the colour dots form one straight
-            edge down the right-hand side rather than a ragged one — with rows of
-            different name lengths, a left-aligned legend has its dots in a line
-            but its text ending anywhere, and reads as an accident.
+            Both blocks set from their own left edge. The legend used to be set
+            flush right, on the reasoning that ragged endings read as an
+            accident — but flush right puts the *colour dots* down a ragged
+            edge, and the dots are the thing being scanned. A reader looking up
+            which colour is which subunit wants them in a column; where the
+            names happen to end is not something anyone reads.
 
             ``target`` may be a list or a callable taking ``(row, solids)``, which
             is how the legend routes each row's geometry into its own per-chain
             object instead of one shared one.
+
+            Solids are classed as *ink* or not.  Ink is lettering: engraved, it
+            becomes a cutter and no object at all.  A legend's colour dot is not
+            ink — a dot's whole job is to be a colour, so it stays a raised
+            object in its chain's filament however the text beside it is made.
             """
             cursor = apron_top - pad
             block_top = cursor
-            use_sink = tile_sink if tiled else sink
-            base_z = plate_top + (tile_h if tiled else 0.0)
+            use_sink = (flush_sink if flush
+                        else (tile_sink if tiled else sink))
+            base_z = tile_hi if tiled else 0.0
+            # Flush lettering has no height above the face at all; that is what
+            # flush means. Everything below reads these two and needs no other
+            # branch on the mode.
+            rise_mm = 0.0 if flush else emboss
             # Actual ink extents, so a tile can be cut to the text rather than to
             # the column it was allotted. A block of three short chain names in a
             # half-plate-wide slot left most of its tile blank, which read as a
             # misprint rather than as margin.
             used = {"x0": None, "x1": None}
 
-            def put(row, solids):
-                if callable(target):
+            def put(row, solids, ink=True):
+                if ink and engrave:
+                    cutters.extend(solids)
+                elif callable(target):
                     target(row, solids)
                 else:
                     target.extend(solids)
@@ -1140,49 +1898,59 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                     lead = row.cap_mm * 1.6
                 elif row.kind == "scalebar":
                     lead = row.bar_mm + row.cap_mm * 0.7
-                text_w = strokefont.text_width(row.text, row.cap_mm) if row.text else 0.0
-                x = (x_right - (lead + text_w)) if align_right else x_left
+                text_w = typeset.text_width(face, row.text, row.cap_mm) if row.text else 0.0
+                x = x_left
                 mark(x, x + lead + text_w)
 
                 if row.kind == "legend":
+                    # Engraved, a colour dot is a lie: there is one filament, and
+                    # a raised disc of it says nothing the letters beside it have
+                    # not already said. So it is cut like everything else, and
+                    # whoever wants it coloured can put paint in it.
                     dot_r = row.cap_mm * 0.52
+                    dot_lo = base_z - (cut_depth if engrave else use_sink)
+                    dot_hi = base_z + (cut_proud if engrave else rise_mm)
                     put(row, [_manifold.frustum(
-                        [x + dot_r, baseline + dot_r, base_z - use_sink],
-                        [x + dot_r, baseline + dot_r, base_z + emboss],
-                        dot_r, dot_r)])
+                        [x + dot_r, baseline + dot_r, dot_lo],
+                        [x + dot_r, baseline + dot_r, dot_hi],
+                        dot_r, dot_r)], ink=engrave)
                     x += row.cap_mm * 1.6
 
                 elif row.kind == "scalebar":
                     bar_h = max(0.8, row.cap_mm * 0.3)
+                    depth = cut_depth if engrave else use_sink
+                    rise = cut_proud if engrave else rise_mm
                     bars = [_manifold.oriented_box(
                         [x + row.bar_mm * 0.5, baseline + bar_h * 0.5,
-                         base_z + 0.5 * (emboss - use_sink)],
+                         base_z + 0.5 * (rise - depth)],
                         np.array([axis_u, axis_v, normal]),
-                        [row.bar_mm * 0.5, bar_h * 0.5, 0.5 * (emboss + use_sink)])]
+                        [row.bar_mm * 0.5, bar_h * 0.5, 0.5 * (rise + depth)])]
                     for end in (0.0, row.bar_mm):
                         bars.append(_manifold.oriented_box(
                             [x + end, baseline + row.cap_mm * 0.4,
-                             base_z + 0.5 * (emboss - use_sink)],
+                             base_z + 0.5 * (rise - depth)],
                             np.array([axis_u, axis_v, normal]),
                             [bar_h * 0.5, row.cap_mm * 0.4,
-                             0.5 * (emboss + use_sink)]))
+                             0.5 * (rise + depth)]))
                     put(row, bars)
                     x += row.bar_mm + row.cap_mm * 0.7
 
                 if row.text:
-                    put(row, _stroke_solids(
-                        strokefont.layout(row.text, row.cap_mm),
+                    put(row, _text_solids(
+                        face, row.text, row.cap_mm,
                         np.array([x, baseline, base_z]),
-                        axis_u, axis_v, normal, stroke, emboss, use_sink))
+                        axis_u, axis_v, normal, stroke,
+                        cut_proud if engrave else rise_mm,
+                        cut_depth if engrave else use_sink,
+                        typeset.grow_for(face, row.cap_mm, min_stroke)))
 
             if tiled and rows and used["x0"] is not None:
                 tiles.append(_tile(used["x0"] - pad * 0.5, used["x1"] + pad * 0.5,
                                    cursor - pad * 0.45, block_top + pad * 0.45))
 
-        info_left = plate_x0 + pad
-        info_right = plate_x0 + column_width + pad
-        legend_right = plate_x1 - pad
-        legend_left = legend_right - column_width
+        info_left = layout.plate_x0 + pad
+        legend_right = layout.plate_x1 - pad
+        legend_left = legend_right - layout.legend_width
 
         def _legend_target(row, solids):
             """Route a legend row's dot *and* its lettering into one object.
@@ -1195,47 +1963,71 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         # One switch, both blocks. Anything else means a control labelled
         # "white tile" that leaves a white tile behind when it is switched off,
         # which reads as a defect however well the exception is justified.
-        tiled = bool(stand.plaque_tile)
-        _emit(info_rows, info_left, info_right, info_text,
-              align_right=False, tiled=tiled)
-        _emit(legend_rows, legend_left, legend_right, _legend_target,
-              align_right=True, tiled=tiled and bool(legend_rows))
+        _emit(info_rows, info_left, info_text, tiled=tiled)
+        _emit(legend_rows, legend_left, _legend_target,
+              tiled=tiled and bool(legend_rows))
 
-        # ``on_tile`` decides what each solid is cut *out of*.  The plaque is
-        # three layers deep now — plate, white tile, lettering — and a raised
-        # solid has to be recessed into whatever it actually stands on. Cutting
-        # everything out of the plate, as when the lettering sat directly on it,
-        # would leave the letters overlapping the tile in shared volume, which is
-        # exactly what a multi-material slicer objects to.
+        cutters = [_place(s, face_xf) for s in cutters]
         if tiles:
+            tile_solid = _place(_manifold.union(tiles), face_xf)
             text_parts.append((StandPart("tile", "stand_plaque_tile", TILE_COLOR),
-                               _manifold.union(tiles), False))
+                               tile_solid, False))
         if info_text:
             text_parts.append((
                 StandPart("text", "stand_plaque_text",
                           TEXT_ON_TILE if tiled else TEXT_ON_PLATE),
-                _manifold.union(info_text), tiled))
+                _place(_manifold.union(info_text), face_xf), tiled))
         for built_index, solids in legend_solids.items():
             if not solids:
                 continue
-            row = next(r for r in chain_rows if r["index"] == built_index)
+            row = next(r for r in layout.chain_rows if r["index"] == built_index)
             text_parts.append((
                 StandPart("legend", f"stand_legend_{row['chain_id']}",
                           row["color"], chain_id=row["chain_id"]),
-                _manifold.union(solids), True))
+                _place(_manifold.union(solids), face_xf), True))
 
     # ---- fuse and hand back --------------------------------------------
     from . import meshops
 
+    #: Keep every connected component of a stand part, however small.
+    #:
+    #: ``meshops.repair`` drops components under 2% of the largest, which is
+    #: right for a marching-cubes mesh where the small pieces are stray specks
+    #: and wrong for lettering, where the small pieces are the dot on an 'i' and
+    #: the full stop. Against a 5 mm headline letter an 'i' dot at 2.3 mm is
+    #: about 1.7% by volume — just under the bar — so it silently vanished, and
+    #: only from words that happened to contain one.
+    #:
+    #: Nothing in a stand comes from a voxel grid. It is all analytic solids out
+    #: of the manifold kernel, watertight by construction, and every disconnected
+    #: piece is there because something put it there.
+    keep_all = dict(min_component_frac=0.0)
+
     stand_parts: List = []
     base_solid = _manifold.union(parts)
-    tile_index = next((i for i, (p, _s, _t) in enumerate(text_parts)
-                       if p.part == "tile"), None)
-    tile_solid = text_parts[tile_index][1] if tile_index is not None else None
 
+    for cut in plate_cuts:
+        try:
+            trimmed = _manifold.difference(base_solid, cut)
+            if not trimmed.is_empty():
+                base_solid = trimmed
+        except Exception:
+            notes.append("A pin socket could not be cut into the plate; that "
+                         "column will have to be glued.")
+
+    # ``on_tile`` decides what each solid is cut *out of*.  The plaque can be
+    # three layers deep — plate, white tile, lettering — and a raised solid has
+    # to be recessed into whatever it actually stands on. Cutting everything out
+    # of the plate, as when the lettering sat directly on it, would leave the
+    # letters overlapping the tile in shared volume, which is exactly what a
+    # multi-material slicer objects to.
+    #
+    # The tile's own recess is cut from the *unengraved* tile, so that engraving
+    # through it leaves a void rather than a plate-coloured pillar rising to sit
+    # flush in it. Flush would be a handsome inlay on a two-material printer and
+    # nothing at all on a one-material one — and not coming loose on a
+    # one-material printer is the entire reason engraving is offered.
     for part, solid, on_tile in text_parts:
-        # Cut each raised solid out of whatever carries it, so the two meet on a
-        # shared boundary and never share a volume.
         try:
             if on_tile and tile_solid is not None:
                 trimmed = _manifold.difference(tile_solid, solid)
@@ -1249,17 +2041,46 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             notes.append(f"{part.object_name()} could not be recessed into the "
                          f"surface below it; it sits on top instead.")
 
+    if cutters:
+        # One union then one subtraction. Cutting a few hundred stroke solids out
+        # of the plate one at a time re-meshes the whole plate a few hundred
+        # times, and took four times as long as building everything else put
+        # together.
+        try:
+            tool = _manifold.union(cutters)
+            if tile_solid is not None:
+                trimmed = _manifold.difference(tile_solid, tool)
+                if not trimmed.is_empty():
+                    tile_solid = trimmed
+            else:
+                trimmed = _manifold.difference(base_solid, tool)
+                if not trimmed.is_empty():
+                    base_solid = trimmed
+        except Exception:
+            notes.append("The engraved lettering could not be cut into the "
+                         "apron; it was left out.")
+
+    tile_index = next((i for i, (p, _s, _t) in enumerate(text_parts)
+                       if p.part == "tile"), None)
+
     stand_parts.append((
         StandPart("base", "stand_base", STAND_COLOR),
-        meshops.repair(_manifold.to_trimesh(base_solid))))
+        meshops.repair(_manifold.to_trimesh(base_solid), **keep_all)))
+    for part, solid in column_parts:
+        try:
+            stand_parts.append((part, meshops.repair(
+                _manifold.to_trimesh(solid), **keep_all)))
+        except Exception:
+            notes.append(f"Left out {part.object_name()}: it did not mesh.")
     for i, (part, solid, _on_tile) in enumerate(text_parts):
         if i == tile_index:
             solid = tile_solid
         if solid is None:
             continue
         try:
-            stand_parts.append((part, meshops.repair(_manifold.to_trimesh(solid))))
+            stand_parts.append((part, meshops.repair(
+                _manifold.to_trimesh(solid), **keep_all)))
         except Exception:
             notes.append(f"Left out {part.object_name()}: it did not mesh.")
 
-    return oriented_built, stand_parts, notes
+    return layout.oriented_built, stand_parts, notes

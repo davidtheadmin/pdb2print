@@ -263,13 +263,19 @@
   .hero { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   .viewer-wrap {
     position: relative; flex: 1; min-height: 0;
-    background: var(--s1); border: 0.5px solid var(--border);
+    /* The backdrop lives here rather than on the model-viewer element, because
+       the element is what a roll rotates. With the gradient on it, rolling
+       turned the background too — a rectangle of lighter grey sweeping round
+       behind a model that was supposed to be the only thing moving. On the
+       frame it stays put, and the element above it is transparent. */
+    background: radial-gradient(120% 120% at 50% 20%, #1a1d21 0%, #101113 75%);
+    border: 0.5px solid var(--border);
     border-radius: 14px; overflow: hidden;
   }
   model-viewer {
     width: 100%; height: 100%;
     --poster-color: transparent;
-    background: radial-gradient(120% 120% at 50% 20%, #1a1d21 0%, #101113 75%);
+    background: transparent;
   }
   .viewer-empty {
     position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -292,9 +298,12 @@
   .gizmo .lbl { font: 600 8px ui-monospace, monospace; }
 
   /* The roll is applied to the rendered picture, which is exactly what rolling
-     the camera would look like and needs no camera support at all. Scaled up so
-     the rotated corners still cover the frame. Only reachable once the view is
-     locked, so a rotated picture never fights a drag. */
+     the camera would look like and needs no camera support at all.
+     It used to scale the picture up as well, so the rotated corners still
+     covered the frame — which at 45° means a 1.41x zoom, and a control labelled
+     "roll" that also zooms is a control doing two things. Instead the frame
+     behind it takes the viewer's own backdrop while a roll is on, so the
+     corners the rotation exposes are the same colour as what was there. */
   model-viewer { transform-origin: 50% 50%; }
 
   .legend {
@@ -369,10 +378,8 @@
   }
   .stand-btn[hidden] { display: none; }
 
-  /* Two positions, one card. While the view is being chosen it sits centred,
-     because the only decision on offer is about the view itself. Once locked it
-     moves to the corner and becomes an ordinary options panel, out of the way of
-     the model it is about to describe. */
+  /* The lock card: one job, one position — under the button that opens it. Once
+     the view is locked it goes away and the docked panel below takes over. */
   .stand-sheet {
     position: absolute; z-index: 5; width: 292px;
     background: rgba(20,22,25,.97); backdrop-filter: blur(10px);
@@ -380,24 +387,14 @@
     padding: 15px 16px 16px; box-shadow: 0 18px 44px rgba(0,0,0,.55);
     transition: opacity .15s;
   }
-  .stand-sheet.choosing { top: 50%; left: 50%; transform: translate(-50%, -50%); }
-  .stand-sheet.locked { top: 56px; right: 14px; }
+  /* Directly under the button that opens it. Centred over the viewer, as this
+     was, the card covers the model at exactly the moment its whole job is to
+     help you look at the model and decide which way is down. */
+  .stand-sheet { top: 62px; right: 14px; }
   /* The card stays solid. Fading it on hover was meant to let the model be
      judged through it, and instead made the one panel you are actively reading
      flicker every time the pointer crossed it. The card is small and the model
      can simply be turned out from behind it. */
-  .stand-lockbar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; margin-bottom: 11px; padding: 7px 9px;
-    background: rgba(47,158,111,.13); border: 0.5px solid var(--accent);
-    border-radius: 9px; font-size: 12px; color: var(--accent);
-  }
-  .stand-lockbar button {
-    border: none; background: none; padding: 0; cursor: pointer;
-    font: 500 11px/1 inherit; font-family: inherit; color: var(--muted);
-    text-decoration: underline;
-  }
-  .stand-lockbar button:hover { color: var(--text2); }
   .stand-sheet[hidden] { display: none; }
   .stand-sheet h4 {
     margin: 0 0 3px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
@@ -406,16 +403,6 @@
   .stand-sheet .hint { margin: 0 0 11px; font-size: 11px; line-height: 1.45; color: var(--muted); }
   .stand-sheet .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
   .stand-sheet .row > span { font-size: 12px; color: var(--text2); }
-  .stand-seg { display: inline-flex; gap: 3px; background: var(--s2); border-radius: 8px; padding: 2px; }
-  .stand-seg button {
-    min-width: 30px; padding: 4px 0; border: none; border-radius: 6px;
-    background: none; color: var(--text2); font: 600 12px/1 inherit;
-    font-family: inherit; cursor: pointer;
-  }
-  .stand-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
-  .stand-sheet .chk { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; font-size: 12px; color: var(--text2); cursor: pointer; }
-  .stand-sheet .chk input { accent-color: var(--accent); }
-  .stand-sheet .sep { height: 0.5px; background: var(--border); margin: 12px 0 11px; }
   .stand-go {
     width: 100%; margin-top: 3px; padding: 9px 0; border: none; border-radius: 9px;
     background: var(--accent); color: #fff; font: 600 13px/1 inherit;
@@ -428,6 +415,184 @@
     font-family: inherit; cursor: pointer;
   }
   .stand-cancel:hover { color: var(--text2); }
+
+  /* ---- display-stand panel (docked right, full height) ----
+     The lock step stays an overlay on the viewer, because choosing a view is
+     done *to* the model and wants the model as large as possible. Everything
+     after it is a workbench: a drawing of the thing being made and thirty
+     controls that change it. That does not belong in a floating card over the
+     subject — it wants its own column, and it takes one, shifting the viewer
+     rather than covering it. */
+  .stand-panel {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--s1); border: 0.5px solid var(--border);
+    border-radius: 14px; overflow: hidden;
+  }
+  .stand-panel[hidden] { display: none; }
+  body.stand-open .split { grid-template-columns: 400px 1fr 372px; }
+  @media (max-width: 1400px) {
+    body.stand-open .split { grid-template-columns: 340px 1fr 360px; }
+  }
+  .sp-head {
+    flex: none; display: flex; align-items: flex-start; gap: 8px;
+    padding: 13px 14px 11px; border-bottom: 0.5px solid var(--border);
+  }
+  .sp-head h4 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  .sp-sub { margin: 2px 0 0; font-size: 11px; color: var(--accent); }
+  .sp-sub button {
+    border: none; background: none; padding: 0; margin-left: 4px; cursor: pointer;
+    font: 500 11px/1 inherit; font-family: inherit; color: var(--muted);
+    text-decoration: underline;
+  }
+  .sp-sub button:hover { color: var(--text2); }
+  .sp-close {
+    margin-left: auto; border: none; background: none; cursor: pointer;
+    color: var(--muted); font-size: 20px; line-height: 1; padding: 0 2px;
+  }
+  .sp-close:hover { color: var(--text); }
+
+  /* The sketch is pinned: it is the answer to every control below it, and
+     scrolling the answer off the screen to reach the question is the one thing
+     a live preview must not do. */
+  .sp-sketch {
+    flex: none; position: relative; background: #0b0c0e;
+    border-bottom: 0.5px solid var(--border); cursor: grab;
+  }
+  .sp-sketch:active { cursor: grabbing; }
+  .sp-sketch canvas { display: block; width: 100%; height: 236px; }
+  .sp-sketch .sk-note {
+    padding: 0 12px 8px; font-size: 10px; line-height: 1.35;
+    color: var(--muted); text-align: center; min-height: 22px;
+  }
+  .sp-sketch .sk-busy {
+    position: absolute; top: 8px; right: 10px; width: 11px; height: 11px;
+    border-radius: 50%; border: 1.5px solid var(--border);
+    border-top-color: var(--accent); animation: spin .7s linear infinite;
+  }
+  .sp-sketch .sk-busy[hidden] { display: none; }
+
+  .sp-body { flex: 1; overflow: auto; padding: 12px 14px 16px; min-height: 0; }
+  .sp-foot {
+    flex: none; padding: 10px 14px 12px; border-top: 0.5px solid var(--border);
+    background: var(--s1);
+  }
+  .sp-group + .sp-group { margin-top: 14px; border-top: 0.5px solid var(--border); padding-top: 13px; }
+  .sp-group > h5 {
+    margin: 0 0 9px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: .09em; color: var(--text2); font-weight: 600;
+  }
+  .sp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; }
+  .sp-row > span { font-size: 12px; color: var(--text2); }
+  .sp-note { font-size: 11px; color: var(--muted); margin: -3px 0 10px; line-height: 1.4; }
+  .sp-note.warn { color: var(--red); }
+  .sp-stale {
+    margin: 0; padding: 9px 12px; background: rgba(179,69,63,.16);
+    border-bottom: 0.5px solid var(--red); color: #f0a7a2;
+    font-size: 11.5px; line-height: 1.45;
+  }
+  .sp-stale[hidden] { display: none; }
+
+  /* Column styles as cards, because "fluted" is a word for a shape and a word
+     for a shape is worth exactly as much as a picture of it. */
+  .sp-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .sp-card {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 7px 2px 5px; border-radius: 9px; cursor: pointer;
+    background: var(--s2); border: 1px solid var(--border);
+    color: var(--text2); font: 500 10px/1 inherit; font-family: inherit;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .sp-card svg { width: 26px; height: 40px; }
+  .sp-card:hover { border-color: var(--accent); color: var(--text); }
+  .sp-card[aria-pressed="true"] {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(47,158,111,.12); font-weight: 600;
+  }
+
+  /* Content switches as chips rather than a column of checkboxes: five ticked
+     boxes in a stack read as a form to fill in, and these are five things that
+     are either on the plaque or not. */
+  .sp-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .sp-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 5px 10px 5px 8px; border-radius: 999px; cursor: pointer;
+    background: var(--s2); border: 0.5px solid var(--border);
+    color: var(--muted); font: 500 11.5px/1 inherit; font-family: inherit;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .sp-chip .tick { width: 11px; height: 11px; flex: none; opacity: 0; transition: opacity .12s; }
+  .sp-chip:hover { color: var(--text2); border-color: var(--muted); }
+  .sp-chip[aria-pressed="true"] {
+    border-color: var(--accent); color: var(--accent);
+    background: rgba(47,158,111,.12); font-weight: 600;
+  }
+  .sp-chip[aria-pressed="true"] .tick { opacity: 1; }
+  .sp-chip[disabled] { opacity: .35; pointer-events: none; }
+
+  .sp-switch { display: flex; align-items: center; gap: 9px; cursor: pointer; user-select: none;
+    font-size: 12px; color: var(--text2); margin-bottom: 9px; }
+  .sp-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .sp-switch .track { position: relative; width: 32px; height: 18px; border-radius: 999px;
+    background: var(--s2); border: 0.5px solid var(--border); flex: none;
+    transition: background .15s, border-color .15s; }
+  .sp-switch .track::after { content: ""; position: absolute; top: 2px; left: 2px;
+    width: 12px; height: 12px; border-radius: 50%; background: var(--muted);
+    transition: transform .15s, background .15s; }
+  .sp-switch input:checked + .track { background: rgba(47,158,111,.25); border-color: var(--accent); }
+  .sp-switch input:checked + .track::after { transform: translateX(14px); background: var(--accent); }
+  .sp-switch input:disabled + .track { opacity: .4; }
+
+  /* The apron seen square on, at a size the lettering can actually be read at,
+     plus the section through it. The stand sketch shows where the plaque sits;
+     this shows what it says and how deep it is cut. */
+  .sp-detail {
+    background: #0b0c0e; border: 0.5px solid var(--border); border-radius: 9px;
+    padding: 6px; margin-bottom: 11px;
+  }
+  .sp-detail canvas { display: block; width: 100%; height: 196px; }
+
+  .sp-slider { margin-bottom: 10px; }
+  .sp-slider .lab { display: flex; align-items: baseline; justify-content: space-between; }
+  .sp-slider .lab .name { font-size: 12px; color: var(--text2); }
+  .sp-slider .lab .val { font-size: 11.5px; color: var(--text);
+    font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
+  .sp-slider input[type=range] { margin: 4px 0 0; }
+
+  .sp-text {
+    width: 100%; padding: 7px 9px; background: var(--s2);
+    border: 0.5px solid var(--border); border-radius: 8px; color: var(--text);
+    font: 400 12px/1.3 inherit; font-family: inherit; outline: none;
+  }
+  .sp-text:focus { border-color: var(--accent); }
+  .sp-field {
+    display: block; margin-top: 10px;
+    font-size: 11px; color: var(--muted);
+  }
+  .sp-field .sp-text { margin-top: 4px; }
+  .sp-text::placeholder { color: var(--muted); }
+
+  .sp-seg { display: inline-flex; gap: 3px; background: var(--s2); border-radius: 8px; padding: 2px; }
+  .sp-seg button {
+    min-width: 34px; padding: 5px 9px; border: none; border-radius: 6px;
+    background: none; color: var(--text2); font: 500 11.5px/1 inherit;
+    font-family: inherit; cursor: pointer; white-space: nowrap;
+  }
+  .sp-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
+
+  .sp-presets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 13px; }
+  .sp-go {
+    width: 100%; padding: 11px 0; border: none; border-radius: 10px;
+    background: var(--accent); color: #fff; font: 600 13px/1 inherit;
+    font-family: inherit; cursor: pointer;
+  }
+  .sp-go:hover { background: var(--accent-d); }
+  .sp-adv > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px;
+    font-size: 11.5px; color: var(--muted); user-select: none; }
+  .sp-adv > summary::-webkit-details-marker { display: none; }
+  .sp-adv > summary .caret { transition: transform .15s; }
+  .sp-adv[open] > summary .caret { transform: rotate(90deg); }
+  .sp-adv > summary:hover { color: var(--text2); }
+  .sp-adv .inner { padding-top: 11px; }
 
   /* ---- generation progress bar (top edge of viewer) ---- */
   .progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--s2); z-index: 3; overflow: hidden; }
@@ -968,40 +1133,6 @@
             <button id="stand-lock" class="stand-go" type="button">Lock this view</button>
           </div>
 
-          <div id="stand-step-opts" hidden>
-            <div class="stand-lockbar">
-              <span>&#10003;&nbsp; View locked</span>
-              <button id="stand-unlock" type="button">Unlock</button>
-            </div>
-            <div class="row">
-              <span>Columns</span>
-              <div class="stand-seg" id="stand-columns">
-                <button type="button" data-n="0" aria-pressed="true">Auto</button>
-                <button type="button" data-n="1" aria-pressed="false">1</button>
-                <button type="button" data-n="2" aria-pressed="false">2</button>
-                <button type="button" data-n="3" aria-pressed="false">3</button>
-              </div>
-            </div>
-            <p class="hint" id="stand-col-hint" style="margin:-4px 0 10px"></p>
-            <div class="row">
-              <span>Shape</span>
-              <div class="stand-seg" id="stand-shape">
-                <button type="button" data-s="square" aria-pressed="true" style="min-width:52px">Square</button>
-                <button type="button" data-s="round" aria-pressed="false" style="min-width:52px">Round</button>
-              </div>
-            </div>
-            <div class="sep"></div>
-            <label class="chk"><input type="checkbox" id="stand-plaque" checked> Engrave the base</label>
-            <div id="stand-plaque-opts" style="padding-left:19px">
-              <label class="chk"><input type="checkbox" id="stand-pdb-id" checked> PDB ID</label>
-              <label class="chk"><input type="checkbox" id="stand-title" checked> Structure name</label>
-              <label class="chk"><input type="checkbox" id="stand-scalebar" checked> Scale bar and ratio</label>
-              <label class="chk"><input type="checkbox" id="stand-legend" checked> Chain legend, colour-matched</label>
-              <label class="chk"><input type="checkbox" id="stand-tile" checked> White tile behind the text</label>
-            </div>
-            <button id="stand-go" class="stand-go" type="button">Generate stand</button>
-          </div>
-
           <button id="stand-cancel" class="stand-cancel" type="button">Cancel</button>
         </div>
         <!-- min/max-camera-orbit are set explicitly because the defaults stop
@@ -1026,6 +1157,216 @@
       </div>
       <pre id="report" class="report">No model built yet.</pre>
     </section>
+
+    <!-- ============ DISPLAY STAND (right, only while one is being set up) ==== -->
+    <aside id="stand-panel" class="stand-panel" hidden>
+      <div class="sp-head">
+        <div>
+          <h4>Display stand</h4>
+          <p class="sp-sub">&#10003; View locked <button id="sp-unlock" type="button">unlock</button></p>
+        </div>
+        <button id="sp-close" class="sp-close" type="button" title="Close" aria-label="Close">&times;</button>
+      </div>
+
+      <p class="sp-stale" id="sp-stale" hidden></p>
+
+      <div class="sp-sketch" id="sp-sketch">
+        <canvas id="stand-sketch"></canvas>
+        <div class="sk-busy" id="sk-busy" hidden></div>
+        <div class="sk-note" id="sk-note"></div>
+      </div>
+
+      <div class="sp-body">
+        <div class="sp-presets" id="sp-presets">
+          <button class="sp-chip" type="button" data-preset="museum" aria-pressed="false">Museum</button>
+          <button class="sp-chip" type="button" data-preset="classical" aria-pressed="false">Classical</button>
+          <button class="sp-chip" type="button" data-preset="lab" aria-pressed="false">Lab</button>
+          <button class="sp-chip" type="button" data-preset="custom" aria-pressed="true">Custom</button>
+        </div>
+
+        <div class="sp-group" data-part="columns">
+          <h5>Columns</h5>
+          <div class="sp-cards" id="sp-shape">
+            <button class="sp-card" type="button" data-s="square" aria-pressed="true">
+              <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
+                <rect x="9" y="6" width="8" height="25"/><rect x="5.5" y="31" width="15" height="5"/>
+              </svg>Square</button>
+            <button class="sp-card" type="button" data-s="round" aria-pressed="false">
+              <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.3">
+                <path d="M8 8v24"/><path d="M18 8v24"/><ellipse cx="13" cy="8" rx="5" ry="1.9"/>
+                <path d="M8 32a5 1.9 0 0 0 10 0"/><path d="M4.5 36h17"/>
+              </svg>Round</button>
+            <button class="sp-card" type="button" data-s="fluted" aria-pressed="false">
+              <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.3">
+                <path d="M8.5 10v20"/><path d="M17.5 10v20"/><ellipse cx="13" cy="10" rx="4.5" ry="1.7"/>
+                <path d="M11 12v17M13 12v17M15 12v17" opacity=".55"/>
+                <rect x="6" y="6.5" width="14" height="3.5" rx="1"/>
+                <rect x="5" y="30" width="16" height="4" rx="1"/><path d="M3.5 37.5h19"/>
+              </svg>Fluted</button>
+            <button class="sp-card" type="button" data-s="taper" aria-pressed="false">
+              <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round">
+                <path d="M10 7h6l3 27H7z"/><path d="M4 36h18"/>
+              </svg>Obelisk</button>
+          </div>
+
+          <div class="sp-row" style="margin-top:11px">
+            <span>How many</span>
+            <div class="sp-seg" id="sp-columns">
+              <button type="button" data-n="0" aria-pressed="true">Auto</button>
+              <button type="button" data-n="1" aria-pressed="false">1</button>
+              <button type="button" data-n="2" aria-pressed="false">2</button>
+              <button type="button" data-n="3" aria-pressed="false">3</button>
+            </div>
+          </div>
+          <p class="sp-note" id="sp-col-hint"></p>
+
+          <label class="sp-switch"><input type="checkbox" id="sp-flared" checked><span class="track"></span>Flared foot</label>
+          <label class="sp-switch"><input type="checkbox" id="sp-capital"><span class="track"></span>Capital where it meets the model</label>
+
+          <div class="sp-slider" data-f="column_diameter">
+            <div class="lab"><span class="name">Thickness</span><span class="val"></span></div>
+            <input type="range" min="4" max="16" step="0.5" value="8">
+          </div>
+          <div class="sp-slider" data-f="stand_off">
+            <div class="lab"><span class="name">Float above the plate</span><span class="val"></span></div>
+            <input type="range" min="2" max="24" step="0.5" value="6">
+          </div>
+        </div>
+
+        <div class="sp-group" data-part="plate">
+          <h5>Base plate</h5>
+          <div class="sp-slider" data-f="plate_thickness">
+            <div class="lab"><span class="name">Thickness</span><span class="val"></span></div>
+            <input type="range" min="2" max="12" step="0.5" value="4">
+          </div>
+          <div class="sp-slider" data-f="plate_margin">
+            <div class="lab"><span class="name">Margin round the model</span><span class="val"></span></div>
+            <input type="range" min="2" max="24" step="0.5" value="7">
+          </div>
+          <div class="sp-slider" data-f="plate_corner">
+            <div class="lab"><span class="name">Corner radius</span><span class="val"></span></div>
+            <input type="range" min="0" max="14" step="0.5" value="4">
+          </div>
+        </div>
+
+        <div class="sp-group" data-part="plaque">
+          <h5>Plaque</h5>
+          <label class="sp-switch"><input type="checkbox" id="sp-plaque" checked><span class="track"></span>Lettering on the apron</label>
+          <div id="sp-plaque-opts">
+            <div class="sp-detail"><canvas id="plaque-sketch"></canvas></div>
+            <div class="sp-chips" id="sp-content">
+              <button class="sp-chip" type="button" data-f="plaque_pdb_id" aria-pressed="true">
+                <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>PDB ID</button>
+              <button class="sp-chip" type="button" data-f="plaque_scalebar" aria-pressed="true">
+                <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Scale bar</button>
+              <button class="sp-chip" type="button" data-f="plaque_legend" aria-pressed="true">
+                <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Chain legend</button>
+              <button class="sp-chip" type="button" data-f="plaque_tile" aria-pressed="true">
+                <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>White tile</button>
+            </div>
+            <label class="sp-field">Name
+              <input id="sp-title-text" class="sp-text" type="text" maxlength="120"
+                     placeholder="No name — leave empty to print none">
+            </label>
+            <label class="sp-field">Your own line
+              <input id="sp-note-text" class="sp-text" type="text" maxlength="80"
+                     placeholder="Lab, date, anything">
+            </label>
+
+            <div class="sp-row" style="margin-top:11px">
+              <span>Typeface</span>
+              <div class="sp-seg" id="sp-font">
+                <button type="button" data-v="sans" aria-pressed="true">Sans</button>
+                <button type="button" data-v="serif" aria-pressed="false">Serif</button>
+                <button type="button" data-v="line" aria-pressed="false">Line</button>
+              </div>
+            </div>
+            <p class="sp-note" id="sp-font-hint"></p>
+
+            <div class="sp-row">
+              <span>Lettering</span>
+              <div class="sp-seg" id="sp-relief">
+                <button type="button" data-v="flush" aria-pressed="false">Flush</button>
+                <button type="button" data-v="raised" aria-pressed="true">Raised</button>
+                <button type="button" data-v="engraved" aria-pressed="false">Engraved</button>
+              </div>
+            </div>
+            <p class="sp-note" id="sp-relief-hint"></p>
+
+            <div class="sp-slider" data-f="plaque_info_mm">
+              <div class="lab"><span class="name">Width of the left block</span><span class="val"></span></div>
+              <input type="range" min="0" max="140" step="2" value="0">
+            </div>
+            <p class="sp-note">Millimetres, or <b>Auto</b> at zero for half the
+            plate. The legend keeps the width its own names need and is never
+            shortened; the plate gets wider if the two do not fit side by side.</p>
+            <div class="sp-slider" data-f="plaque_text">
+              <div class="lab"><span class="name">Text size</span><span class="val"></span></div>
+              <input type="range" min="3" max="8" step="0.25" value="5">
+            </div>
+            <div class="sp-slider" data-f="apron_rake">
+              <div class="lab"><span class="name">Tilt toward you</span><span class="val"></span></div>
+              <input type="range" min="0" max="25" step="1" value="0">
+            </div>
+          </div>
+        </div>
+
+        <div class="sp-group">
+          <details class="sp-adv">
+            <summary><svg class="caret" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>Advanced</summary>
+            <div class="inner">
+              <div class="sp-slider" data-f="plaque_min_stroke">
+                <div class="lab"><span class="name">Thinnest printable stroke</span><span class="val"></span></div>
+                <input type="range" min="0.3" max="0.9" step="0.05" value="0.45">
+              </div>
+              <p class="sp-note">Only reads on a real typeface. Where a letter's
+              stem would come out thinner than this at the size asked for, the
+              outline is grown by half the shortfall so the slicer does not
+              quietly drop it. Raise it for a 0.6&nbsp;mm nozzle.</p>
+              <div class="sp-slider" data-f="cradle_clearance">
+                <div class="lab"><span class="name">Cradle clearance</span><span class="val"></span></div>
+                <input type="range" min="0.1" max="0.8" step="0.05" value="0.35">
+              </div>
+              <p class="sp-note">How loose the seat is. Untested on your printer &mdash; the
+              first print is what should set this, not a guess made here.</p>
+              <label class="sp-switch"><input type="checkbox" id="sp-pins"><span class="track"></span>Pin the columns to the plate</label>
+              <p class="sp-note">Prints the plate and the columns as separate parts,
+              joined by a peg into a socket, so you can turn the plate over and print
+              it face down. Lettering printed against a smooth build sheet comes out
+              as good as the sheet; printed upward it comes out as good as an FDM top
+              surface, which is not the same thing. Push together afterwards.</p>
+              <div class="sp-slider" data-f="pin_diameter">
+                <div class="lab"><span class="name">Pin &Oslash;</span><span class="val"></span></div>
+                <input type="range" min="2" max="8" step="0.5" value="4">
+              </div>
+              <div class="sp-slider" data-f="pin_depth">
+                <div class="lab"><span class="name">Pin depth</span><span class="val"></span></div>
+                <input type="range" min="1" max="8" step="0.5" value="3">
+              </div>
+              <div class="sp-slider" data-f="cradle_depth">
+                <div class="lab"><span class="name">Cradle depth</span><span class="val"></span></div>
+                <input type="range" min="1.5" max="9" step="0.5" value="4">
+              </div>
+              <p class="sp-note">How far the column's seat wraps up around the model.
+              Deeper resists the model rocking about the line through the columns;
+              too deep and the pocket needs supports of its own, and starts to
+              swallow the part of the structure it is holding. 4&nbsp;mm suits
+              almost everything.</p>
+              <div class="sp-slider" data-f="column_edge_frac">
+                <div class="lab"><span class="name">Keep columns inboard</span><span class="val"></span></div>
+                <input type="range" min="0.15" max="0.8" step="0.05" value="0.45">
+              </div>
+              <p class="sp-note">Higher pulls the columns further in from the silhouette edge,
+              at the cost of how far apart they can get.</p>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="sp-foot">
+        <button id="stand-go" class="sp-go" type="button">Generate stand</button>
+      </div>
+    </aside>
   </main>
 
 <script>
@@ -1702,26 +2043,45 @@
   // still has in memory, and the footprint used for the column recommendation.
   let standBuild = null;
   let standColumns = 0;                      // 0 = auto
+  let standShape = 'square';
   let standLocked = false;
   let lockedOrbit = null;
   let standRoll = 0;
+  let viewerHasStand = false;                // the viewer is showing a stand result
+
+  // Standing a model that is already standing is two mistakes at once: the
+  // snapshot the sketch puts on the columns is of the model *and its old stand*,
+  // and the orbit being locked is measured against an assembly that was already
+  // rotated once. Both go away by putting the plain model back before the stand
+  // flow starts — which is also what the last build's meshes, which are what the
+  // new stand will actually be built from, are a picture of.
+  async function restorePlainModel() {
+    if (!viewerHasStand || !standBuild || !standBuild.glb) return;
+    const v = $('#viewer');
+    await new Promise(res => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; v.removeEventListener('load', finish); res(); };
+      v.addEventListener('load', finish);
+      v.setAttribute('src', standBuild.glb);
+      setTimeout(finish, 3000);              // a swept file must not hang the panel
+    });
+    viewerHasStand = false;
+    renderLegend(standBuild.chains);
+  }
 
   // Rotate the rendered picture. Scaled so the rotated corners still fill the
   // frame — a plain rotate would show the background through them.
   function applyRoll(deg) {
     standRoll = deg;
     const v = $('#viewer');
-    const w = v.clientWidth || 1, h = v.clientHeight || 1;
-    const r = Math.abs(deg) * Math.PI / 180;
-    const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
-    const scale = Math.max((w * c + h * s) / w, (w * s + h * c) / h);
-    v.style.transform = deg ? `rotate(${deg}deg) scale(${scale.toFixed(3)})` : '';
+    v.style.transform = deg ? `rotate(${deg}deg)` : '';
     $('#stand-roll-val').textContent = `${deg}°`;
     drawGizmo();
   }
 
   const standBtn = $('#stand-btn');
   const standSheet = $('#stand-sheet');
+  const standPanel = $('#stand-panel');
 
   function standReady(data) {
     // A *stand* result must not become the thing the next stand is built from:
@@ -1731,8 +2091,16 @@
     // a second click rather than a full rebuild.
     showGizmo(true);
     drawGizmo();
-    if (data.stand_notes) { standBtn.hidden = false; return; }
-    standBuild = { token: data.build_token || '', size: data.size_mm || null };
+    if (data.stand_notes) { viewerHasStand = true; standBtn.hidden = false; return; }
+    viewerHasStand = false;
+    standBuild = {
+      token: data.build_token || '',
+      size: data.size_mm || null,
+      chains: (data.chains || []).slice(),
+      glb: data.glb_url || '',
+      meta: data.plaque_meta || {},
+    };
+    titleTouched = false;                    // a new structure, a new name
     standBtn.hidden = false;
     updateColumnHint();
   }
@@ -1749,40 +2117,1227 @@
   }
 
   function updateColumnHint() {
-    const rec = recommendColumns(standBuild && standBuild.size);
-    const hint = $('#stand-col-hint');
+    const hint = $('#sp-col-hint');
+    if (!hint) return;
+    const placed = standLayout && standLayout.column && standLayout.column.placed;
     if (standColumns === 0) {
+      const rec = recommendColumns(standBuild && standBuild.size);
       hint.textContent = `Auto picks ${rec} for a model this size.`;
     } else if (standColumns === 1) {
       hint.textContent = 'One column: compact models only — a long structure will rock on it.';
     } else {
       hint.textContent = `${standColumns} columns, spread to straddle the centre of mass.`;
     }
+    if (placed != null && standColumns && placed < standColumns) {
+      hint.textContent += ` The underside only offered ${placed}.`;
+    }
   }
 
-  let standShape = 'square';
-  $('#stand-shape').addEventListener('click', e => {
-    const btn = e.target.closest('button');
-    if (!btn) return;
-    standShape = btn.dataset.s;
-    $('#stand-shape').querySelectorAll('button').forEach(b =>
-      b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
-  });
+  // ---- panel controls -> form fields -------------------------------------
+  // One reader, used by both the preview request and the real one. Two readers
+  // would be two chances for the picture and the part to disagree about what
+  // was asked for, which is the exact failure this whole panel exists to end.
+  const SP_SLIDERS = {};
+  function spSlider(field) {
+    if (!SP_SLIDERS[field]) {
+      const box = document.querySelector(`.sp-slider[data-f="${field}"]`);
+      SP_SLIDERS[field] = box ? box.querySelector('input') : null;
+    }
+    return SP_SLIDERS[field];
+  }
+  const SP_UNITS = {
+    column_diameter: 'mm', stand_off: 'mm', cradle_depth: 'mm',
+    plate_thickness: 'mm', plate_margin: 'mm', plate_corner: 'mm',
+    plaque_text: 'mm', cradle_clearance: 'mm', apron_rake: '°',
+    plaque_min_stroke: 'mm', plaque_info_mm: 'mm',
+    pin_diameter: 'mm', pin_depth: 'mm', column_edge_frac: '',
+  };
+  function spNum(field) { const el = spSlider(field); return el ? parseFloat(el.value) : 0; }
+  function spChip(field) {
+    const el = document.querySelector(`.sp-chip[data-f="${field}"]`);
+    return el ? el.getAttribute('aria-pressed') === 'true' : true;
+  }
 
-  $('#stand-columns').addEventListener('click', e => {
+  function standValues() {
+    const plaque = $('#sp-plaque').checked;
+    return {
+      stand_columns: standColumns,
+      column_shape: standShape,
+      column_flared: $('#sp-flared').checked,
+      column_capital: $('#sp-capital').checked,
+      column_pins: $('#sp-pins').checked,
+      pin_diameter: spNum('pin_diameter'),
+      pin_depth: spNum('pin_depth'),
+      column_diameter: spNum('column_diameter'),
+      stand_off: spNum('stand_off'),
+      cradle_depth: spNum('cradle_depth'),
+      cradle_clearance: spNum('cradle_clearance'),
+      column_edge_frac: spNum('column_edge_frac'),
+      plate_thickness: spNum('plate_thickness'),
+      plate_margin: spNum('plate_margin'),
+      plate_corner: spNum('plate_corner'),
+      plaque: plaque,
+      plaque_pdb_id: spChip('plaque_pdb_id'),
+      plaque_title_text: $('#sp-title-text').value.trim(),
+      plaque_scalebar: spChip('plaque_scalebar'),
+      plaque_legend: spChip('plaque_legend'),
+      plaque_tile: spChip('plaque_tile'),
+      plaque_relief: spRelief,
+      plaque_font: spFont,
+      plaque_min_stroke: spNum('plaque_min_stroke'),
+      plaque_info_mm: spNum('plaque_info_mm'),
+      plaque_note: $('#sp-note-text').value.trim(),
+      plaque_text: spNum('plaque_text'),
+      apron_rake: spNum('apron_rake'),
+    };
+  }
+
+  let spRelief = 'raised';                    // flush | raised | engraved
+  let spFont = 'sans';                        // sans | serif | line
+
+  const FONT_HINT = {
+    sans: 'DejaVu Sans Bold, as filled outlines — real lowercase, real counters, '
+        + 'real letterfitting. Bold on purpose: a regular weight at 2 mm has stems '
+        + 'a nozzle cannot draw.',
+    serif: 'DejaVu Serif Bold. The museum-label look, and the serifs give the '
+         + 'lettering more to hold on to at the headline size.',
+    line: 'The built-in stroke font: centre lines swept to a width you choose, so '
+        + 'it is exactly as thick as the nozzle can manage however small it gets. '
+        + 'No lowercase — it sets it as small capitals.',
+  };
+
+  function setFont(key) {
+    spFont = FONT_HINT[key] ? key : 'sans';
+    document.querySelectorAll('#sp-font button').forEach(b =>
+      b.setAttribute('aria-pressed', b.dataset.v === spFont ? 'true' : 'false'));
+    updateFontHint();
+  }
+
+  // The server is the one that knows whether the face actually loaded, so it is
+  // the one that gets to write this line. A typeface control that silently does
+  // nothing because a dependency is missing is worse than one that is greyed
+  // out: nothing anywhere says why, and the setting looks broken instead of
+  // absent.
+  function updateFontHint() {
+    const note = standLayout && standLayout.plaque && standLayout.plaque.font_note;
+    const el = $('#sp-font-hint');
+    if (!el) return;
+    el.textContent = note || FONT_HINT[spFont];
+    el.classList.toggle('warn', !!note);
+  }
+
+  function refreshSliderLabels() {
+    document.querySelectorAll('.sp-slider').forEach(box => {
+      const input = box.querySelector('input');
+      const out = box.querySelector('.val');
+      if (!input || !out) return;
+      const unit = SP_UNITS[box.dataset.f];
+      const step = parseFloat(input.step) || 1;
+      const value = parseFloat(input.value);
+      if (box.dataset.f === 'plaque_info_mm' && value <= 0) {
+        out.textContent = 'Auto'; return;
+      }
+      out.textContent = (step < 1 ? value.toFixed(2).replace(/0$/, '') : value)
+        + (unit ? ` ${unit}` : '');
+    });
+  }
+
+  // ---- presets -----------------------------------------------------------
+  // Presets move the visible controls rather than hiding a second set of
+  // values behind a name: the point of picking "Museum" is partly to find out
+  // what museum means here, and a preset you cannot read is a preset you
+  // cannot adjust from.
+  const STAND_PRESETS = {
+    museum: {
+      shape: 'square', flared: true, capital: true, relief: 'flush', font: 'sans',
+      column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
+      plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
+      plaque_text: 5.5, apron_rake: 10,
+      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
+    },
+    classical: {
+      shape: 'fluted', flared: true, capital: true, relief: 'raised', font: 'serif',
+      column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
+      plate_thickness: 6, plate_margin: 11, plate_corner: 3,
+      plaque_text: 5.5, apron_rake: 8,
+      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
+    },
+    lab: {
+      shape: 'round', flared: false, capital: false, relief: 'engraved', font: 'line',
+      column_diameter: 6, stand_off: 5, cradle_depth: 3.5,
+      plate_thickness: 3, plate_margin: 5, plate_corner: 2,
+      plaque_text: 4, apron_rake: 0,
+      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
+    },
+  };
+
+  function setPreset(name) {
+    const p = STAND_PRESETS[name];
+    document.querySelectorAll('#sp-presets .sp-chip').forEach(b =>
+      b.setAttribute('aria-pressed', b.dataset.preset === name ? 'true' : 'false'));
+    if (!p) return;                           // "Custom" only moves the highlight
+    setShape(p.shape);
+    $('#sp-flared').checked = p.flared;
+    $('#sp-capital').checked = p.capital;
+    setRelief(p.relief);
+    setFont(p.font);
+    ['column_diameter', 'stand_off', 'cradle_depth', 'plate_thickness',
+     'plate_margin', 'plate_corner', 'plaque_text', 'apron_rake'].forEach(f => {
+      const el = spSlider(f);
+      if (el && p[f] != null) el.value = p[f];
+    });
+    Object.keys(p.content).forEach(f => {
+      const el = document.querySelector(`.sp-chip[data-f="${f}"]`);
+      if (el) el.setAttribute('aria-pressed', p.content[f] ? 'true' : 'false');
+    });
+    refreshSliderLabels();
+    standChanged(true);
+  }
+
+  function markCustom() {
+    document.querySelectorAll('#sp-presets .sp-chip').forEach(b =>
+      b.setAttribute('aria-pressed', b.dataset.preset === 'custom' ? 'true' : 'false'));
+  }
+
+  function setShape(shape) {
+    standShape = shape;
+    document.querySelectorAll('#sp-shape .sp-card').forEach(b =>
+      b.setAttribute('aria-pressed', b.dataset.s === shape ? 'true' : 'false'));
+  }
+
+  const RELIEF_HINT = {
+    flush: 'Everything sunk level with the apron — the tile too. One flat top '
+         + 'surface whose colour changes partway through a layer, which is what '
+         + 'a multi-material printer does best. Nothing proud, nothing hollow.',
+    raised: 'Letters standing off the surface as their own object, so they read '
+          + 'by shadow as well as by colour. Needs a second filament to be worth it.',
+    engraved: 'Cut away, and no separate objects at all — the legend dots are '
+            + 'cut too. The one for a single-filament printer: colour it in later '
+            + 'if you want to.',
+  };
+
+  function setRelief(mode) {
+    spRelief = RELIEF_HINT[mode] ? mode : 'raised';
+    document.querySelectorAll('#sp-relief button').forEach(b =>
+      b.setAttribute('aria-pressed', b.dataset.v === spRelief ? 'true' : 'false'));
+    let hint = RELIEF_HINT[spRelief];
+    if (spRelief === 'engraved' && spChip('plaque_tile')) {
+      hint += ' The cut goes through the white tile onto the plate.';
+    }
+    $('#sp-relief-hint').textContent = hint;
+  }
+
+  // ---- the live sketch ---------------------------------------------------
+  // A small painter's-algorithm renderer: the same solids the server is about
+  // to build, as low-poly shells, sorted back to front and flat-shaded. It is
+  // not a preview of the mesh — it is a drawing of the decisions.
+  //
+  // Two things keep it honest. The column positions, plate rectangle and every
+  // row of the plaque come from the server's own solver over /api/stand/preview,
+  // not from a second implementation here; and the model on top is a snapshot of
+  // the real one taken at the moment the view was locked, so what is standing on
+  // the columns is the structure, in the pose it will be built for.
+  // Must match server.CODE_STAMP. See the comment there for why this exists.
+  const CODE_STAMP = '2026-07-27.17';
+
+  const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
+  let standLayout = null;                     // last /api/stand/preview payload
+  let previewSeq = 0;
+
+  const SK_LIGHT = (() => {
+    const v = [-0.34, -0.46, 0.82];
+    const n = Math.hypot(v[0], v[1], v[2]);
+    return [v[0] / n, v[1] / n, v[2] / n];
+  })();
+
+  function v3sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+  function v3dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+  function v3cross(a, b) {
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  }
+  function v3norm(a) {
+    const n = Math.hypot(a[0], a[1], a[2]) || 1;
+    return [a[0] / n, a[1] / n, a[2] / n];
+  }
+
+  function skCamera(target, radius, w, h) {
+    // az = 0 looks straight down +y, which is the direction the viewer is
+    // already facing the model from — so a zeroed sketch camera and the locked
+    // view agree, and the snapshot pasted on the columns is seen from the same
+    // side it was taken from.
+    const dir = v3norm([Math.sin(sk.az) * Math.cos(sk.el),
+                        Math.cos(sk.az) * Math.cos(sk.el),
+                        -Math.sin(sk.el)]);
+    const dist = radius * 3.1;
+    const eye = [target[0] - dir[0] * dist, target[1] - dir[1] * dist,
+                 target[2] - dir[2] * dist];
+    const right = v3norm(v3cross(dir, [0, 0, 1]));
+    const up = v3cross(right, dir);
+    return { eye, dir, right, up, f: 1, cx: w / 2, cy: h / 2, dist };  // f/cx/cy set by skFit
+  }
+
+  // Raw, focal-length-free screen coordinates: x right, y down, plus depth.
+  // Separating this from the scaling is what lets the fit below be one pass
+  // over the scene's own corners rather than a guess at a good focal length.
+  function skRaw(cam, p) {
+    const v = v3sub(p, cam.eye);
+    const d = Math.max(0.001, v3dot(v, cam.dir));
+    return [v3dot(v, cam.right) / d, -v3dot(v, cam.up) / d, d];
+  }
+
+  function skProject(cam, p) {
+    const r = skRaw(cam, p);
+    return [cam.cx + cam.f * r[0], cam.cy + cam.f * r[1], r[2]];
+  }
+
+  function skFit(cam, points, w, h, padX, padY, shiftY) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    points.forEach(p => {
+      const r = skRaw(cam, p);
+      x0 = Math.min(x0, r[0]); x1 = Math.max(x1, r[0]);
+      y0 = Math.min(y0, r[1]); y1 = Math.max(y1, r[1]);
+    });
+    cam.f = Math.min((w - 2 * padX) / Math.max(1e-6, x1 - x0),
+                     (h - 2 * padY) / Math.max(1e-6, y1 - y0));
+    cam.cx = w / 2 - cam.f * (x0 + x1) / 2;
+    cam.cy = (h + (shiftY || 0)) / 2 - cam.f * (y0 + y1) / 2;
+  }
+
+  function skShade(rgb, normal, boost) {
+    const lit = 0.40 + 0.60 * Math.max(0, v3dot(normal, SK_LIGHT));
+    const k = lit * (boost || 1);
+    return `rgb(${Math.min(255, rgb[0] * k) | 0},${Math.min(255, rgb[1] * k) | 0},${Math.min(255, rgb[2] * k) | 0})`;
+  }
+
+  // Newell's method rather than the cross product of the first three vertices.
+  // At corner radius zero the rounded rectangle's four arcs each collapse onto a
+  // single point, so the first three vertices of the top face are the same
+  // point: the cross product is the zero vector, the face is back-face-culled,
+  // and the plate renders as a black hole. Newell uses every edge, so any three
+  // distinct vertices anywhere in the polygon are enough.
+  function faceNormal(pts) {
+    let nx = 0, ny = 0, nz = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      nx += (a[1] - b[1]) * (a[2] + b[2]);
+      ny += (a[2] - b[2]) * (a[0] + b[0]);
+      nz += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return v3norm([nx, ny, nz]);
+  }
+
+  // A closed prism over a 2D profile, as drawable faces.
+  function skPrism(faces, profile, cx, cy, z0, z1, s0, s1, rgb, part, layer) {
+    const n = profile.length;
+    const low = profile.map(p => [cx + p[0] * s0, cy + p[1] * s0, z0]);
+    const high = profile.map(p => [cx + p[0] * s1, cy + p[1] * s1, z1]);
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      faces.push({ pts: [low[i], low[j], high[j], high[i]], rgb, part, layer });
+    }
+    faces.push({ pts: high, rgb, part, top: true, layer });
+  }
+
+  function skProfile(shape, segs) {
+    if (shape === 'square' || shape === 'taper') {
+      return [[1, 1], [-1, 1], [-1, -1], [1, -1]];
+    }
+    const n = shape === 'fluted' ? 40 : (segs || 18);
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const t = i / n * Math.PI * 2;
+      const r = shape === 'fluted'
+        ? 1 - 0.16 * Math.pow(0.5 + 0.5 * Math.cos(8 * t), 2) : 1;
+      out.push([r * Math.cos(t), r * Math.sin(t)]);
+    }
+    return out;
+  }
+
+  // Rounded rectangle as a polygon, matching the plate's own construction.
+  function skRoundRect(x0, x1, y0, y1, r) {
+    const hx = (x1 - x0) / 2, hy = (y1 - y0) / 2;
+    r = Math.max(0, Math.min(r, hx * 0.9, hy * 0.9));
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const pts = [];
+    const corners = [[hx - r, hy - r, 0], [-(hx - r), hy - r, Math.PI / 2],
+                     [-(hx - r), -(hy - r), Math.PI], [hx - r, -(hy - r), -Math.PI / 2]];
+    const steps = r > 0.05 ? 4 : 0;      // a square corner is one point, not five
+    corners.forEach(([ox, oy, a0]) => {
+      for (let i = 0; i <= steps; i++) {
+        const a = a0 + (steps ? i / steps : 0) * (Math.PI / 2);
+        pts.push([cx + ox + r * Math.cos(a), cy + oy + r * Math.sin(a)]);
+      }
+    });
+    return pts;
+  }
+
+  // The layout the sketch draws when the server has not solved one — a plate
+  // sized from the model's own footprint and columns in the generic
+  // arrangement. Deliberately drawn with the model as a flat silhouette and
+  // labelled as a sketch: a guess drawn as confidently as a solve is worse than
+  // no drawing at all.
+  function genericLayout(vals) {
+    const size = (standBuild && standBuild.size) || [40, 40, 40];
+    const sprite = sk.sprite;
+    const span = Math.max(size[0], size[1], size[2]);
+    const w = sprite ? span : span;
+    const h = sprite ? span * (sprite.height / sprite.width) : span * 0.8;
+    const depth = Math.min(span, Math.max(span * 0.45, 18));
+    const zb = vals.plate_thickness + vals.stand_off;
+    const rows = [];
+    const meta = (standBuild && standBuild.meta) || {};
+    const pad0 = Math.max(3, vals.plaque_text * 0.6);
+    const plateW = w + 2 * vals.plate_margin;
+    // Mirrors ``stand.solve_layout``: the left block is as wide as asked, the
+    // legend keeps what its names need, and the PLATE grows if the two do not
+    // fit side by side. Without that last part — which this drawing was missing
+    // — turning the width up walks the left block across the legend and off the
+    // right-hand edge, and the whole thing looks broken while the stand it
+    // eventually builds is fine.
+    const naturalHalf = w / 2 + vals.plate_margin;
+    // Margins, plus a gap between the blocks wide enough that the two tiles
+    // keep 2.5 mm of plate between them. Mirrors stand._TILE_GAP_MM.
+    const spare = pad0 * 3 + 2.5;
+    const naturalUsable = Math.max(12, 2 * naturalHalf - spare);
+    const legSize = vals.plaque_text * 0.42;
+    let legendNeed = 0;
+    if (vals.plaque && vals.plaque_legend) {
+      ((standBuild && standBuild.chains) || []).forEach(c => {
+        // Rough: this end has no font metrics until there is a canvas. Only the
+        // fallback drawing uses it, and only until the server answers.
+        const chars = ((c.name || '') + ' (' + (c.id || '') + ')').length;
+        legendNeed = Math.max(legendNeed, legSize * 2.2 + chars * legSize * 0.62);
+      });
+      legendNeed = Math.min(legendNeed, 90);
+    }
+    const infoW = vals.plaque_info_mm > 0 ? vals.plaque_info_mm : naturalUsable * 0.5;
+    const half = Math.max(naturalHalf, (infoW + legendNeed + spare) / 2);
+    const usable0 = Math.max(12, 2 * half - spare);
+    const legendW = Math.max(6, usable0 - infoW);
+    if (vals.plaque && vals.plaque_pdb_id) rows.push({ kind: 'text', text: (meta.pdb_id || $('#pdb-id').value.trim() || 'PDB').toUpperCase(), cap_mm: vals.plaque_text, height_mm: vals.plaque_text * 1.6 });
+    const title = vals.plaque_title_text || '';
+    if (vals.plaque && title) {
+      // The real title, wrapped roughly. A preview whose whole job is to show
+      // what you get has no business showing the words "Structure name".
+      const cap = vals.plaque_text * 0.46;
+      const perLine = Math.max(8, Math.round(infoW / (cap * 0.62)));
+      let line = '';
+      title.split(/\s+/).forEach(word => {
+        if ((line + ' ' + word).trim().length > perLine) {
+          rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: vals.plaque_text * 0.72 });
+          line = word;
+        } else { line = (line + ' ' + word).trim(); }
+      });
+      if (line) rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: vals.plaque_text * 0.72 });
+    }
+    if (vals.plaque && vals.plaque_note) rows.push({ kind: 'text', text: vals.plaque_note, cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.67 });
+    if (vals.plaque && vals.plaque_scalebar) {
+      rows.push({ kind: 'scalebar', text: '50 Å', cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.97, bar_mm: vals.plaque_text * 2.4 });
+      rows.push({ kind: 'text', text: '1 Å = 1.5 mm', cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.67 });
+    }
+    const legend = [];
+    if (vals.plaque && vals.plaque_legend) {
+      ((standBuild && standBuild.chains) || []).slice(0, 8).forEach(c => legend.push({
+        kind: 'legend', text: c.name || `Chain ${c.id}`, cap_mm: vals.plaque_text * 0.42,
+        height_mm: vals.plaque_text * 0.78, bar_mm: 0, color: c.color, chain_id: c.id,
+      }));
+    }
+    const content = Math.max(rows.reduce((a, r) => a + r.height_mm, 0),
+                             legend.reduce((a, r) => a + r.height_mm, 0));
+    const pad = pad0;
+    const apron = content > 0 ? Math.max(22, content + 2 * pad) : 0;
+    const x0 = -half, x1 = half;
+    const y1 = depth / 2 + vals.plate_margin;
+    const y0 = -depth / 2 - vals.plate_margin - apron;
+    const cols = [];
+    const spread = w * 0.28;
+    const at = standColumns || recommendColumns(size);
+    if (at <= 1) cols.push({ x: 0, y: 0 });
+    else if (at === 2) { cols.push({ x: -spread, y: -depth * 0.1 }); cols.push({ x: spread, y: depth * 0.12 }); }
+    else { cols.push({ x: -spread, y: -depth * 0.18 }); cols.push({ x: spread, y: -depth * 0.18 }); cols.push({ x: 0, y: depth * 0.26 }); }
+    cols.forEach(c => { c.top = zb + 1.5; c.seat = zb + 1.5 - vals.cradle_depth; });
+    return {
+      generic: true,
+      plate: { x0, x1, y0, y1, top: vals.plate_thickness, corner_mm: vals.plate_corner },
+      apron: { depth: apron, top: y0 + apron, pad,
+               info_width: infoW, legend_width: legendW,
+               rake_deg: vals.apron_rake, rise: 0, lip: 0 },
+      model: { min: [-w / 2, -depth / 2, zb], max: [w / 2, depth / 2, zb + h], stand_off: vals.stand_off },
+      columns: cols,
+      column: { shape: vals.column_shape, radius: vals.column_diameter / 2,
+                foot: vals.column_diameter / 2 * (vals.column_flared ? 1.45 : 1),
+                flared: vals.column_flared, capital: vals.column_capital,
+                wanted: at, placed: cols.length },
+      plaque: { on: vals.plaque, relief: vals.plaque_relief, tile: vals.plaque_tile,
+                font: vals.plaque_font, info: rows, legend },
+      notes: [],
+    };
+  }
+
+  // Whatever the last solve said, these three are whatever the panel says now.
+  // They change nothing the server had to work out — the apron is the same
+  // depth and the rows are the same rows whether the letters are cut or raised —
+  // so waiting a round trip to redraw them is a lag with nothing behind it.
+  function liveSwitches(lay, vals) {
+    lay.plaque.on = vals.plaque;
+    lay.plaque.relief = vals.plaque_relief;
+    lay.plaque.tile = vals.plaque_tile;
+    // ...except the typeface, which the server may not have been able to honour.
+    if (!lay.plaque.font_note) lay.plaque.font = vals.plaque_font;
+    return lay;
+  }
+
+  // Rake is recomputed here rather than taken from the payload when the slider
+  // has moved since: the server clamps it against the stand-off, and the sketch
+  // must clamp it the same way or it will draw a wedge the build refuses.
+  function rakeOf(lay, vals) {
+    const deg = Math.max(0, Math.min(25, vals.apron_rake));
+    if (!lay.apron.depth || deg < 0.01) return { deg: 0, rise: 0, lip: 0, cos: 1, sin: 0 };
+    const lip = 0.8;
+    let rise = lay.apron.depth * Math.tan(deg * Math.PI / 180);
+    rise = Math.min(rise, 10, Math.max(4, vals.stand_off) - lip);
+    if (rise <= 0.001) return { deg: 0, rise: 0, lip: 0, cos: 1, sin: 0 };
+    const a = Math.atan2(rise, lay.apron.depth);
+    return { deg: a * 180 / Math.PI, rise, lip, cos: Math.cos(a), sin: Math.sin(a) };
+  }
+
+  const SK_PLATE = [92, 99, 108];
+  const SK_COL = [104, 112, 121];
+  const SK_TILE = [232, 232, 226];
+  const SK_ACCENT = [70, 190, 140];
+
+  function drawSketch() {
+    const canvas = $('#stand-sketch');
+    if (!canvas || standPanel.hidden) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth || 340, h = canvas.clientHeight || 252;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const vals = standValues();
+    const lay = standLayout || genericLayout(vals);
+    liveSwitches(lay, vals);
+    const rake = rakeOf(lay, vals);
+    const plate = lay.plate;
+    const surfaceZ = plate.top + rake.lip + rake.rise;
+    const apronTop = lay.apron.top;
+
+    // ---- assemble faces ------------------------------------------------
+    const faces = [];
+    const hi = part => sk.hover === part;
+    const plateRGB = hi('plate') ? SK_ACCENT : SK_PLATE;
+    const colRGB = hi('columns') ? SK_ACCENT : SK_COL;
+
+    const outline = skRoundRect(plate.x0, plate.x1, plate.y0, plate.y1, plate.corner_mm);
+    const nPlate = outline.length;
+    const plateLow = outline.map(p => [p[0], p[1], 0]);
+    const plateHigh = outline.map(p => [p[0], p[1], plate.top]);
+    for (let i = 0; i < nPlate; i++) {
+      const j = (i + 1) % nPlate;
+      faces.push({ pts: [plateLow[i], plateLow[j], plateHigh[j], plateHigh[i]], rgb: plateRGB, part: 'plate', layer: 0 });
+    }
+    faces.push({ pts: plateHigh, rgb: plateRGB, part: 'plate', top: true, layer: 0 });
+
+    // The raked wedge: same plan as the plate, clipped to the apron, with a top
+    // that climbs from a lip at the front edge to the full rise at the back.
+    if (rake.rise > 0.001) (() => {
+      const wedgeRGB = hi('plaque') ? SK_ACCENT : plateRGB;
+      // Sutherland-Hodgman against y <= apronTop. Sorting the surviving points
+      // by angle instead, as this first did, works on a convex plan and folds
+      // the polygon over itself the moment the plate has a wide corner radius.
+      const clip = [];
+      for (let i = 0; i < nPlate; i++) {
+        const a = outline[i], b = outline[(i + 1) % nPlate];
+        const ain = a[1] <= apronTop, bin = b[1] <= apronTop;
+        if (ain) clip.push(a);
+        if (ain !== bin) {
+          const t = (apronTop - a[1]) / (b[1] - a[1]);
+          clip.push([a[0] + (b[0] - a[0]) * t, apronTop]);
+        }
+      }
+      if (clip.length < 3) return;
+      const zAt = y => plate.top + rake.lip + rake.rise * Math.max(0, Math.min(1,
+        (y - plate.y0) / Math.max(1e-6, lay.apron.depth)));
+      const wLow = clip.map(p => [p[0], p[1], plate.top - 0.1]);
+      const wHigh = clip.map(p => [p[0], p[1], zAt(p[1])]);
+      for (let i = 0; i < clip.length; i++) {
+        const j = (i + 1) % clip.length;
+        faces.push({ pts: [wLow[i], wLow[j], wHigh[j], wHigh[i]], rgb: wedgeRGB, part: 'plaque', layer: 0 });
+      }
+      faces.push({ pts: wHigh, rgb: wedgeRGB, part: 'plaque', top: true, layer: 0 });
+    })();
+
+    // Columns, in whatever profile is selected.
+    const shape = lay.column.shape;
+    const prof = skProfile(shape);
+    const rTop = lay.column.radius;
+    const rFoot = lay.column.flared ? lay.column.foot : rTop;
+    (lay.columns || []).forEach(c => {
+      const z0 = plate.top, z1 = c.top;
+      const span = Math.max(0.5, z1 - z0);
+      if (shape === 'round') skPrism(faces, prof, c.x, c.y, z0, z1, rFoot, rTop, colRGB, 'columns', 1);
+      else if (shape === 'taper') skPrism(faces, prof, c.x, c.y, z0, z1, rFoot, rTop, colRGB, 'columns', 1);
+      else if (shape === 'fluted') {
+        const baseH = lay.column.flared ? Math.min(2.2, span * 0.4) : 0;
+        skPrism(faces, prof, c.x, c.y, z0 + baseH, z1, rTop * (baseH ? 1.05 : 1), rTop * 0.94, colRGB, 'columns', 1);
+        if (baseH) skPrism(faces, skProfile('round'), c.x, c.y, z0, z0 + baseH, rFoot, rTop * 1.08, colRGB, 'columns', 1);
+      } else {
+        skPrism(faces, prof, c.x, c.y, z0, z1, rTop, rTop, colRGB, 'columns', 1);
+        if (lay.column.flared) {
+          const ph = Math.min(2.6, span * 0.45);
+          skPrism(faces, prof, c.x, c.y, z0, z0 + ph, rFoot, rFoot, colRGB, 'columns', 1);
+        }
+      }
+      if (lay.column.capital) {
+        const ch = Math.min(2.0, span * 0.3);
+        const cw = Math.min(rTop * 1.32, Math.max(rTop * 1.04, rFoot));
+        skPrism(faces, (shape === 'round' || shape === 'fluted') ? skProfile('round') : skProfile('square'),
+                c.x, c.y, z1 - ch, z1, rTop * 1.02, cw, colRGB, 'columns', 1);
+      }
+    });
+
+    // ---- camera --------------------------------------------------------
+    const zTop = Math.max(lay.model.max[2], plate.top + 8);
+    const target = [0, (plate.y0 + plate.y1) / 2, zTop * 0.45];
+    const radius = Math.max(plate.x1 - plate.x0, plate.y1 - plate.y0, zTop) * 0.62;
+    const cam = skCamera(target, radius, w, h);
+
+    // Fit the plate's own corners and the model's silhouette box, so nothing
+    // is ever drawn off the edge and the drawing grows to fill the space it has.
+    const bounds = [];
+    for (const bx of [plate.x0, plate.x1]) for (const by of [plate.y0, plate.y1])
+      for (const bz of [0, plate.top + rake.rise]) bounds.push([bx, by, bz]);
+    for (const bx of [lay.model.min[0], lay.model.max[0]])
+      for (const bz of [lay.model.min[2], lay.model.max[2]]) bounds.push([bx, 0, bz]);
+    skFit(cam, bounds, w, h, 14, 20, -6);
+
+    // ---- draw ----------------------------------------------------------
+    const sprite = sk.sprite;
+    const spriteCentre = [0, 0, (lay.model.min[2] + lay.model.max[2]) / 2];
+    const spriteDepth = Math.max(0.001, v3dot(v3sub(spriteCentre, cam.eye), cam.dir));
+
+    const drawn = faces.map(f => {
+      const pts = f.pts.map(p => skProject(cam, p));
+      const depth = pts.reduce((a, p) => a + p[2], 0) / pts.length;
+      return { f, pts, depth, normal: faceNormal(f.pts) };
+    }).filter(d => {
+      // Back-face cull on the closed shells; every solid here is closed.
+      const toCam = v3sub(cam.eye, d.f.pts[0]);
+      return v3dot(d.normal, toCam) > 0;
+    });
+    // Depth order *within* a layer, never across one. A painter's sort alone
+    // cannot draw a plate and the columns standing on it: the plate is one big
+    // polygon whose centroid is nearer the camera than half the columns, so it
+    // gets painted last and swallows them. Splitting the ground from what
+    // stands on it costs one integer and removes the whole class of problem.
+    drawn.sort((a, b) => (a.f.layer || 0) - (b.f.layer || 0) || b.depth - a.depth);
+
+    ctx.lineJoin = 'round';
+    let spriteDrawn = false;
+    const paintSprite = () => {
+      if (spriteDrawn || !sprite) return;
+      spriteDrawn = true;
+      const c = skProject(cam, spriteCentre);
+      const wmm = lay.model.max[0] - lay.model.min[0];
+      const hmm = lay.model.max[2] - lay.model.min[2];
+      const px = cam.f / spriteDepth;
+      ctx.save();
+      // Solid, the model hides every column behind it — and where the columns
+      // land is the one question this drawing exists to answer. So it is drawn
+      // just short of opaque, and gets out of the way entirely while the column
+      // controls are being used.
+      ctx.globalAlpha = lay.generic ? 0.5 : (sk.hover === 'columns' ? 0.3 : 0.88);
+      if (lay.generic) { ctx.filter = 'grayscale(1) brightness(1.35)'; }
+      ctx.drawImage(sprite, c[0] - wmm * px / 2, c[1] - hmm * px / 2, wmm * px, hmm * px);
+      ctx.restore();
+    };
+
+    drawn.forEach(d => {
+      if ((d.f.layer || 0) >= 1 && !spriteDrawn && d.depth < spriteDepth) paintSprite();
+      ctx.beginPath();
+      ctx.moveTo(d.pts[0][0], d.pts[0][1]);
+      for (let i = 1; i < d.pts.length; i++) ctx.lineTo(d.pts[i][0], d.pts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = skShade(d.f.rgb, d.normal, 1);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.30)';
+      ctx.lineWidth = 0.6;
+      ctx.stroke();
+    });
+    paintSprite();
+
+    // ---- the plaque, drawn in the apron's own frame ---------------------
+    if (lay.plaque.on && lay.apron.depth > 0) {
+      drawPlaque(ctx, lay, planeFrame(cam, [0, apronTop, surfaceZ],
+                                      [1, 0, 0], [0, -rake.cos, -rake.sin], dpr));
+    }
+
+    // ---- dimensions, in screen space ------------------------------------
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Offset perpendicular to the edge being measured, not straight down: the
+    // front of the plate is not horizontal on screen, and a label dropped
+    // vertically from a slanted line lands on it.
+    const dim = (a, b, label, off) => {
+      const pa = skProject(cam, a), pb = skProject(cam, b);
+      let nx = pb[1] - pa[1], ny = -(pb[0] - pa[0]);
+      const n = Math.hypot(nx, ny) || 1;
+      nx = nx / n * off; ny = ny / n * off;
+      if (ny < 0) { nx = -nx; ny = -ny; }        // always push away from the model
+      ctx.strokeStyle = 'rgba(154,160,166,.5)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pa[0] + nx, pa[1] + ny);
+      ctx.lineTo(pb[0] + nx, pb[1] + ny);
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(154,160,166,.9)';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(label, (pa[0] + pb[0]) / 2 + nx * 2.0,
+                   (pa[1] + pb[1]) / 2 + ny * 2.0);
+      ctx.textBaseline = 'alphabetic';
+    };
+    const totalH = Math.max(lay.model.max[2], plate.top);
+    dim([plate.x0, plate.y0, 0], [plate.x1, plate.y0, 0],
+        `${(plate.x1 - plate.x0).toFixed(0)} × ${(plate.y1 - plate.y0).toFixed(0)} mm`, 15);
+    ctx.fillStyle = 'rgba(154,160,166,.9)';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${totalH.toFixed(0)} mm tall`, 10, 16);
+    if (lay.columns && lay.columns.length) {
+      ctx.textAlign = 'right';
+      ctx.fillText(`${lay.columns.length} × ${(lay.column.radius * 2).toFixed(1)} mm`, w - 10, 16);
+    }
+
+    drawPlaqueDetail();
+
+    $('#sk-note').textContent = lay.generic
+      ? 'Sketch only — column positions are solved from the geometry when you generate.'
+      : (lay.notes && lay.notes.length ? lay.notes[0]
+         : 'Columns, plate and lettering as the server has solved them. Drag to turn.');
+  }
+
+  // A millimetre frame on the apron face, re-anchored at whatever is being
+  // drawn. One transform for the whole plaque is an affine fit to a plane seen
+  // in perspective, which is exact only at the point it was fitted from — and
+  // over eighty millimetres of plate the far end of the lettering visibly walks
+  // away from where it belongs. Re-anchoring per item makes every item exact and
+  // leaves only the sub-millimetre skew inside a single word.
+  function planeFrame(cam, O, U, V, dpr) {
+    const S = 6;
+    return {
+      at(ctx, x, s) {
+        const p = [O[0] + U[0] * x + V[0] * s,
+                   O[1] + U[1] * x + V[1] * s,
+                   O[2] + U[2] * x + V[2] * s];
+        const p0 = skProject(cam, p);
+        const pu = skProject(cam, [p[0] + U[0] * S, p[1] + U[1] * S, p[2] + U[2] * S]);
+        const pv = skProject(cam, [p[0] + V[0] * S, p[1] + V[1] * S, p[2] + V[2] * S]);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.transform((pu[0] - p0[0]) / S, (pu[1] - p0[1]) / S,
+                      (pv[0] - p0[0]) / S, (pv[1] - p0[1]) / S, p0[0], p0[1]);
+      },
+      // Anything much bigger than a word gets every corner projected instead of
+      // one anchor and a linear fit: the white tile is thirty millimetres wide,
+      // and an affine fitted at its left edge draws its right edge visibly short
+      // of where the lettering standing on it has been placed.
+      path(ctx, pts) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.beginPath();
+        pts.forEach(([x, s], i) => {
+          const q = skProject(cam, [O[0] + U[0] * x + V[0] * s,
+                                    O[1] + U[1] * x + V[1] * s,
+                                    O[2] + U[2] * x + V[2] * s]);
+          if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]);
+        });
+        ctx.closePath();
+      },
+      reset(ctx) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); },
+    };
+  }
+
+  // A rounded rectangle as points, in whatever frame is drawing it.
+  function roundRectPoints(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    const pts = [];
+    const cs = [[x + w - r, y + r, -Math.PI / 2], [x + w - r, y + h - r, 0],
+                [x + r, y + h - r, Math.PI / 2], [x + r, y + r, Math.PI]];
+    cs.forEach(([cx, cy, a0]) => {
+      for (let i = 0; i <= 3; i++) {
+        const a = a0 + i / 3 * (Math.PI / 2);
+        pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+      }
+    });
+    return pts;
+  }
+
+  // The plaque content, in millimetres on the apron face. ``s`` runs forward
+  // from the back edge of the apron; glyphs stand up the slope, which is what
+  // fillText already does relative to a baseline. ``frame`` re-anchors the
+  // canvas at each item; text metrics are in user units and so need no frame.
+  function drawPlaque(ctx, lay, frame) {
+    const pad = lay.apron.pad;
+    const plate = lay.plate;
+    const engraved = lay.plaque.relief === 'engraved';
+    const tiled = lay.plaque.tile;
+    const ink = engraved ? (tiled ? '#7f858c' : '#0d0f11') : (tiled ? '#4c5158' : '#e9ecef');
+    const infoLeft = plate.x0 + pad;
+    const legendRight = plate.x1 - pad;
+
+    // Small caps because that is what the stroke font actually draws — it has
+    // no lowercase, it sets it as small capitals — and because caps have no
+    // descenders to drop into the row below. A sketch set in ordinary
+    // lowercase overlaps its own lines and reports a clash that is not there.
+    // The nearest thing a browser has to the face the plaque will be set in.
+    // Small caps for the stroke font because that is literally what it draws —
+    // it has no lowercase — and a bold weight for the other two, because both
+    // bundled faces are bold.
+    const CANVAS_FONT = {
+      line: (px) => `small-caps 600 ${px}px ui-sans-serif, system-ui, sans-serif`,
+      sans: (px) => `700 ${px}px ui-sans-serif, system-ui, sans-serif`,
+      serif: (px) => `700 ${px}px ui-serif, Georgia, "Times New Roman", serif`,
+    };
+    const shaped = CANVAS_FONT[lay.plaque.font] || CANVAS_FONT.sans;
+    const fontFor = (cap, text, room) => {
+      let px = cap / 0.73;                     // both bundled faces: cap = .73 em
+      ctx.font = shaped(px.toFixed(2));
+      if (text && room > 0) {
+        const w = ctx.measureText(text).width;
+        if (w > room) {
+          px *= room / w;
+          ctx.font = shaped(px.toFixed(2));
+        }
+      }
+      return px;
+    };
+
+    const legendLeft = legendRight - (lay.apron.legend_width || 0);
+    const block = (rows, xLeft, avail) => {
+      if (!rows || !rows.length) return;
+      let s = pad, minX = null, maxX = null, endS = pad;
+      const items = [];
+      rows.forEach(row => {
+        s += row.height_mm;
+        const base = s - row.height_mm * 0.26;
+        const cap = row.cap_mm;
+        let lead = 0;
+        if (row.kind === 'legend') lead = cap * 1.6;
+        else if (row.kind === 'scalebar') lead = row.bar_mm + cap * 0.7;
+        const px = fontFor(cap, row.text, avail - lead);
+        const tw = row.text ? ctx.measureText(row.text).width : 0;
+        const x = xLeft;
+        minX = minX === null ? x : Math.min(minX, x);
+        maxX = maxX === null ? x + lead + tw : Math.max(maxX, x + lead + tw);
+        items.push({ row, x, base, cap, lead, tw, px });
+        endS = s;
+      });
+      if (tiled) {
+        frame.path(ctx, roundRectPoints(minX - pad * 0.5, pad - pad * 0.45,
+                                        (maxX - minX) + pad,
+                                        (endS - pad) + pad * 0.9, 1.6));
+        ctx.fillStyle = '#e9e9e2';
+        ctx.fill();
+      }
+      items.forEach(({ row, x, base, cap, lead, px }) => {
+        let cx = x;
+        if (row.kind === 'legend') {
+          const r = cap * 0.52;
+          frame.at(ctx, cx + r, base - r);
+          ctx.beginPath();
+          ctx.arc(0, 0, r, 0, Math.PI * 2);
+          // Engraved, the dot is a hole, not a colour.
+          ctx.fillStyle = engraved ? '#0d0f11' : (row.color || '#888');
+          ctx.fill();
+          cx += cap * 1.6;
+        } else if (row.kind === 'scalebar') {
+          const bh = Math.max(0.5, cap * 0.3);
+          frame.at(ctx, cx, base);
+          ctx.fillStyle = ink;
+          ctx.fillRect(0, -bh, row.bar_mm, bh);
+          ctx.fillRect(0, -cap * 0.8, bh, cap * 0.8);
+          ctx.fillRect(row.bar_mm - bh, -cap * 0.8, bh, cap * 0.8);
+          cx += row.bar_mm + cap * 0.7;
+        }
+        if (row.text) {
+          frame.at(ctx, cx, base);
+          ctx.font = shaped(px.toFixed(2));
+          ctx.textAlign = 'left';
+          ctx.fillStyle = (row.kind === 'legend' && !engraved) ? (row.color || ink) : ink;
+          ctx.fillText(row.text, 0, 0);
+        }
+      });
+    };
+
+    block(lay.plaque.info, infoLeft, lay.apron.info_width);
+    block(lay.plaque.legend, legendLeft, lay.apron.legend_width);
+    frame.reset(ctx);
+  }
+
+
+  // A flat millimetre frame with the same interface as ``planeFrame``, so the
+  // plaque renderer can be pointed at a straight-on drawing without knowing the
+  // difference. One implementation of the lettering, two views of it.
+  function flatFrame(dpr, ox, oy, k, xRef) {
+    return {
+      at(ctx, x, s) {
+        ctx.setTransform(dpr * k, 0, 0, dpr * k,
+                         dpr * (ox + (x - xRef) * k), dpr * (oy + s * k));
+      },
+      path(ctx, pts) {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.beginPath();
+        pts.forEach(([x, s], i) => {
+          const px = ox + (x - xRef) * k, py = oy + s * k;
+          if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+        });
+        ctx.closePath();
+      },
+      reset(ctx) { ctx.setTransform(dpr, 0, 0, dpr, 0, 0); },
+    };
+  }
+
+  // The apron square on, at a size the lettering can be read at, plus a section
+  // through the surface. The stand sketch answers "where does the plaque go";
+  // this one answers "what does it say, and how deep is it cut" — which are
+  // different questions and were sharing one drawing that could only do the
+  // first.
+  function drawPlaqueDetail() {
+    const canvas = $('#plaque-sketch');
+    if (!canvas || standPanel.hidden) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth || 300, h = canvas.clientHeight || 196;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const vals = standValues();
+    const lay = standLayout || genericLayout(vals);
+    liveSwitches(lay, vals);
+    const rake = rakeOf(lay, vals);
+
+    ctx.textBaseline = 'alphabetic';
+    if (!lay.plaque.on || !(lay.apron.depth > 0)) {
+      ctx.fillStyle = 'rgba(154,160,166,.8)';
+      ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No lettering — the plate has no apron.', w / 2, h / 2);
+      return;
+    }
+
+    // ---- the apron, square on ------------------------------------------
+    const plate = lay.plate;
+    const wmm = plate.x1 - plate.x0, dmm = lay.apron.depth;
+    const secH = 68;
+    const k = Math.min((w - 16) / wmm, (h - secH - 16) / dmm);
+    const ox = (w - wmm * k) / 2, oy = 8;
+
+    ctx.fillStyle = '#5d636b';
+    roundRectPath(ctx, ox, oy, wmm * k, dmm * k, Math.min(plate.corner_mm * k, 6));
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,.10)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    drawPlaque(ctx, lay, flatFrame(dpr, ox, oy, k, plate.x0));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    ctx.fillStyle = 'rgba(154,160,166,.85)';
+    ctx.font = '9.5px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${wmm.toFixed(0)} × ${dmm.toFixed(0)} mm apron`,
+                 w / 2, oy + dmm * k + 12);
+
+    // ---- section through the surface -----------------------------------
+    // Drawn at its own scale and said so. At the plate's scale a 0.45 mm tile
+    // is a hairline, and the one thing this strip is for is the depth.
+    // The section is where the three reliefs actually differ, so it is drawn
+    // from the same three cases the geometry uses rather than from one of them
+    // with the others as adjectives.
+    const S = 20;                              // px per mm, exaggerated and said so
+    const secY = h - 26;
+    const x0 = 12, x1 = w - 96;
+    const mode = lay.plaque.relief;
+    const tileH = lay.plaque.tile ? 0.45 : 0;
+    const inkC = tileH ? '#4c5158' : '#c9ced4';
+    // Where the top surface is, and how the tile sits relative to it.
+    const yFace = secY;                        // the apron's own face
+    const tileTop = mode === 'flush' ? yFace : yFace - tileH * S;
+    const depth = mode === 'engraved' ? (tileH ? tileH + 0.5 : 0.7)
+                : mode === 'flush' ? (tileH ? tileH * 0.75 : 0.7) : 0.7;
+
+    ctx.fillStyle = '#5d636b';
+    ctx.fillRect(x0, mode === 'flush' ? yFace : yFace, x1 - x0, 15);
+    if (tileH) {
+      ctx.fillStyle = '#e9e9e2';
+      ctx.fillRect(x0, tileTop, x1 - x0, tileH * S);
+    }
+    for (let i = 0; i < 5; i++) {
+      const bx = x0 + 14 + i * ((x1 - x0 - 28) / 5);
+      const bw = Math.max(3, 0.6 * S);
+      if (mode === 'engraved') {
+        ctx.fillStyle = '#0b0c0e';                     // a void
+        ctx.fillRect(bx, tileTop, bw, depth * S);
+      } else if (mode === 'flush') {
+        ctx.fillStyle = inkC;                          // level with the face
+        ctx.fillRect(bx, tileTop, bw, depth * S);
+      } else {
+        ctx.fillStyle = inkC;                          // standing proud
+        ctx.fillRect(bx, tileTop - depth * S, bw, depth * S);
+      }
+    }
+    ctx.strokeStyle = 'rgba(154,160,166,.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, tileTop); ctx.lineTo(x1, tileTop);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(154,160,166,.9)';
+    ctx.font = '9.5px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    const label = mode === 'engraved'
+      ? `cut ${depth.toFixed(2)} mm${tileH ? ' — through the tile' : ''}`
+      : mode === 'flush'
+      ? `inlaid ${depth.toFixed(2)} mm, one flat face${tileH ? ' (tile sunk too)' : ''}`
+      : `raised 0.70 mm${tileH ? ' on a 0.45 mm tile' : ''}`;
+    ctx.fillText(label, x0, secY + 24);
+
+    // ---- the tilt, as a wedge ------------------------------------------
+    const wx = w - 84, wy = secY + 10, wl = 68;
+    const rise = Math.tan(rake.deg * Math.PI / 180) * wl;
+    ctx.strokeStyle = 'rgba(154,160,166,.6)';
+    ctx.beginPath();
+    ctx.moveTo(wx, wy);
+    ctx.lineTo(wx + wl, wy);
+    ctx.lineTo(wx + wl, wy - Math.min(rise, 26));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(47,158,111,.16)';
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(154,160,166,.9)';
+    ctx.textAlign = 'right';
+    ctx.fillText(rake.deg > 0.05 ? `${rake.deg.toFixed(0)}° toward you` : 'flat',
+                 w - 8, secY + 24);
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // ---- the model snapshot -------------------------------------------------
+  // Taken once, at the moment the view is locked. It costs one canvas readback
+  // of a frame that is already on the screen, and it is the difference between
+  // a diagram of a stand and a picture of yours.
+  async function captureModel() {
+    const v = $('#viewer');
+    sk.sprite = null;
+    let url = null;
+    try { url = v.toDataURL('image/png'); } catch (err) { return; }
+    if (!url || url.length < 128) return;
+    const img = new Image();
+    await new Promise(res => { img.onload = res; img.onerror = res; img.src = url; });
+    if (!img.width) return;
+
+    // Downscale, apply the roll the viewer is only showing in CSS, then crop to
+    // the alpha bounds — which are the model's own silhouette, and therefore the
+    // extents the stand is being sized against.
+    const scale = Math.min(1, 520 / Math.max(img.width, img.height));
+    const rad = standRoll * Math.PI / 180;
+    const c = Math.abs(Math.cos(rad)), s = Math.abs(Math.sin(rad));
+    const iw = img.width * scale, ih = img.height * scale;
+    const w = Math.ceil(iw * c + ih * s), h = Math.ceil(iw * s + ih * c);
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    const ox = off.getContext('2d');
+    ox.translate(w / 2, h / 2);
+    ox.rotate(rad);
+    ox.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+
+    let data;
+    try { data = ox.getImageData(0, 0, w, h).data; } catch (err) { return; }
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] > 24) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    if (x1 < x0 || y1 < y0) return;
+    const crop = document.createElement('canvas');
+    crop.width = x1 - x0 + 1; crop.height = y1 - y0 + 1;
+    crop.getContext('2d').drawImage(off, x0, y0, crop.width, crop.height,
+                                    0, 0, crop.width, crop.height);
+    sk.sprite = crop;
+  }
+
+  // ---- asking the server to solve it --------------------------------------
+  let previewTimer = null;
+  function requestPreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(runPreview, 320);
+  }
+
+  async function runPreview() {
+    if (!standLocked || !lockedOrbit) return;
+    const seq = ++previewSeq;
+    $('#sk-busy').hidden = false;
+    const fd = collectForm();
+    fd.append('build_token', (standBuild && standBuild.token) || '');
+    fd.append('orbit_theta', lockedOrbit.theta.toFixed(3));
+    fd.append('orbit_phi', lockedOrbit.phi.toFixed(3));
+    fd.append('orbit_roll', String(standRoll));
+    const vals = standValues();
+    Object.keys(vals).forEach(k => fd.append(k, String(vals[k])));
+    try {
+      const res = await fetch('/api/stand/preview', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (seq !== previewSeq) return;          // a later request already won
+      const stale = $('#sp-stale');
+      if (data && data.stamp && data.stamp !== CODE_STAMP) {
+        stale.textContent = `This page is version ${CODE_STAMP} and the server `
+          + `is running ${data.stamp}. Restart the server — until you do, the `
+          + `controls here are newer than the code answering them, and settings `
+          + `will appear to do the wrong thing.`;
+        stale.hidden = false;
+      } else if (data && !data.stamp) {
+        stale.textContent = 'The server is running code from before this page '
+          + 'existed. Restart it.';
+        stale.hidden = false;
+      } else {
+        stale.hidden = true;
+      }
+      standLayout = (data && data.ready) ? data : null;
+      applyWidthBounds();
+    } catch (err) {
+      if (seq === previewSeq) standLayout = null;
+    } finally {
+      if (seq === previewSeq) $('#sk-busy').hidden = true;
+    }
+    updateColumnHint();
+    updateFontHint();
+    drawSketch();
+  }
+
+  // Every control lands here. ``solve`` says whether the server has to be asked
+  // again; nothing does yet except everything, because the apron's depth
+  // depends on the plaque and the plate's size depends on the apron.
+  function standChanged(fromPreset) {
+    if (!fromPreset) markCustom();
+    refreshSliderLabels();
+    setRelief(spRelief);                       // the hint depends on the tile
+    const on = $('#sp-plaque').checked;
+    $('#sp-plaque-opts').style.opacity = on ? '1' : '.45';
+    $('#sp-plaque-opts').querySelectorAll('button, input').forEach(el => { el.disabled = !on; });
+    updateColumnHint();
+    drawSketch();
+    requestPreview();
+  }
+
+  // ---- wiring -------------------------------------------------------------
+  $('#sp-shape').addEventListener('click', e => {
+    const btn = e.target.closest('.sp-card');
+    if (!btn) return;
+    setShape(btn.dataset.s);
+    standChanged();
+  });
+  $('#sp-columns').addEventListener('click', e => {
     const btn = e.target.closest('button');
     if (!btn) return;
     standColumns = parseInt(btn.dataset.n, 10) || 0;
-    $('#stand-columns').querySelectorAll('button').forEach(b =>
+    $('#sp-columns').querySelectorAll('button').forEach(b =>
       b.setAttribute('aria-pressed', b === btn ? 'true' : 'false'));
-    updateColumnHint();
+    standChanged();
+  });
+  $('#sp-font').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    setFont(btn.dataset.v);
+    standChanged();
+  });
+  $('#sp-relief').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    setRelief(btn.dataset.v);
+    standChanged();
+  });
+  $('#sp-content').addEventListener('click', e => {
+    const btn = e.target.closest('.sp-chip');
+    if (!btn) return;
+    btn.setAttribute('aria-pressed',
+      btn.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    standChanged();
+  });
+  $('#sp-presets').addEventListener('click', e => {
+    const btn = e.target.closest('.sp-chip');
+    if (btn) setPreset(btn.dataset.preset);
+  });
+  ['#sp-flared', '#sp-capital', '#sp-plaque', '#sp-pins'].forEach(sel =>
+    $(sel).addEventListener('change', () => standChanged()));
+  $('#sp-note-text').addEventListener('input', () => standChanged());
+  $('#sp-title-text').addEventListener('input', () => {
+    titleTouched = true;
+    standChanged();
+  });
+  document.querySelectorAll('.sp-slider input').forEach(el => {
+    // Redraw locally on every pixel, and ask the server on the way through as
+    // well — debounced, and stale answers are discarded by sequence number, so
+    // a drag streams rather than waiting for the mouse to come up. Waiting was
+    // defensible when only the geometry the sketch draws itself was at stake;
+    // it is not, now that a slider can change how a title wraps and how wide
+    // the plate has to be, neither of which this end works out for itself.
+    el.addEventListener('input', () => {
+      markCustom();
+      refreshSliderLabels();
+      drawSketch();
+      requestPreview();
+    });
+    el.addEventListener('change', () => standChanged());
+  });
+  document.querySelectorAll('.sp-group[data-part]').forEach(group => {
+    group.addEventListener('mouseenter', () => { sk.hover = group.dataset.part; drawSketch(); });
+    group.addEventListener('mouseleave', () => { sk.hover = null; drawSketch(); });
   });
 
-  $('#stand-plaque').addEventListener('change', e => {
-    $('#stand-plaque-opts').style.opacity = e.target.checked ? '1' : '.4';
-    $('#stand-plaque-opts').querySelectorAll('input').forEach(
-      i => { i.disabled = !e.target.checked; });
-  });
+  // Drag the sketch to turn it — a limited sweep, because the model on top is a
+  // billboard and a billboard swung far enough round stops being convincing.
+  (() => {
+    const box = $('#sp-sketch');
+    if (!box) return;
+    const down = e => {
+      sk.drag = { x: e.clientX, y: e.clientY, az: sk.az, el: sk.el };
+      e.preventDefault();
+    };
+    const move = e => {
+      if (!sk.drag) return;
+      sk.az = Math.max(-0.62, Math.min(0.62, sk.drag.az + (e.clientX - sk.drag.x) * 0.006));
+      sk.el = Math.max(0.06, Math.min(0.92, sk.drag.el - (e.clientY - sk.drag.y) * 0.005));
+      drawSketch();
+    };
+    const up = () => { sk.drag = null; };
+    box.addEventListener('pointerdown', down);
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  })();
+  window.addEventListener('resize', () => { if (!standPanel.hidden) drawSketch(); });
 
   function currentOrbit() {
     // model-viewer reports the orbit in radians; the server wants degrees, and
@@ -1802,7 +3357,50 @@
   // Generate time instead would mean a stray drag between choosing and clicking
   // silently changed which way the stand faces — and the whole feature turns on
   // that one number being the one the user meant.
-  function setStandLocked(on) {
+  // Close the whole flow: camera back, both cards away, nothing left aimed at
+  // a viewer that is about to show something else.
+  function closeStandUI() {
+    standLocked = false;
+    lockedOrbit = null;
+    standLayout = null;
+    $('#viewer').setAttribute('camera-controls', '');
+    standSheet.hidden = true;
+    standPanel.hidden = true;
+    document.body.classList.remove('stand-open');
+  }
+
+  // The width control ends where the lettering does. Past the natural width of
+  // the widest line, more millimetres buy nothing — the tile cannot grow, and
+  // the plate only gets wider to hold empty space. The server measures it; the
+  // slider takes it as its maximum, so the far right of the control is exactly
+  // "as wide as this text can use".
+  function applyWidthBounds() {
+    const el = spSlider('plaque_info_mm');
+    const ap = standLayout && standLayout.apron;
+    if (!el || !ap || !(ap.info_max_mm > 0)) return;
+    const top = Math.max(20, Math.ceil(ap.info_max_mm));
+    if (String(el.max) !== String(top)) el.max = top;
+    if (parseFloat(el.value) > top) {
+      el.value = top;
+      refreshSliderLabels();
+    }
+  }
+
+  // Fill the name box from whatever the header gave, the first time the panel
+  // opens for a build. After that it is the user's: they may have shortened a
+  // shouted title or written their own, and a preview that keeps overwriting
+  // that is a preview arguing with the person using it.
+  let titleTouched = false;
+  function prefillTitle() {
+    const box = $('#sp-title-text');
+    if (!box || titleTouched) return;
+    const meta = (standBuild && standBuild.meta) || {};
+    box.value = meta.title || '';
+    box.placeholder = meta.title ? 'No name — leave empty to print none'
+      : (meta.why || 'This structure\'s header has no title — type one here');
+  }
+
+  async function setStandLocked(on) {
     standLocked = on;
     const v = $('#viewer');
     if (on) {
@@ -1811,32 +3409,42 @@
     } else {
       lockedOrbit = null;
       v.setAttribute('camera-controls', '');
+      standLayout = null;
     }
-    $('#stand-step-lock').hidden = on;
-    $('#stand-step-opts').hidden = !on;
-    standSheet.classList.toggle('choosing', !on);
-    standSheet.classList.toggle('locked', on);
-    if (on) updateColumnHint();
+    standSheet.hidden = on;
+    standPanel.hidden = !on;
+    document.body.classList.toggle('stand-open', on);
+    if (on) {
+      prefillTitle();
+      await captureModel();
+      standChanged(true);
+    }
   }
 
   $('#stand-roll').addEventListener('input', e => applyRoll(parseInt(e.target.value, 10) || 0));
 
   function showStandSheet(on) {
-    standSheet.hidden = !on;
-    if (!on) { $('#stand-roll').value = '0'; applyRoll(0); }
-    if (on) setStandLocked(false);
-    else if (standLocked) setStandLocked(false);   // never leave the view stuck
+    if (!on) {
+      closeStandUI();
+      $('#stand-roll').value = '0';
+      applyRoll(0);
+      return;
+    }
+    setStandLocked(false);
+    standSheet.hidden = false;
+    restorePlainModel();
   }
   // While a stand is building this is the Cancel button: it is the control the
   // user just came from, so it is where they look to stop it — not the Generate
   // button on the far side of the window.
   standBtn.addEventListener('click', () => {
     if (inflight) { cancelBuild(); return; }
-    showStandSheet(standSheet.hidden);
+    showStandSheet(standSheet.hidden && standPanel.hidden);
   });
   $('#stand-cancel').addEventListener('click', () => showStandSheet(false));
+  $('#sp-close').addEventListener('click', () => showStandSheet(false));
   $('#stand-lock').addEventListener('click', () => setStandLocked(true));
-  $('#stand-unlock').addEventListener('click', () => setStandLocked(false));
+  $('#sp-unlock').addEventListener('click', () => setStandLocked(false));
 
   async function generateStand() {
     if (inflight) return;
@@ -1846,8 +3454,7 @@
     }
     const orbit = lockedOrbit;
     const roll = standRoll;
-    standSheet.hidden = true;
-    setStandLocked(false);             // hand the camera back for the preview
+    closeStandUI();                    // hands the camera back, leaves nothing open
     $('#stand-roll').value = '0';
     applyRoll(0);                      // the result arrives already rolled
     const fd = collectForm();
@@ -1855,14 +3462,8 @@
     fd.append('build_token', (standBuild && standBuild.token) || '');
     fd.append('orbit_theta', orbit.theta.toFixed(3));
     fd.append('orbit_phi', orbit.phi.toFixed(3));
-    fd.append('stand_columns', String(standColumns));
-    fd.append('column_shape', standShape);
-    fd.append('plaque_tile', $('#stand-tile').checked);
-    fd.append('plaque', $('#stand-plaque').checked);
-    fd.append('plaque_pdb_id', $('#stand-pdb-id').checked);
-    fd.append('plaque_title', $('#stand-title').checked);
-    fd.append('plaque_scalebar', $('#stand-scalebar').checked);
-    fd.append('plaque_legend', $('#stand-legend').checked);
+    const vals = standValues();
+    Object.keys(vals).forEach(k => fd.append(k, String(vals[k])));
 
     const ctrl = new AbortController();
     inflight = ctrl;
@@ -1889,6 +3490,9 @@
     }
   }
   $('#stand-go').addEventListener('click', generateStand);
+  refreshSliderLabels();
+  setRelief('raised');
+  setFont('sans');
 
   // ---- manual overlay ----
   // Covers the viewer only, so the settings stay usable with the text open.
@@ -1912,6 +3516,14 @@
       return;
     }
     showManual(false);                 // the model is what you want to see next
+    // A stand panel left open across a new build is a panel describing a model
+    // that is about to be replaced: its locked view, its snapshot and its
+    // solved column positions all belong to the old one.
+    closeStandUI();
+    $('#stand-roll').value = '0';
+    applyRoll(0);
+    standBuild = null;
+    titleTouched = false;
     const ctrl = new AbortController();
     inflight = ctrl;
     genBtn.classList.add('busy');

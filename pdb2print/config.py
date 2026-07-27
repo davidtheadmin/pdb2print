@@ -124,15 +124,73 @@ class LigandStyle(str, Enum):
 
 
 class ColumnShape(str, Enum):
-    """Cross-section of a display-stand column.
+    """Cross-section — and profile — of a display-stand column.
 
     Square by default.  A round column reads as a laboratory clamp; a square one
     reads as furniture, which is what a display stand is.  It also prints with
     two flat faces to the build plate instead of a tangent.
+
+    The other two are the same idea carried further.  ``TAPER`` is a square shaft
+    that narrows continuously rather than standing on a plinth — an obelisk,
+    which turns the fact that a column must be thick at the bottom into something
+    that looks intended.  ``FLUTED`` is the classical answer to the same problem:
+    a round shaft scalloped down its length, which breaks a plain cylinder into
+    something the eye reads as an object rather than as a rod.  Flutes also print
+    well — all of it is convex vertical detail with no overhang anywhere.
     """
 
     SQUARE = "square"
     ROUND = "round"
+    TAPER = "taper"
+    FLUTED = "fluted"
+
+
+class PlaqueRelief(str, Enum):
+    """How the plaque's lettering meets the surface it is on.
+
+    Three answers to one question, because there are three printers asking it.
+
+    ``RAISED`` is the default: it stands the lettering off the surface, where it
+    reads by touch and by shadow as well as by colour.
+
+    ``FLUSH`` sinks the lettering, and the white tile under it, are
+    sunk into the apron so every top surface is one continuous plane. Nothing
+    stands proud and nothing is hollowed out — the colour changes *within* a
+    layer, which is precisely what a multi-material printer does best and what a
+    flat top surface prints most cleanly as. It is also the only one of the
+    three with no overhang, no loose part and no cavity anywhere.
+
+    ``ENGRAVED`` cuts the lettering away and produces no separate objects at
+    all — including the legend's colour dots, which become cut circles. That is
+    the point of it: it is the mode for a printer with one filament, where a
+    separate object is either fused to its neighbour or lying loose in a hole,
+    and a colour dot is a lie either way.
+    """
+
+    FLUSH = "flush"
+    RAISED = "raised"
+    ENGRAVED = "engraved"
+
+
+class PlaqueFont(str, Enum):
+    """Which typeface the plaque is set in.
+
+    ``LINE`` is the hand-written stroke font: 64 glyphs as centre lines, swept
+    to whatever width the nozzle can draw.  It has no thickness of its own,
+    which is what makes it dependable at two millimetres, and no lowercase —
+    it sets it as small capitals.
+
+    ``SANS`` and ``SERIF`` are real typefaces, subset from DejaVu Sans Bold and
+    DejaVu Serif Bold and triangulated into filled solids.  They have proper
+    lowercase, real counters and real letterfitting, and at a five-millimetre
+    headline the difference is the difference between typography and a plotter.
+    Both are **bold** deliberately: a regular weight at two millimetres has
+    stems a fifth of a millimetre wide, which a 0.4 mm nozzle does not draw.
+    """
+
+    LINE = "line"
+    SANS = "sans"
+    SERIF = "serif"
 
 
 class MagnetShape(str, Enum):
@@ -475,6 +533,17 @@ class StandParams:
     #: How much wider each column is at the plate than at the model.  A slight
     #: taper is stiffer for the same material and reads as intentional.
     column_flare: float = 1.45
+    #: Whether the flare is applied at all.  Off gives a column of one thickness
+    #: from plate to cradle, which on a small model is the quieter object: the
+    #: foot exists to stiffen a long column against bending, and a 20 mm one is
+    #: not bending.  It is a look, and the look should be a switch.
+    column_flared: bool = True
+    #: A short wider pad where the column meets the model.  Structurally it
+    #: spreads the cradle's contact over more of the shaft; visually it is what
+    #: stops a column looking like it was cut off where it happened to end.
+    #: Never wider than the foot, so it cannot reach past what the column search
+    #: already proved was clear.
+    column_capital: bool = False
     #: Clearance (mm) cut into the cradle so the model actually seats.  A plain
     #: boolean gives a geometrically perfect zero-clearance mate, which on an FDM
     #: part binds — the same lesson the magnet pockets already encode.
@@ -485,6 +554,29 @@ class StandParams:
     cradle_depth_mm: float = 4.0
     #: Air gap (mm) between the plate top and the lowest point of the model.
     stand_off_mm: float = 6.0
+    # --- assembly pins ---------------------------------------------------
+    #: Print the plate and the columns as separate parts, joined by a pin.
+    #:
+    #: The reason is the plaque.  Lettering printed *upward* is as good as the
+    #: top surface of an FDM part, which is not very; lettering printed
+    #: **downward against a smooth build sheet** is as good as the sheet, which
+    #: is excellent.  Turning the plate over to get that is only possible if the
+    #: columns are not welded to it — so this splits them off and gives each one
+    #: a peg into a socket.  Everything else follows: the plate prints upside
+    #: down with a glass-smooth plaque, the columns print upright with no
+    #: support, and the two push together afterwards.
+    column_pins: bool = False
+    #: Pin diameter (mm).  Comfortably inside the column's own width, and never
+    #: so large that the socket eats the plate.
+    pin_diameter_mm: float = 4.0
+    #: How deep the pin goes (mm).  Clamped so the socket cannot break through
+    #: the underside of the plate, which on a plate being printed upside down is
+    #: the surface everybody is looking at.
+    pin_depth_mm: float = 3.0
+    #: Radial clearance (mm) cut into the socket.  Same lesson as every other
+    #: mating pair here: a geometrically exact fit binds on an FDM part.
+    pin_clearance_mm: float = 0.15
+
     #: A support point is only usable where the surface faces downward.  This is
     #: the cosine limit: 0.62 accepts anything within about 52 degrees of
     #: straight down, past which a cradle becomes a knife edge that neither
@@ -495,8 +587,20 @@ class StandParams:
     plaque: bool = True
     #: Show the four-character PDB ID (or the uploaded file's name).
     plaque_pdb_id: bool = True
-    #: Show the structure title parsed from the header.
-    plaque_title: bool = True
+    #: The structure's name, as printed.
+    #:
+    #: A plain string rather than a switch over something read from the header,
+    #: because the header's version is a starting point and not an authority: it
+    #: is sometimes absent, sometimes in shouting capitals, and sometimes a
+    #: sentence nobody would put on a label. The front end prefills it from
+    #: whatever the header gave and thereafter it belongs to the user. Empty
+    #: means no name on the plaque, which is also how it is switched off.
+    plaque_title_text: str = ""
+
+    #: A line of the user's own — a lab, a date, a name.  Printed under the
+    #: title, at the size of the scale line, and folded through the stroke
+    #: font's substitution table like every other string on the plaque.
+    plaque_note: str = ""
     #: Show a physical scale bar with its length in ångström.
     plaque_scalebar: bool = True
     #: Show one row per chain: a colour dot and the chain's name.  The dot is
@@ -518,8 +622,45 @@ class StandParams:
     #: Cap height (mm) of the largest line of plaque text.  Everything else is a
     #: fixed fraction of it, and it shrinks automatically to fit the panel width.
     plaque_text_mm: float = 5.0
-    #: How far (mm) the raised text stands off the plate.
+    #: How far (mm) the raised text stands off the plate — or, engraved, how
+    #: deep it is cut into it.
     plaque_emboss_mm: float = 0.7
+    #: How the lettering meets the apron.  See :class:`PlaqueRelief`.
+    plaque_relief: PlaqueRelief = PlaqueRelief.RAISED
+    #: Tilt (degrees) of the plaque face toward the viewer.
+    #:
+    #: A plaque lying flat is read at a glancing angle from anywhere but
+    #: directly above, which is the one place nobody looks at a display stand
+    #: from.  Raking it is what a lectern does.  Built as a wedge *added* to the
+    #: plate — thickest at the back of the apron, tapering to a lip at the front
+    #: edge — rather than as a cut into it, because the cut version is limited
+    #: to the plate thickness and gives up at about five degrees.  Every face of
+    #: the wedge is an upward slope, so it prints with no support.
+    apron_rake_deg: float = 0.0
+    #: Width (mm) of the left-hand information block, or 0 to split the plate
+    #: evenly between it and the legend.
+    #:
+    #: A plain number of millimetres, after two rounds of trying to be clever
+    #: about it. First a fraction of the plate, then a fraction interpolated
+    #: between three measured anchors — both were harder to explain than they
+    #: were worth, and neither could be checked by looking at the result. The
+    #: rule now is one sentence: the left block is this wide, the legend keeps
+    #: whatever its names need, and the plate grows if the two do not fit side
+    #: by side.
+    plaque_info_mm: float = 0.0
+
+    #: Which typeface the lettering is set in.  See :class:`PlaqueFont`.
+    plaque_font: PlaqueFont = PlaqueFont.SANS
+    #: The thinnest part of a letter, in millimetres, that is worth printing.
+    #:
+    #: Only reads on a real typeface, which unlike the stroke font has a stem
+    #: width of its own that shrinks with the type size.  Where a face's stem
+    #: falls below this at the size asked for, the outline is grown by half the
+    #: shortfall on every side — which thickens the letter without changing its
+    #: shape much, and is the difference between lettering and a slicer quietly
+    #: dropping every stroke thinner than one bead.  Default is one nozzle plus
+    #: a little; raise it for a 0.6 mm nozzle.
+    plaque_min_stroke_mm: float = 0.45
     #: Width (mm) of a text stroke.  Still wider than a single extrusion — a
     #: 0.4 mm nozzle drawing a 0.4 mm line is one bead with nothing either side
     #: of it to hold it down — but no wider than it has to be: heavier strokes
