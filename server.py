@@ -82,7 +82,7 @@ UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = "2026-07-27.18"
+CODE_STAMP = '2026-07-29.1'
 
 #: When this process started, for /api/health.
 _STARTED = time.time()
@@ -771,6 +771,7 @@ def _map_stand(fields: dict) -> StandParams:
         plaque_note=str(fields.get("plaque_note", "") or "")[:80],
         plaque_scalebar=_bool(fields.get("plaque_scalebar", True)),
         plaque_legend=_bool(fields.get("plaque_legend", True)),
+        plaque_legend_labels=str(fields.get("plaque_legend_labels", "") or "")[:2000],
         plaque_tile=_bool(fields.get("plaque_tile", True)),
         plaque_relief=PlaqueRelief(fields.get("plaque_relief", "raised")),
         plaque_text_mm=float(fields.get("plaque_text", 5.0) or 5.0),

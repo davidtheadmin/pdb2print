@@ -40,7 +40,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import trimesh
@@ -1043,6 +1043,30 @@ def legend_label(chain, index: int) -> str:
     return f"{name} ({cid})"
 
 
+def legend_overrides(raw: str) -> Dict[int, str]:
+    """Parse ``index<TAB>label`` lines into ``{index: label}``.
+
+    Best-effort by design, like everything else that reads a name: a malformed
+    line is skipped rather than raised on, because a typo in one row must not
+    cost the user the other rows or the stand. Blank labels are dropped so that
+    clearing a box means "go back to the generated name" rather than "print an
+    empty row".
+    """
+    out: Dict[int, str] = {}
+    for line in (raw or "").splitlines():
+        head, sep, label = line.partition("\t")
+        if not sep:
+            continue
+        try:
+            index = int(head.strip())
+        except ValueError:
+            continue
+        label = label.strip()[:48]
+        if label:
+            out[index] = label
+    return out
+
+
 @dataclass
 class _Row:
     """One laid-out row of the plaque, in plate-local millimetres."""
@@ -1318,13 +1342,14 @@ def solve_layout(built, params: PrintParams,
 
     # ---- lay the plaque out first: it decides how deep the apron is --------
     chain_rows = []
+    overrides = legend_overrides(getattr(stand, 'plaque_legend_labels', ''))
     for i, (chain, _m) in enumerate(built):
         if getattr(chain, "mtype", None) == MoleculeType.STAND:
             continue
         chain_rows.append({
             "index": i,
             "chain_id": str(getattr(chain, "chain_id", "?")),
-            "label": legend_label(chain, i),
+            "label": overrides.get(i) or legend_label(chain, i),
             "color": color_for_index(i),
         })
 
@@ -1506,6 +1531,15 @@ def layout_summary(layout: StandLayout, params: PrintParams) -> dict:
                 if meta:
                     item["color"] = _rgb_hex(meta["color"])
                     item["chain_id"] = meta["chain_id"]
+                    # The built index, so the front end can address this row
+                    # when it sends a replacement label back. chain_id will not
+                    # do: a homodimer has two rows sharing one id.
+                    item["index"] = int(row.built_index)
+                    # ``text`` is what fits the plate — _legend_rows shortens a
+                    # long name to one line. The editor has to prefill with the
+                    # name itself, or accepting the box unchanged would bake the
+                    # truncation in as a permanent override.
+                    item["full"] = meta["label"]
             out.append(item)
         return out
 

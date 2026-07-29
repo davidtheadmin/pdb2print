@@ -607,6 +607,16 @@ class StandParams:
     #: exported as a **separate object carrying that chain's colour**, so the
     #: slicer can be told to print it in the same filament as the chain itself.
     plaque_legend: bool = True
+    #: Per-chain legend labels supplied by the user, as ``index<TAB>label``
+    #: lines. A chain with no entry keeps whatever :func:`stand.legend_label`
+    #: works out for it. Kept as the raw string rather than a mapping so it
+    #: canonicalises into the cache key by itself, the way every other field
+    #: here does.
+    #:
+    #: Editable because the generated label is a guess and sometimes a bad one:
+    #: COMPND records carry class words instead of names, translated titles, and
+    #: the occasional typo, and the person holding the print knows what it is.
+    plaque_legend_labels: str = ""
     #: Put a white tile behind the lettering — **both blocks, one switch**.
     #:
     #: This governed only the left-hand block at first, on the reasoning that a

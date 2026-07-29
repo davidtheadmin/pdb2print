@@ -330,7 +330,25 @@
     display: flex; align-items: center; justify-content: center;
   }
   .seg button:first-child { border-left: none; }
-  .seg button.active { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  /* Two strengths, and which is which had been backwards. The card rows
+     (.pick) are the choice that decides what the object *is*, and they were the
+     quiet ones, while the plain segmented controls under them wore a solid
+     green fill — so the eye went to the refinement first.
+
+     A nested control is now a proper segmented control: a well with padding,
+     and the chosen segment a rounded pill inside it. The pill is the same green
+     wash as a card but without the outline ring, which is what makes it read as
+     one step down rather than as a competing choice. (It was briefly plain
+     white, which put square corners inside a rounded box.) */
+  .seg.pick button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .seg:not(.pick) { padding: 3px; }
+  .seg:not(.pick) button {
+    border-left: none; border-radius: 6px; padding: 7px 6px;
+  }
+  .seg:not(.pick) button.active {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  .seg:not(.pick) button:not(.active):hover { background: var(--sunken); color: var(--text); }
   .seg button:not(.active):hover { color: var(--text); background: var(--sunken); }
 
   /* A branch is not a setting, it is a fork in the road, so it gets more
@@ -421,6 +439,11 @@
   .switch-body {
     margin-top: 11px; display: flex; flex-direction: column; gap: 11px;
   }
+  /* Two fields reading as one measurement. */
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+  .pair .field { margin: 0; }
+  .pair .slider-row .name { font-size: 11px; }
+
   .conn-sep { margin-top: 13px; border-top: 1px solid var(--border); padding-top: 13px; }
 
   .magnet-preview {
@@ -793,9 +816,12 @@
     background: var(--canvas); border: 1px solid var(--border); border-radius: var(--r1);
     padding: 6px; margin-bottom: 11px;
   }
-  .sp-detail canvas { display: block; width: 100%; height: 128px; }
+  .sp-detail canvas { display: block; width: 100%; height: 112px; }
 
   .sp-slider { margin-bottom: 10px; }
+  /* A drawer is a box; the next control's label was sitting on its lid. */
+  .sp-inner details.adv { margin-bottom: 14px; }
+  .sp-inner details.adv + .sp-slider { margin-top: 2px; }
   .sp-slider .lab { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .sp-slider .lab .name { font-size: 11.5px; color: var(--text2); }
   .sp-slider .lab .val {
@@ -1339,44 +1365,39 @@
             </div>
 
             <div id="conn-body" class="branch-body" hidden>
-              <!-- shared diameter (magnet Ø or bridge Ø) -->
-              <div class="field" data-slider="connector_diameter" id="conn-diameter">
-                <div class="slider-row"><span class="name" id="diameter-label">Bridge Ø (mm)</span><span class="val"></span></div>
-                <input type="range" min="1.5" max="12.0" step="0.5" value="4.0">
-              </div>
+              <!-- The one diameter field serves both branches, so it is moved
+                   between them rather than duplicated: two sliders for one
+                   payload field is two chances for them to disagree. -->
+              <div id="bridge-slot"></div>
 
-              <!-- flush socket: applies to magnets AND bridge -->
-              <div id="conn-socket">
-                <label class="switch">
-                  <input type="checkbox" id="socket" checked><span class="track"></span>
-                  <span class="sw-text"><span>Flush socket</span><span class="sw-sub">raise a flat collar on both parts so they meet on one clean disc</span></span>
-                </label>
-                <div id="socket-opts" class="switch-body">
-                  <div class="field" data-slider="socket_wall">
-                    <div class="slider-row"><span class="name" title="Plastic left around the pocket — the collar Ø is the magnet Ø plus twice this">Collar wall (mm)</span><span class="val"></span></div>
-                    <input type="range" min="0.4" max="4.0" step="0.1" value="1.5">
-                  </div>
-                </div>
-              </div>
-
-              <!-- MAGNETS: live diagram + sizing -->
+              <!-- MAGNETS. Order is the order you decide things in: what shape
+                   magnet you have, whether the faces are flattened to meet it,
+                   how big it is, how many. Everything after that is tuning. -->
               <div id="conn-magnet" class="switch-body" hidden>
-                <div class="magnet-preview"><svg id="magnet-diagram" viewBox="0 0 230 122" role="img" aria-label="Magnet dimensions preview"></svg></div>
-                <div class="field" data-slider="magnet_thickness">
-                  <div class="slider-row"><span class="name" title="Depth of the magnet pocket">Thickness (mm)</span><span class="val"></span></div>
-                  <input type="range" min="0.5" max="6.0" step="0.5" value="2.0">
-                </div>
-                <div class="field" data-slider="magnet_fit_clearance">
-                  <div class="slider-row"><span class="name" title="Extra Ø on the pocket over the magnet's nominal size. FDM holes print undersize, so a nominal pocket will not take the magnet at all. 0.2 mm is a press fit you still have to push; raise it if magnets won't go in, lower it if they fall out.">Press-fit clearance (mm)</span><span class="val"></span></div>
-                  <input type="range" min="0.0" max="0.6" step="0.05" value="0.2">
-                </div>
                 <div class="field">
-                  <p class="field-label">Shape</p>
+                  <p class="field-label">Shape <span class="sub">— what you have in the drawer</span></p>
                   <div class="seg" data-group="magnet_shape">
                     <button data-value="round" class="active">Round</button>
                     <button data-value="square">Square</button>
                   </div>
                 </div>
+
+                <label class="switch">
+                  <input type="checkbox" id="socket" checked><span class="track"></span>
+                  <span class="sw-text"><span>Flush socket</span><span class="sw-sub">raise a flat collar on both parts so they meet on one clean disc</span></span>
+                </label>
+
+                <div class="magnet-preview"><svg id="magnet-diagram" viewBox="0 0 230 122" role="img" aria-label="Magnet dimensions preview"></svg></div>
+
+                <!-- Ø and thickness are the two halves of one number you read off
+                     the magnet's packet, so they are read as one row. -->
+                <div class="pair" id="magnet-size">
+                  <div class="field" data-slider="magnet_thickness">
+                    <div class="slider-row"><span class="name" title="Depth of the magnet pocket">Thickness (mm)</span><span class="val"></span></div>
+                    <input type="range" min="0.5" max="6.0" step="0.5" value="2.0">
+                  </div>
+                </div>
+
                 <div class="field">
                   <p class="field-label">Magnets per interface</p>
                   <div class="count-grid">
@@ -1397,6 +1418,32 @@
                   </div>
                   <p class="rep-note">Magnet positions are highlighted in the preview.</p>
                 </div>
+
+                <details class="adv" id="advanced-socket">
+                  <summary>
+                    <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                    Advanced settings
+                  </summary>
+                  <div class="drawer">
+                    <div class="field" data-slider="magnet_fit_clearance">
+                      <div class="slider-row"><span class="name" title="Extra Ø on the pocket over the magnet's nominal size. FDM holes print undersize, so a nominal pocket will not take the magnet at all. 0.2 mm is a press fit you still have to push; raise it if magnets won't go in, lower it if they fall out.">Press-fit clearance (mm)</span><span class="val"></span></div>
+                      <input type="range" min="0.0" max="0.6" step="0.05" value="0.2">
+                    </div>
+                    <div id="socket-opts" class="switch-body">
+                      <div class="field" data-slider="socket_wall">
+                        <div class="slider-row"><span class="name" title="Plastic left around the pocket — the collar Ø is the magnet Ø plus twice this">Collar wall (mm)</span><span class="val"></span></div>
+                        <input type="range" min="0.4" max="4.0" step="0.1" value="1.5">
+                      </div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <!-- Lives outside #conn-magnet: it is the field the bridge branch
+                   uses too, and it is parked here when that branch is active. -->
+              <div class="field" data-slider="connector_diameter" id="conn-diameter">
+                <div class="slider-row"><span class="name" id="diameter-label">Bridge Ø (mm)</span><span class="val"></span></div>
+                <input type="range" min="1.5" max="12.0" step="0.5" value="4.0">
               </div>
             </div>
 
@@ -1573,6 +1620,8 @@
                 <button type="button" data-n="1" aria-pressed="false">1</button>
                 <button type="button" data-n="2" aria-pressed="false">2</button>
                 <button type="button" data-n="3" aria-pressed="false">3</button>
+                <button type="button" data-n="4" aria-pressed="false">4</button>
+                <button type="button" data-n="5" aria-pressed="false">5</button>
               </div>
             </div>
             <p class="sp-note" id="sp-col-hint"></p>
@@ -1660,14 +1709,31 @@
               </div>
               <p class="sp-note" id="sp-relief-hint"></p>
 
+              <!-- One box per chain, prefilled with what the server would print.
+                   Behind Advanced because it is a correction, not a decision:
+                   most headers are fine and the ones that are not are obvious
+                   the moment you read the sketch. -->
+              <details class="adv" id="advanced-legend">
+                <summary>
+                  <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                  Advanced settings
+                </summary>
+                <div class="drawer">
+                <div class="sp-slider" data-f="apron_rake">
+                  <div class="lab"><span class="name" title="Rakes the apron toward the viewer so the lettering faces you rather than the far wall. The wedge is added to the plate, not cut into it.">Tilt toward you</span><span class="val"></span></div>
+                  <input type="range" min="0" max="25" step="1" value="0">
+                </div>
+                  <p class="sp-note" style="margin:10px 0 8px">Legend names come from the file header, which often gives a class
+                  word rather than a name. Type over any of them; clear a box to go back to the header's.</p>
+                  <div id="sp-legend-edit"></div>
+                </div>
+              </details>
+
               <div class="sp-slider" data-f="plaque_text">
-                <div class="lab"><span class="name">Text size</span><span class="val"></span></div>
-                <input type="range" min="3" max="8" step="0.25" value="5">
+                <div class="lab"><span class="name" title="Cap height of the largest line. 5 mm is the floor because below it a bold face stops being a bold face: the stems thin out until the minimum-stroke guard has to widen the letters to keep the slicer from dropping them.">Text size</span><span class="val"></span></div>
+                <input type="range" min="5" max="11" step="0.25" value="7">
               </div>
-              <div class="sp-slider" data-f="apron_rake">
-                <div class="lab"><span class="name" title="Rakes the apron toward the viewer so the lettering faces you rather than the far wall. The wedge is added to the plate, not cut into it.">Tilt toward you</span><span class="val"></span></div>
-                <input type="range" min="0" max="25" step="1" value="0">
-              </div>
+
             </div>
           </div>
         </details>
@@ -2143,20 +2209,22 @@
     // The shared diameter slider is the magnet Ø with magnets, bridge Ø without.
     // With magnets, sit it directly under the diagram next to the thickness
     // slider; for a fixed bridge joint it lives back in the main column.
+    // Magnet Ø and thickness are the two numbers off the magnet's packet, so
+    // under magnets they share one row; on the bridge branch the same field is
+    // alone and takes the full width. One element, moved between two named
+    // slots — duplicating it would be two controls writing one payload field,
+    // and aiming at a sibling is what broke when the row was introduced.
     const diaField = $('#conn-diameter');
-    const magnetBox = $('#conn-magnet');
-    if (magnets) {
-      magnetBox.insertBefore(diaField, magnetBox.querySelector('[data-slider="magnet_thickness"]'));
-    } else {
-      $('#conn-body').insertBefore(diaField, magnetBox);
-    }
+    const home = magnets ? $('#magnet-size') : $('#bridge-slot');
+    if (diaField && home && diaField.parentElement !== home) home.prepend(diaField);
     // inflate sizes itself from the gap, so hide the slider when inflating.
     const inflate = !magnets && groups.no_magnet_method() === 'inflate';
     diaField.hidden = inflate;
-    $('#diameter-label').textContent = magnets ? 'Magnet Ø (mm)' : 'Bridge Ø (mm)';
+    $('#diameter-label').textContent = magnets ? 'Ø (mm)' : 'Bridge Ø (mm)';
     // The socket is the shared magnet/bridge joint geometry; inflate has no
     // joint to put a collar on, so it drops out entirely there.
-    $('#conn-socket').hidden = inflate;
+    // #conn-socket now lives inside #conn-magnet, which is already gated on
+    // the branch, so there is nothing left for this to decide.
     $('#socket-opts').hidden = !$('#socket').checked;
     updateMagnetDiagram();
   }
@@ -2723,8 +2791,12 @@
       hint.textContent = `Auto picks ${rec} for a model this size.`;
     } else if (standColumns === 1) {
       hint.textContent = 'One column: compact models only — a long structure will rock on it.';
-    } else {
+    } else if (standColumns <= 3) {
       hint.textContent = `${standColumns} columns, spread to straddle the centre of mass.`;
+    } else {
+      hint.textContent = `${standColumns} columns, spread as far apart as the underside allows. `
+        + `Up to three are placed to straddle the centre of mass; past that they are only spread wide, `
+        + `so check the sketch before printing.`;
     }
     if (placed != null && standColumns && placed < standColumns) {
       hint.textContent += ` The underside only offered ${placed}.`;
@@ -2756,6 +2828,64 @@
     return el ? el.getAttribute('aria-pressed') === 'true' : true;
   }
 
+  // The generated names come from the file header, which is a guess and
+  // sometimes a bad one. One box per legend row, prefilled with whatever the
+  // server last printed; clearing a box sends nothing for that row, and the
+  // server goes back to working the name out.
+  //
+  // Rows are addressed by built index, not by chain id: a homodimer has two
+  // rows sharing one id and they are not interchangeable.
+  function renderLegendEditor(rows) {
+    const box = document.querySelector('#sp-legend-edit');
+    if (!box) return;
+    const wanted = rows.map(r => String(r.index)).join(',');
+    if (box.dataset.keys === wanted) return;   // same chains: leave typing alone
+    box.dataset.keys = wanted;
+    box.textContent = '';
+    // Nothing to show is a state, not a blank. Before the first solve there are
+    // no chains to name yet; after one, an empty list means the server did not
+    // send the per-row index this needs — which is the stale-server case the
+    // banner above should already be shouting about.
+    if (!rows.length) {
+      const p = document.createElement('p');
+      p.className = 'sp-note';
+      p.style.margin = '0';
+      p.textContent = standLayout
+        ? 'No chain names came back. If the banner above says the server is older '
+          + 'than this page, that is why — restart it.'
+        : 'Names appear once the stand has been solved.';
+      box.appendChild(p);
+      return;
+    }
+    rows.forEach(r => {
+      const label = document.createElement('label');
+      label.className = 'sp-field';
+      const tag = document.createElement('span');
+      tag.textContent = r.chain_id ? `Chain ${r.chain_id}` : 'Chain';
+      if (r.color) { tag.style.borderLeft = `3px solid ${r.color}`; tag.style.paddingLeft = '5px'; }
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'sp-text';
+      input.maxLength = 48;
+      input.dataset.legendIndex = String(r.index);
+      input.value = r.full || r.text || '';
+      input.addEventListener('input', () => standChanged());
+      label.appendChild(tag);
+      label.appendChild(input);
+      box.appendChild(label);
+    });
+  }
+
+  function legendOverrides() {
+    const box = document.querySelector('#sp-legend-edit');
+    if (!box) return '';
+    return Array.from(box.querySelectorAll('input[data-legend-index]'))
+      .map(i => [i.dataset.legendIndex, i.value.trim().replace(/\t/g, ' ')])
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}\t${v}`)
+      .join('\n');
+  }
+
   function standValues() {
     const plaque = $('#sp-plaque').checked;
     return {
@@ -2779,6 +2909,7 @@
       plaque_title_text: $('#sp-title-text').value.trim(),
       plaque_scalebar: spChip('plaque_scalebar'),
       plaque_legend: spChip('plaque_legend'),
+      plaque_legend_labels: legendOverrides(),
       plaque_tile: spChip('plaque_tile'),
       plaque_relief: spRelief,
       plaque_font: spFont,
@@ -2847,24 +2978,24 @@
   // cannot adjust from.
   const STAND_PRESETS = {
     museum: {
-      shape: 'square', flared: true, capital: true, relief: 'flush', font: 'sans',
+      shape: 'square', flared: true, capital: true, relief: 'raised', font: 'sans',
       column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
       plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
-      plaque_text: 5.5, apron_rake: 10,
+      plaque_text: 7.5, apron_rake: 10,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
     },
     classical: {
       shape: 'fluted', flared: true, capital: true, relief: 'raised', font: 'serif',
       column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
       plate_thickness: 6, plate_margin: 11, plate_corner: 3,
-      plaque_text: 5.5, apron_rake: 8,
+      plaque_text: 7.5, apron_rake: 8,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
     },
     lab: {
-      shape: 'round', flared: false, capital: false, relief: 'engraved', font: 'line',
+      shape: 'round', flared: false, capital: false, relief: 'flush', font: 'line',
       column_diameter: 6, stand_off: 5, cradle_depth: 3.5,
       plate_thickness: 3, plate_margin: 5, plate_corner: 2,
-      plaque_text: 4, apron_rake: 0,
+      plaque_text: 5.5, apron_rake: 0,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
     },
   };
@@ -2936,7 +3067,7 @@
   // the real one taken at the moment the view was locked, so what is standing on
   // the columns is the structure, in the pose it will be built for.
   // Must match server.CODE_STAMP. See the comment there for why this exists.
-  const CODE_STAMP = '2026-07-27.18';
+  const CODE_STAMP = '2026-07-29.1';
 
   const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
   let standLayout = null;                     // last /api/stand/preview payload
@@ -3801,13 +3932,22 @@
 
   // ---- asking the server to solve it --------------------------------------
   let previewTimer = null;
-  function requestPreview() {
+  let lastSolveMs = 320;
+  // Streaming a drag is right, but a fixed 320 ms is only right for the cheap
+  // sliders. Text size and the left-block width re-typeset the plaque, which
+  // takes the server several times that, so a drag queued solves faster than
+  // they could be answered and the picture ran behind the mouse. The gap is now
+  // whatever the last solve actually cost, so the request rate settles wherever
+  // the server can keep up. Releasing always buys one final accurate answer.
+  function requestPreview(now) {
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(runPreview, 320);
+    if (now) { runPreview(); return; }
+    previewTimer = setTimeout(runPreview, Math.max(320, Math.min(1400, lastSolveMs)));
   }
 
   async function runPreview() {
     if (!standLocked || !lockedOrbit) return;
+    const startedAt = performance.now();
     const seq = ++previewSeq;
     $('#sk-busy').hidden = false;
     const fd = collectForm();
@@ -3840,10 +3980,16 @@
     } catch (err) {
       if (seq === previewSeq) standLayout = null;
     } finally {
-      if (seq === previewSeq) $('#sk-busy').hidden = true;
+      if (seq === previewSeq) {
+        lastSolveMs = performance.now() - startedAt;
+        $('#sk-busy').hidden = true;
+      }
     }
     updateColumnHint();
     updateFontHint();
+    if (standLayout && standLayout.plaque && standLayout.plaque.legend) {
+      renderLegendEditor(standLayout.plaque.legend.filter(r => r.index != null));
+    }
     drawSketch();
   }
 
@@ -3920,6 +4066,9 @@
       drawSketch();
       requestPreview();
     });
+    // 'change' is the pointer coming up. Whatever the drag managed to get
+    // answered, the value you stopped on is always solved for.
+    el.addEventListener('change', () => requestPreview(true));
     el.addEventListener('change', () => standChanged());
   });
   document.querySelectorAll('.sp-group[data-part]').forEach(group => {
@@ -3927,26 +4076,11 @@
     group.addEventListener('mouseleave', () => { sk.hover = null; drawSketch(); });
   });
 
-  // Drag the sketch to turn it — a limited sweep, because the model on top is a
-  // billboard and a billboard swung far enough round stops being convincing.
-  (() => {
-    const box = $('#sp-sketch');
-    if (!box) return;
-    const down = e => {
-      sk.drag = { x: e.clientX, y: e.clientY, az: sk.az, el: sk.el };
-      e.preventDefault();
-    };
-    const move = e => {
-      if (!sk.drag) return;
-      sk.az = Math.max(-0.62, Math.min(0.62, sk.drag.az + (e.clientX - sk.drag.x) * 0.006));
-      sk.el = Math.max(0.06, Math.min(0.92, sk.drag.el - (e.clientY - sk.drag.y) * 0.005));
-      drawSketch();
-    };
-    const up = () => { sk.drag = null; };
-    box.addEventListener('pointerdown', down);
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  })();
+  // The sketch used to be draggable. It cannot be any more: the model on it is
+  // a billboard captured when the view was locked, while the columns beneath it
+  // are the real positions the server solved for that exact view. Turning the
+  // camera moves one and not the other, and a picture whose parts disagree is
+  // worse than a fixed one. The hover highlight above is the interaction now.
   window.addEventListener('resize', () => { if (!standPanel.hidden) drawSketch(); });
 
   function currentOrbit() {
