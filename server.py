@@ -946,7 +946,19 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
             progress(0.30, "Using the model already built…")
         return entry["built"], entry["params"], "meshes in memory"
     try:
-        hit = cache.lookup(source, params)
+        # Look the build up the way the build itself was stored: with the stand
+        # switched OFF. canonical_params drops the whole stand block when it is
+        # disabled, and that is the key an ordinary /api/generate wrote. Asking
+        # with a stand enabled builds a key carrying every stand field, which
+        # nothing on disk can ever match -- so every model served from cache
+        # reported "not in memory", the preview fell back to its generic sketch,
+        # and a real stand quietly paid for a full rebuild it did not need.
+        import dataclasses as _dc
+        base = params
+        if getattr(params, "stand", None) is not None:
+            base = _dc.replace(params,
+                               stand=_dc.replace(params.stand, enabled=False))
+        hit = cache.lookup(source, base)
     except Exception:
         hit = None
     if hit:
