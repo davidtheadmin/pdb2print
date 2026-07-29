@@ -717,6 +717,18 @@
   }
   .sp-sketch .sk-busy[hidden] { display: none; }
 
+  /* Reassurance, not an alarm: a slow solve is a big structure, not a fault.
+     So it reads as a caption on the sketch rather than as a warning — no red,
+     no amber (that means Advanced and nothing else here). */
+  .sp-sketch .sk-wait {
+    position: absolute; top: 6px; right: 27px; max-width: calc(100% - 46px);
+    padding: 3px 7px; border-radius: 6px;
+    background: var(--glass); border: 1px solid var(--border);
+    color: var(--text2); font-size: 10px; line-height: 1.3;
+    backdrop-filter: blur(3px); pointer-events: none;
+  }
+  .sp-sketch .sk-wait[hidden] { display: none; }
+
   .sp-body { flex: 1; overflow: auto; padding: 11px 13px 16px; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
   .sp-foot {
     flex: none; padding: 10px 14px 12px; border-top: 1px solid var(--border);
@@ -1552,6 +1564,9 @@
       <div class="sp-sketch" id="sp-sketch">
         <canvas id="stand-sketch"></canvas>
         <div class="sk-busy" id="sk-busy" hidden></div>
+        <!-- Only appears when a solve outruns a second. The spinner says
+             something is happening; this says it is fine that it still is. -->
+        <div class="sk-wait" id="sk-wait" hidden></div>
         <div class="sk-note" id="sk-note"></div>
       </div>
 
@@ -3548,7 +3563,7 @@
     $('#sk-note').textContent = lay.generic
       ? 'Sketch only — column positions are solved from the geometry when you generate.'
       : (lay.notes && lay.notes.length ? lay.notes[0]
-         : 'Columns, plate and lettering as the server has solved them. Drag to turn.');
+         : 'Columns, plate and lettering as the server has solved them.');
   }
 
   // A millimetre frame on the apron face, re-anchored at whatever is being
@@ -3932,6 +3947,7 @@
 
   // ---- asking the server to solve it --------------------------------------
   let previewTimer = null;
+  let waitTimer = null;
   let lastSolveMs = 320;
   // Streaming a drag is right, but a fixed 320 ms is only right for the cheap
   // sliders. Text size and the left-block width re-typeset the plaque, which
@@ -3949,6 +3965,17 @@
     if (!standLocked || !lockedOrbit) return;
     const startedAt = performance.now();
     const seq = ++previewSeq;
+    // The spinner already says something is happening. Past a second it stops
+    // being enough — a spinner that will not stop reads as stuck — so add the
+    // one fact that makes waiting reasonable: it is the size of the structure,
+    // not a fault. Nothing appears at all under a second, which is most solves.
+    clearTimeout(waitTimer);
+    waitTimer = setTimeout(() => {
+      const el = $('#sk-wait');
+      if (!el) return;
+      el.textContent = 'Still working — a large structure takes a few seconds.';
+      el.hidden = false;
+    }, 1000);
     $('#sk-busy').hidden = false;
     const fd = collectForm();
     fd.append('build_token', (standBuild && standBuild.token) || '');
@@ -3980,9 +4007,14 @@
     } catch (err) {
       if (seq === previewSeq) standLayout = null;
     } finally {
+      // Guarded on seq: an older request finishing must not clear the notice a
+      // newer, slower one is waiting to show.
       if (seq === previewSeq) {
         lastSolveMs = performance.now() - startedAt;
+        clearTimeout(waitTimer);
         $('#sk-busy').hidden = true;
+        const wait = $('#sk-wait');
+        if (wait) wait.hidden = true;
       }
     }
     updateColumnHint();
