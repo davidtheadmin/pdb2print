@@ -39,4 +39,10 @@ COPY --chown=user . .
 # ephemeral disk, where writes would be thrown away anyway.
 
 EXPOSE 7860
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860"]
+# --no-access-log: uvicorn's access log records the client IP of every request,
+# and Docker's default json-file driver keeps that forever with no rotation — an
+# unbounded log of personal data collected for no purpose anyone asked for. The
+# privacy notice in frontend/index.html states that visitor IPs are not stored,
+# so this flag is what makes that sentence true. Errors and tracebacks are on the
+# error logger and are unaffected. Caddy's own access log is off by default.
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "7860", "--no-access-log"]
