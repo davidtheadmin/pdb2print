@@ -4317,6 +4317,13 @@
     closeStandUI();
     $('#stand-roll').value = '0';
     applyRoll(0);
+    // The drawers go with it. An open Advanced drawer belongs to the model that
+    // was on screen when you opened it, the same way the locked view and the
+    // solved columns just above do — carrying one model's depth of detail into
+    // the next is the panel remembering something it has no business keeping.
+    document.querySelectorAll('#stand-panel details.adv').forEach(d => {
+      d.open = false;
+    });
     standBuild = null;
     titleTouched = false;
     const ctrl = new AbortController();
