@@ -717,16 +717,20 @@
   }
   .sp-sketch .sk-busy[hidden] { display: none; }
 
-  /* Reassurance, not an alarm: a slow solve is a big structure, not a fault.
-     So it reads as a caption on the sketch rather than as a warning — no red,
-     no amber (that means Advanced and nothing else here). */
+  /* Louder than the caption it started as, on David's call: at this point the
+     sketch on screen is stale and the number under a slider may not be the one
+     the server will use, and that is worth interrupting for. Light red rather
+     than the full error red -- waiting is not a failure, and the real error
+     colour still has to mean something worse than this. */
   .sp-sketch .sk-wait {
-    position: absolute; top: 6px; right: 27px; max-width: calc(100% - 46px);
-    padding: 3px 7px; border-radius: 6px;
-    background: var(--glass); border: 1px solid var(--border);
-    color: var(--text2); font-size: 10px; line-height: 1.3;
-    backdrop-filter: blur(3px); pointer-events: none;
+    position: absolute; top: 8px; left: 10px; right: 28px;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 11px; border-radius: var(--r1);
+    background: var(--red-soft); border: 1px solid var(--red);
+    color: var(--red-text); font-size: 11.5px; font-weight: 600; line-height: 1.35;
+    box-shadow: var(--shadow-1); backdrop-filter: blur(3px); pointer-events: none;
   }
+  .sp-sketch .sk-wait svg { width: 16px; height: 16px; flex: none; }
   .sp-sketch .sk-wait[hidden] { display: none; }
 
   .sp-body { flex: 1; overflow: auto; padding: 11px 13px 16px; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -1566,7 +1570,10 @@
         <div class="sk-busy" id="sk-busy" hidden></div>
         <!-- Only appears when a solve outruns a second. The spinner says
              something is happening; this says it is fine that it still is. -->
-        <div class="sk-wait" id="sk-wait" hidden></div>
+        <div class="sk-wait" id="sk-wait" hidden role="status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <span id="sk-wait-text"></span>
+        </div>
         <div class="sk-note" id="sk-note"></div>
       </div>
 
@@ -3965,15 +3972,17 @@
     if (!standLocked || !lockedOrbit) return;
     const startedAt = performance.now();
     const seq = ++previewSeq;
-    // The spinner already says something is happening. Past a second it stops
-    // being enough — a spinner that will not stop reads as stuck — so add the
-    // one fact that makes waiting reasonable: it is the size of the structure,
-    // not a fault. Nothing appears at all under a second, which is most solves.
+    // The spinner says something is happening. Past a second that stops being
+    // enough — a spinner that will not stop reads as stuck — and by then the
+    // sketch on screen is stale and the sizes under the sliders are not the
+    // ones the server will use, which is worth saying out loud. Nothing appears
+    // at all under a second, which is most solves.
     clearTimeout(waitTimer);
     waitTimer = setTimeout(() => {
-      const el = $('#sk-wait');
-      if (!el) return;
-      el.textContent = 'Still working — a large structure takes a few seconds.';
+      const el = $('#sk-wait'), txt = $('#sk-wait-text');
+      if (!el || !txt) return;
+      txt.textContent = 'Still solving — the sketch and the sizes below are not '
+        + 'final yet. A large structure takes a few seconds.';
       el.hidden = false;
     }, 1000);
     $('#sk-busy').hidden = false;
