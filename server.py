@@ -826,7 +826,39 @@ def _stand_meta(source: str, token: str) -> dict:
     return _plaque_meta(source)
 
 
-def _built_from_cache(hit: dict):
+def _backfill_names(objects, source: str) -> None:
+    """Fill in subunit names on objects recovered from filenames alone.
+
+    Mutates in place, and never raises: a plaque that says "Chain A" is a
+    disappointment, and a stand that failed because RCSB was slow would be a
+    bug. Any failure here leaves the fallback names exactly as they were.
+
+    Uploaded structures are skipped -- their file is long deleted and there is
+    no id to fetch -- so those keep falling back, as they always have.
+    """
+    source = (source or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{4,8}", source):
+        return                                  # an upload, not a PDB id
+    tmp = None
+    try:
+        from pdb2print.io import fetch_pdb_id
+        from pdb2print.names import chain_names
+        tmp = tempfile.mkdtemp(prefix="pdb2print_names_")
+        names = chain_names(fetch_pdb_id(source, tmp))
+        for obj in objects:
+            if getattr(obj, "name", None):
+                continue
+            name = names.get(str(getattr(obj, "chain_id", "")))
+            if name:
+                obj.name = name
+    except Exception:
+        return                                  # the fallback names still work
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _built_from_cache(hit: dict, source: str = ""):
     """Reopen a cache entry as ``[(object, mesh), ...]``, or ``None``.
 
     The per-chain STL zip an entry already carries *is* the finished geometry —
@@ -875,6 +907,16 @@ def _built_from_cache(hit: dict):
     objects = cache_mod.objects_from_meta(hit)
     if not objects:
         objects = cache_mod.objects_from_labels(order)
+        # ...everything except the subunit names, which a filename cannot hold.
+        # Left alone, a model reopened from one of those entries -- which is
+        # every pre-generated one shipped in the repo -- puts "Chain A" on its
+        # plaque where a freshly built one puts "Zif268 (A)": same structure,
+        # same settings, a worse plaque, for a reason no user can see.
+        #
+        # The names live in the file header, and reading a header is a parse,
+        # not a build -- no meshing, no geometry core -- so re-read it rather
+        # than let a cache hit quietly cost you the legend.
+        _backfill_names(objects, source)
     if not objects:
         return None
 
@@ -910,7 +952,7 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
     if hit:
         if progress:
             progress(0.20, "Reopening the cached model…")
-        built = _built_from_cache(hit)
+        built = _built_from_cache(hit, source)
         if built is not None:
             return built, params, "the cached build"
     return None, params, None
