@@ -975,6 +975,27 @@
   .progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--sunken); z-index: 3; overflow: hidden; }
   .progress-fill { height: 100%; width: 0%; background: var(--accent); transition: width .25s ease; }
 
+  /* ---- queue notice ----
+     A queued build has nothing to show: no progress, no preview, and a report
+     line a visitor watching the viewer never looks at.  So the wait states
+     itself in the middle of the empty viewer, where their eyes already are.
+     Same treatment in both themes, because it is built from the tokens. */
+  .queue-notice {
+    position: absolute; inset: 0; z-index: 4;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 7px; padding: 24px; text-align: center;
+    background: color-mix(in srgb, var(--canvas) 84%, transparent);
+  }
+  .queue-notice[hidden] { display: none; }
+  .queue-notice .qn-title { font: 650 15px/1.35 inherit; color: var(--text); }
+  .queue-notice .qn-sub { font: 400 13px/1.5 inherit; color: var(--text2); max-width: 36ch; }
+  .queue-notice .qn-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    animation: qn-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes qn-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .queue-notice .qn-dot { animation: none; opacity: .8; } }
+
   .report {
     flex: none; max-height: 148px; overflow: auto;
     background: var(--s1); border: 1px solid var(--border);
@@ -1568,6 +1589,16 @@
     <section class="hero">
       <div class="viewer-wrap">
         <div id="progress" class="progress" hidden><div id="progress-fill" class="progress-fill"></div></div>
+
+        <!-- Shown only while this build is queued behind another one. The
+             server sends the position on the progress event; see the
+             admission-control note in server.py for why one at a time is
+             faster than two at once. -->
+        <div id="queue-notice" class="queue-notice" hidden role="status" aria-live="polite">
+          <div class="qn-dot"></div>
+          <div class="qn-title" id="qn-title">Waiting for the server</div>
+          <div class="qn-sub" id="qn-sub"></div>
+        </div>
         
 
         <!-- ============ PRIVACY / LICENCE ==========================================
@@ -2651,6 +2682,20 @@
   function hideProgress() {
     progressEl.hidden = true;
     progressFill.style.width = '0%';
+    showQueued(0);
+  }
+
+  // ---- queue notice ----
+  const queueEl = $('#queue-notice');
+  const queueSub = $('#qn-sub');
+  function showQueued(ahead) {
+    if (!ahead) { queueEl.hidden = true; return; }
+    queueSub.textContent =
+      (ahead === 1 ? 'One build is running ahead of yours.'
+                   : ahead + ' builds are running ahead of yours.')
+      + ' Yours starts automatically — this page does not need to stay in front.';
+    queueEl.hidden = false;
+    if (genBtn.classList.contains('busy')) btnLabel.textContent = 'Queued…';
   }
 
   function parseSSE(block) {
@@ -2719,6 +2764,9 @@
         if (!evt) continue;
         if (evt.event === 'progress') {
           showProgress(evt.data.frac);
+          // `queued` is absent on every ordinary progress frame, so the first
+          // real one clears the notice without needing its own event.
+          showQueued(evt.data.queued || 0);
           setReport(evt.data.msg || '', false);
         } else if (evt.event === 'result') {
           finalResult = evt.data;
@@ -3181,7 +3229,7 @@
   // the real one taken at the moment the view was locked, so what is standing on
   // the columns is the structure, in the pose it will be built for.
   // Must match server.CODE_STAMP. See the comment there for why this exists.
-  const CODE_STAMP = '2026-07-29.1';
+  const CODE_STAMP = '2026-07-30.1';
 
   const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
   let standLayout = null;                     // last /api/stand/preview payload

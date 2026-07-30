@@ -82,10 +82,143 @@ UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = '2026-07-29.1'
+CODE_STAMP = '2026-07-30.1'
 
 #: When this process started, for /api/health.
 _STARTED = time.time()
+
+
+# --------------------------------------------------------------------------
+# Admission control
+# --------------------------------------------------------------------------
+#: How many builds may hold the geometry core at once.
+#:
+#: One, because two do not each run at half speed — they run at a quarter or
+#: worse. Measured on the 4-vCPU box, 2026-07-30: idle 0.3% CPU, one build
+#: 105%, *two builds 420%* against a 400% ceiling with a run queue of 8, no
+#: swapping and no steal. The extra demand is not work, it is contention —
+#: both builds live in this one process, so every GIL-holding stretch
+#: serialises, and when manifold3d's threaded booleans do overlap they ask for
+#: more cores than exist.
+#:
+#: So queueing is not a throttle, it is the faster option: one build at full
+#: speed followed by the next beats two crawling, and the only thing the second
+#: visitor gives up is the illusion that something is happening — which is why
+#: the wait reports a position rather than showing a frozen bar.
+#:
+#: Raise it with PDB2PRINT_MAX_BUILDS on a box with cores to spare.
+def _max_builds() -> int:
+    raw = os.environ.get("PDB2PRINT_MAX_BUILDS", "").strip()
+    if not raw:
+        return 1
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
+class _BuildGate:
+    """Admits a bounded number of builds; tells the rest where they are.
+
+    A plain semaphore would do the admitting, but it cannot answer "how many
+    ahead of me", and that number is the whole point: a queued visitor who is
+    told their position is waiting, and one who is not is watching a hang.
+    """
+
+    def __init__(self, limit: int):
+        self._sem = asyncio.Semaphore(limit)
+        #: Every live request in arrival order — the ones building *and* the
+        #: ones queued.  Running tickets stay in the list on purpose: drop them
+        #: on acquire and the first queued visitor finds itself at index 0 and
+        #: is told nobody is ahead of them, while they wait.
+        self._tickets: list = []
+        self._issued = 0
+
+    def take_ticket(self) -> int:
+        self._issued += 1
+        self._tickets.append(self._issued)
+        return self._issued
+
+    def abandon(self, ticket: int) -> None:
+        if ticket in self._tickets:
+            self._tickets.remove(ticket)
+
+    def position(self, ticket: int) -> int:
+        """How many requests are ahead of ``ticket``; 0 once it is at the front."""
+        try:
+            return self._tickets.index(ticket)
+        except ValueError:
+            return 0
+
+    async def acquire(self, ticket: int) -> None:
+        await self._sem.acquire()
+
+    def release(self, ticket: int) -> None:
+        self.abandon(ticket)
+        self._sem.release()
+
+
+_GATE: Optional[_BuildGate] = None
+
+
+def _gate() -> _BuildGate:
+    """The process-wide build gate, created on the running loop's first use."""
+    global _GATE
+    if _GATE is None:
+        _GATE = _BuildGate(_max_builds())
+    return _GATE
+
+
+def _sse(kind: str, data) -> str:
+    return f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+
+
+def _queue_message(ahead: int) -> str:
+    if ahead == 1:
+        return "Waiting for the server — 1 build ahead of you…"
+    return f"Waiting for the server — {ahead} builds ahead of you…"
+
+
+def _hand_back_slot(gate: _BuildGate, ticket: int, waiter, acquired: bool) -> None:
+    """Give the slot back, whether the build ran or the client walked away.
+
+    The awkward case is a client that disconnects while queued: the acquire may
+    have completed in the moment between the last position check and this
+    cleanup, in which case the slot is ours and nobody is going to use it.  Not
+    checking for that leaks a slot per abandoned request, and a gate of one
+    leaks itself shut on the first cancelled queue.
+    """
+    if acquired:
+        gate.release(ticket)
+        return
+    waiter.cancel()
+    if waiter.done() and not waiter.cancelled() and waiter.exception() is None:
+        gate.release(ticket)     # won the slot in the last instant; hand it on
+    else:
+        gate.abandon(ticket)
+
+
+async def _wait_for_slot(gate: _BuildGate, ticket: int, waiter):
+    """Yield queue-position events until ``waiter`` has the slot.
+
+    The events are ordinary ``progress`` frames at fraction 0, so the existing
+    front end shows them with no change: the bar sits at the start and the
+    caption says where you are.  Re-sent every couple of seconds, both to track
+    the queue moving and to keep the connection warm through the proxy.
+    """
+    while True:
+        ahead = gate.position(ticket)
+        if ahead:
+            # ``queued`` is what the front end keys its banner off.  It rides on
+            # the progress event rather than travelling as its own event type so
+            # that a browser holding a cached copy of the old page still shows
+            # the message in the report line instead of silently ignoring an
+            # event it has never heard of.
+            yield _sse("progress", {"frac": 0.0, "msg": _queue_message(ahead),
+                                    "queued": ahead})
+        done, _pending = await asyncio.wait({waiter}, timeout=2.0)
+        if done:
+            return
 
 app = FastAPI(title="pdb2print")
 app.mount("/files", StaticFiles(directory=OUTPUT_ROOT), name="files")
@@ -724,18 +857,32 @@ async def generate(
             loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
             loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
-        loop.run_in_executor(None, work)
+        # Wait for a slot before starting any geometry.  The upload has already
+        # been written to disk by this point, so a queued request costs a temp
+        # file and an open connection and nothing else.
+        gate = _gate()
+        ticket = gate.take_ticket()
+        waiter = asyncio.ensure_future(gate.acquire(ticket))
+        acquired = False
         try:
+            async for frame in _wait_for_slot(gate, ticket, waiter):
+                yield frame
+            acquired = True
+
+            loop.run_in_executor(None, work)
             while True:
                 kind, data = await queue.get()
                 if kind == "__done__":
                     break
-                yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+                yield _sse(kind, data)
         finally:
             # Reached on normal completion *and* when the client disconnects
             # (the generator is closed / cancelled).  Setting it after a normal
             # finish is harmless — the worker has already returned.
             cancelled.set()
+            if tmp_upload_dir and not acquired:
+                shutil.rmtree(tmp_upload_dir, ignore_errors=True)
+            _hand_back_slot(gate, ticket, waiter, acquired)
 
     return StreamingResponse(
         event_stream(),
@@ -1244,15 +1391,28 @@ async def stand(request: Request):
             loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
             loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
-        loop.run_in_executor(None, work)
+        # Stands go through the same gate as builds.  A stand that hits the
+        # cache is nearly free, but one that misses runs the whole pipeline —
+        # and a gate that only counted /api/generate would let a stand and a
+        # build saturate the box between them, which is the case it exists for.
+        gate = _gate()
+        ticket = gate.take_ticket()
+        waiter = asyncio.ensure_future(gate.acquire(ticket))
+        acquired = False
         try:
+            async for frame in _wait_for_slot(gate, ticket, waiter):
+                yield frame
+            acquired = True
+
+            loop.run_in_executor(None, work)
             while True:
                 kind, data = await queue.get()
                 if kind == "__done__":
                     break
-                yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+                yield _sse(kind, data)
         finally:
             cancelled.set()
+            _hand_back_slot(gate, ticket, waiter, acquired)
 
     return StreamingResponse(
         event_stream(),
