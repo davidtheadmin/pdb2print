@@ -65,10 +65,18 @@ def build(chain, params: PrintParams):
     #    by the probe radius.
     sas = np.zeros(grid.shape, dtype=bool)
     for c, r in zip(coords, sas_radii):
-        slices, pts = grid.window(c, r)
+        slices, axes = grid.window_axes(c, r)
         if slices is None:
             continue
-        inside = np.sum((pts - c) ** 2, axis=-1) <= r * r
+        # Separable squared distance.  These three broadcast to the same sum, in
+        # the same order, as summing the last axis of a materialised
+        # (W, W, W, 3) coordinate array — without materialising it.  That array
+        # was being rebuilt once per atom in the structure.
+        dx2 = (axes[0] - c[0]) ** 2
+        dy2 = (axes[1] - c[1]) ** 2
+        dz2 = (axes[2] - c[2]) ** 2
+        inside = (dx2[:, None, None] + dy2[None, :, None]
+                  + dz2[None, None, :]) <= r * r
         sas[slices] |= inside
 
     if not sas.any():
@@ -78,8 +86,13 @@ def build(chain, params: PrintParams):
     # 2) SES = SAS solid eroded inward by the probe radius.  The signed field is
     #    (inward distance to the SAS boundary) − probe; its zero level set is the
     #    solvent-excluded surface.  Distances are in voxels, so scale to mm.
-    inward_mm = ndimage.distance_transform_edt(sas) * spacing
-    field = inward_mm - probe_mm
+    #    Done in place: ``edt(sas) * spacing - probe`` allocates three full
+    #    float64 grids where one will do, and on a large chain each of those is
+    #    hundreds of megabytes that the machine has to find, fill and throw away.
+    field = ndimage.distance_transform_edt(sas)
+    del sas                     # the EDT is the only thing that needed it
+    field *= spacing
+    field -= probe_mm
 
     mesh = field_to_mesh(field, grid, level=0.0)
     if safe.notes:

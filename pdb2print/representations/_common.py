@@ -37,12 +37,16 @@ class Grid:
             for i in range(3)
         ]
 
-    def window(self, center: np.ndarray, radius: float):
-        """Index slices of the sub-grid within ``radius`` of ``center``.
+    def window_axes(self, center: np.ndarray, radius: float):
+        """Index slices of the sub-grid within ``radius`` of ``center``, and its
+        per-axis world coordinates as three 1-D arrays.
 
-        Returns ``(slices, coord_grids)`` where coord_grids are the world
-        coordinates of the window voxels (meshgrid, 'ij' indexing).  Used to
-        rasterise a primitive cheaply into just its local neighbourhood.
+        This is what :meth:`window` is built from, and what a caller wanting only
+        *distances* should use.  A squared distance is separable —
+        ``dx²[:,None,None] + dy²[None,:,None] + dz²[None,None,:]`` broadcasts to
+        the same values — so expanding the coordinates into a full
+        ``(W, W, W, 3)`` array first is six times the memory traffic for an
+        identical answer, once per atom.
         """
         lo_idx = np.floor((center - radius - self.origin) / self.spacing).astype(int)
         hi_idx = np.ceil((center + radius - self.origin) / self.spacing).astype(int)
@@ -55,6 +59,18 @@ class Grid:
             self.origin[i] + np.arange(lo_idx[i], hi_idx[i] + 1) * self.spacing
             for i in range(3)
         ]
+        return slices, axes
+
+    def window(self, center: np.ndarray, radius: float):
+        """Index slices of the sub-grid within ``radius`` of ``center``.
+
+        Returns ``(slices, coord_grids)`` where coord_grids are the world
+        coordinates of the window voxels (meshgrid, 'ij' indexing).  Used to
+        rasterise a primitive cheaply into just its local neighbourhood.
+        """
+        slices, axes = self.window_axes(center, radius)
+        if slices is None:
+            return None, None
         gx, gy, gz = np.meshgrid(*axes, indexing="ij")
         return slices, np.stack([gx, gy, gz], axis=-1)
 
