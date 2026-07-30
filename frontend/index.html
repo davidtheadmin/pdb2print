@@ -4177,7 +4177,10 @@
   // Every control lands here. ``solve`` says whether the server has to be asked
   // again; nothing does yet except everything, because the apron's depth
   // depends on the plaque and the plate's size depends on the apron.
-  function standChanged(fromPreset) {
+  // ``solve: false`` does everything except ask the server. It is what a value
+  // that is still moving wants — a drag in progress, a title mid-word — where
+  // the local half is instant and the server half is not.
+  function standChanged(fromPreset, { solve = true } = {}) {
     if (!fromPreset) markCustom();
     refreshSliderLabels();
     setRelief(spRelief);                       // the hint depends on the tile
@@ -4186,7 +4189,7 @@
     $('#sp-plaque-opts').querySelectorAll('button, input').forEach(el => { el.disabled = !on; });
     updateColumnHint();
     drawSketch();
-    requestPreview();
+    if (solve) requestPreview();
   }
 
   // ---- wiring -------------------------------------------------------------
@@ -4229,28 +4232,49 @@
   });
   ['#sp-flared', '#sp-capital', '#sp-plaque', '#sp-pins'].forEach(sel =>
     $(sel).addEventListener('change', () => standChanged()));
-  $('#sp-note-text').addEventListener('input', () => standChanged());
+  // Typing is a drag by another name: every keystroke re-typesets the plaque
+  // server-side, which is one of the slower solves. Redraw locally as they
+  // type, ask the server when they stop — 'change' on a text input is blur or
+  // Enter, so it fires once per edit rather than once per letter.
+  $('#sp-note-text').addEventListener('input', () => standChanged(false, { solve: false }));
+  $('#sp-note-text').addEventListener('change', () => standChanged());
   $('#sp-title-text').addEventListener('input', () => {
+    titleTouched = true;
+    standChanged(false, { solve: false });
+  });
+  $('#sp-title-text').addEventListener('change', () => {
     titleTouched = true;
     standChanged();
   });
   document.querySelectorAll('.sp-slider input').forEach(el => {
-    // Redraw locally on every pixel, and ask the server on the way through as
-    // well — debounced, and stale answers are discarded by sequence number, so
-    // a drag streams rather than waiting for the mouse to come up. Waiting was
-    // defensible when only the geometry the sketch draws itself was at stake;
-    // it is not, now that a slider can change how a title wraps and how wide
-    // the plate has to be, neither of which this end works out for itself.
+    // Redraw locally on every pixel; ask the server on release only.
+    //
+    // This used to stream the drag, debounced against the last solve time, on
+    // the argument that a slider can change how a title wraps and how wide the
+    // plate has to be — things this end cannot work out for itself, so showing
+    // them late was worse than asking often. That argument was made on a
+    // desktop. On the four shared vCPUs the site actually runs on, a solve is
+    // slow enough that a drag queued requests faster than they could ever be
+    // answered: the sketch ran behind the mouse, every one of those solves but
+    // the last was thrown away by the sequence number, and they competed with
+    // whatever real build was running. Streaming a drag is only right when the
+    // stream can keep up.
+    //
+    // So the drag shows this end's own geometry, and the server corrects it
+    // once, on release. The plate width and title wrap are briefly the local
+    // guess — which is what the sketch has always been labelled as.
     el.addEventListener('input', () => {
       markCustom();
       refreshSliderLabels();
       drawSketch();
-      requestPreview();
     });
-    // 'change' is the pointer coming up. Whatever the drag managed to get
-    // answered, the value you stopped on is always solved for.
-    el.addEventListener('change', () => requestPreview(true));
-    el.addEventListener('change', () => standChanged());
+    // 'change' is the pointer coming up. ``standChanged`` schedules a debounced
+    // solve and ``requestPreview(true)`` immediately replaces it with a real
+    // one, so the release costs exactly one request — it used to cost two.
+    el.addEventListener('change', () => {
+      standChanged();
+      requestPreview(true);
+    });
   });
   document.querySelectorAll('.sp-group[data-part]').forEach(group => {
     group.addEventListener('mouseenter', () => { sk.hover = group.dataset.part; drawSketch(); });
