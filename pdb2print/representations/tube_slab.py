@@ -168,8 +168,9 @@ def _ball_and_stick(coords_ang, s, atom_r, bond_r):
     for i in range(n):
         for j in range(i + 1, n):
             if np.linalg.norm(coords_ang[i] - coords_ang[j]) <= _BOND_CUTOFF_ANG:
-                solids.append(
-                    _manifold.capsule(coords_ang[i] * s, coords_ang[j] * s, bond_r)
+                solids.extend(
+                    _manifold.capsule_parts(coords_ang[i] * s, coords_ang[j] * s,
+                                            bond_r)
                 )
     return solids
 
@@ -192,19 +193,21 @@ def _backbone_solids(residues, backbone_mm, params, s, tube_r,
             if atoms:
                 solids.extend(_ball_and_stick(atoms, s, bb_atom_r, bb_bond_r))
         for i in range(len(backbone_mm) - 1):
-            solids.append(
-                _manifold.capsule(backbone_mm[i], backbone_mm[i + 1], bb_bond_r)
+            solids.extend(
+                _manifold.capsule_parts(backbone_mm[i], backbone_mm[i + 1],
+                                        bb_bond_r)
             )
         return solids
 
-    # Default: smooth swept tube (a capsule per spline segment; consecutive
-    # capsules overlap, so the union is one smooth watertight tube).
+    # Default: smooth swept tube.  The primitives are emitted unfused — one
+    # sphere per spline sample, one cylinder per segment — so ``build`` fuses the
+    # whole chain in a single flat union instead of nesting one boolean per
+    # spline segment inside another.
     if len(backbone_mm) >= 2:
         spline = catmull_rom(backbone_mm, params.spline_samples_per_residue)
-        for i in range(len(spline) - 1):
-            solids.append(_manifold.capsule(spline[i], spline[i + 1], tube_r))
+        solids.extend(_manifold.swept_tube_parts(spline, tube_r))
     elif len(backbone_mm) == 1:
-        solids.append(_manifold.capsule(backbone_mm[0], backbone_mm[0], tube_r))
+        solids.extend(_manifold.swept_tube_parts(backbone_mm, tube_r))
     return solids
 
 
@@ -231,7 +234,7 @@ def _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
         if not ring:
             return []
         solids = _ball_and_stick(ring, s, atom_r, bond_r)
-        solids.append(_manifold.capsule(bp, glyco_mm, bond_r))
+        solids.extend(_manifold.capsule_parts(bp, glyco_mm, bond_r))
         return solids
 
     if params.base_style == BaseStyle.ROD:
@@ -248,7 +251,7 @@ def _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
         rung_r = slab_t / 2.0
         if params.min_wall_mm > 0:
             rung_r = max(rung_r, params.min_wall_mm / 2.0)
-        return [_manifold.capsule(bp, center_mm, rung_r)]
+        return _manifold.capsule_parts(bp, center_mm, rung_r)
 
     # Default: flat oriented slab on the base plane, fused to the backbone with
     # a connector grown to the slab's own thickness so it blends in rather than
@@ -261,10 +264,8 @@ def _base_solids(res_name, res, bp, params, s, tube_r, slab_t, conn_r,
     half = np.array([4.5, 3.0, 1.0]) * 0.5 * params.slab_scale * s
     half[2] = slab_t * 0.5
     slab_conn = max(conn_r, slab_t * 0.45)
-    return [
-        _manifold.oriented_box(center_mm, axes, half),
-        _manifold.capsule(bp, center_mm, slab_conn),
-    ]
+    return [_manifold.oriented_box(center_mm, axes, half)] + \
+        _manifold.capsule_parts(bp, center_mm, slab_conn)
 
 
 def base_anchors_mm(chain, params: PrintParams):

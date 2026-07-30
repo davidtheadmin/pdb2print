@@ -38,20 +38,58 @@ def _rot_z_to(direction: np.ndarray) -> np.ndarray:
     return np.column_stack([x, y, d])
 
 
-def capsule(a, b, radius: float, segments: int = _SEGMENTS) -> Manifold:
-    """A capsule (cylinder with hemispherical caps) between points ``a`` and ``b``."""
+def _cylinder_between(a, b, radius: float, segments: int) -> Manifold:
+    """A flat-ended cylinder of ``radius`` spanning ``a``..``b``."""
+    cyl = Manifold.cylinder(float(np.linalg.norm(b - a)), radius, radius,
+                            segments, center=True)
+    transform = np.column_stack([_rot_z_to(b - a), 0.5 * (a + b)])
+    return cyl.transform(transform.tolist())
+
+
+def capsule_parts(a, b, radius: float, segments: int = _SEGMENTS):
+    """The primitives a capsule is made of, *unfused*.
+
+    A caller that is going to union its capsules together anyway wants these
+    rather than :func:`capsule`.  Union is associative, so fusing three
+    primitives here and fusing the results again reaches the same solid through
+    hundreds of nested booleans where one flat batch would do.
+    """
     a = np.asarray(a, float)
     b = np.asarray(b, float)
-    length = float(np.linalg.norm(b - a))
-    if length < 1e-9:
-        return Manifold.sphere(radius, segments).translate(tuple(a))
-    cyl = Manifold.cylinder(length, radius, radius, segments, center=True)
-    transform = np.column_stack([_rot_z_to(b - a), 0.5 * (a + b)])
-    parts = [
-        cyl.transform(transform.tolist()),
+    if float(np.linalg.norm(b - a)) < 1e-9:
+        return [Manifold.sphere(radius, segments).translate(tuple(a))]
+    return [
+        _cylinder_between(a, b, radius, segments),
         Manifold.sphere(radius, segments).translate(tuple(a)),
         Manifold.sphere(radius, segments).translate(tuple(b)),
     ]
+
+
+def swept_tube_parts(points, radius: float, segments: int = _SEGMENTS):
+    """Unfused primitives for a tube of ``radius`` swept along ``points``.
+
+    One capsule per segment builds the sphere at every interior sample **twice**
+    — as the end cap of one segment and again as the start cap of the next — so
+    an ``n``-sample spline costs ``3n - 3`` primitives where ``2n - 1`` is the
+    same solid.  Emitting one sphere per sample and one cylinder per segment
+    drops the duplicates and leaves the caller a single flat union.
+    """
+    pts = np.asarray(points, float)
+    if len(pts) == 0:
+        return []
+    parts = [Manifold.sphere(radius, segments).translate(tuple(p)) for p in pts]
+    for a, b in zip(pts[:-1], pts[1:]):
+        if float(np.linalg.norm(b - a)) < 1e-9:
+            continue
+        parts.append(_cylinder_between(a, b, radius, segments))
+    return parts
+
+
+def capsule(a, b, radius: float, segments: int = _SEGMENTS) -> Manifold:
+    """A capsule (cylinder with hemispherical caps) between points ``a`` and ``b``."""
+    parts = capsule_parts(a, b, radius, segments)
+    if len(parts) == 1:
+        return parts[0]
     return Manifold.batch_boolean(parts, m3d.OpType.Add)
 
 
