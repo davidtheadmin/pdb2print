@@ -10,7 +10,7 @@ type: software
 license: MIT
 repository-code: "https://github.com/davidtheadmin/pdb2print"
 url: "https://pdb2print.org"
-doi: "10.5281/zenodo.21599702"
+doi: "10.5281/zenodo.21599701"
 year: 2026
 keywords:
   - 3D printing
