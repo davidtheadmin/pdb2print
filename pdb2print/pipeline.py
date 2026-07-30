@@ -7,6 +7,7 @@ chains plus a small report so callers can surface progress and warnings.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -22,6 +23,63 @@ class BuildCancelled(RuntimeError):
     re-raise it rather than swallowing it into a "skipped this chain" warning and
     carrying on — a cancel has to unwind the whole build, not one chain of it.
     """
+
+
+#: Rough peak memory one large chain needs while its surface is meshed.  Measured
+#: 2026-07-30 at ``scale=1.5, spacing=0.35`` on a 1535-atom chain: ~780 MiB of
+#: RSS, almost all of it inside the EDT and marching cubes.  Finer settings cost
+#: more, so this is a floor, not a guarantee — which is why ``auto`` stays
+#: conservative and why the flag is off by default.
+_WORKER_PEAK_BYTES = 1024 ** 3
+
+
+def _auto_workers() -> int:
+    """Worker count from free RAM, not from core count.
+
+    Four cores are useless if the fourth worker is the one that gets OOM-killed
+    halfway through a build, so memory is the binding constraint and the one
+    this reads.  Falls back to a cautious 2 wherever free memory cannot be
+    queried (Windows has no ``sysconf``), because guessing high here is the
+    expensive mistake.
+    """
+    cpus = os.cpu_count() or 1
+    try:
+        free = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return max(1, min(cpus, 2))
+    return max(1, min(cpus, int(free // _WORKER_PEAK_BYTES)))
+
+
+def _worker_count() -> int:
+    """How many processes to mesh chains in — ``PDB2PRINT_WORKERS``.
+
+    Unset, ``0`` or ``1`` means the serial loop, byte for byte the code path that
+    shipped before this existed.  An integer is taken as given (so a box with
+    known headroom can be told what to do); ``auto`` sizes it from free RAM.
+    """
+    raw = os.environ.get("PDB2PRINT_WORKERS", "").strip().lower()
+    if not raw or raw in {"0", "1", "off", "false", "no"}:
+        return 1
+    if raw == "auto":
+        return _auto_workers()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
+def mesh_chain(chain, params: PrintParams):
+    """Mesh one chain: generate, apply the min-wall fallback, repair.
+
+    Module-level and taking only picklable arguments, because it is also the
+    function a worker process runs.  ``enforce_min_wall`` is a no-op for every
+    representation that currently exists (each owns its wall thickness at build
+    time) and stays only as a fallback for future thin ones; ``repair`` keeps all
+    sizeable components as a safety net.
+    """
+    mesh = geometry.generate_chain_mesh(chain, params)
+    mesh = meshops.enforce_min_wall(mesh, params)
+    return meshops.repair(mesh)
 
 
 @dataclass
@@ -54,6 +112,101 @@ class BuildReport:
         for w in self.warnings:
             lines.append(f"  ! {w}")
         return "\n".join(lines)
+
+
+def _accept_mesh(out: "BuildReport", chain, mesh, not_watertight: List[str]) -> None:
+    """Record one successfully meshed chain on the report.
+
+    Shared by the serial and parallel paths so the two cannot drift: the order
+    warnings are appended in, and which failures are fatal, is the same code
+    either way.
+    """
+    # Builders record any parameter they had to clamp to stay meshable (probe
+    # radius / grid spacing) so the user hears about it.
+    for note in mesh.metadata.get("notes", ()):
+        if note not in out.warnings:
+            out.warnings.append(note)
+    # A ligand that will not mesh cleanly is *dropped*, not fatal.  A chain is
+    # load-bearing — a complex missing a subunit is the wrong model and the user
+    # has to know — but a ligand is an addition, and taking the whole build down
+    # over one awkward cofactor would mean a structure that used to export fine
+    # stops exporting the moment ligands are switched on.  The warning says what
+    # was lost.
+    if not mesh.is_watertight:
+        if chain.mtype == MoleculeType.LIGAND:
+            out.warnings.append(
+                f"Left out {chain.display_name()} (chain "
+                f"{chain.chain_id}): its mesh did not come out watertight, so "
+                f"it could not be exported. The rest of the model is "
+                f"unaffected."
+            )
+            return
+        not_watertight.append(chain.label())
+    out.built.append((chain, mesh))
+
+
+def _mesh_chains_parallel(chain_list, params: PrintParams, out: "BuildReport",
+                          not_watertight: List[str], report, check_cancel,
+                          workers: int) -> None:
+    """Mesh every chain across ``workers`` processes.
+
+    **Processes, not threads.**  The hot kernels here — ``distance_transform_edt``,
+    ``marching_cubes``, the manifold booleans — hold the GIL, so threads would
+    serialise on exactly the work worth spreading.
+
+    **Spawn, not fork**, so a Windows dev box and a Linux container behave the
+    same way.  It costs a fresh interpreter and a fresh import of the geometry
+    stack per worker, which is why this is off unless asked for: on a small
+    build that start-up is more than the meshing it saves.
+
+    Results are reassembled **in chain order**, never completion order, so the
+    exported objects and the warning list do not depend on which worker happened
+    to finish first.  Only the progress messages arrive out of order, which is
+    honest — that is the order the work actually finished in.
+    """
+    import concurrent.futures as cf
+    import multiprocessing as mp
+
+    n = len(chain_list)
+    meshes: dict = {}
+    failures: dict = {}
+    pool = cf.ProcessPoolExecutor(max_workers=workers,
+                                  mp_context=mp.get_context("spawn"))
+    try:
+        futures = {pool.submit(mesh_chain, chain, params): i
+                   for i, chain in enumerate(chain_list)}
+        pending, done = set(futures), 0
+        while pending:
+            # A short timeout rather than blocking on completion: a cancel must
+            # be noticed while the workers are still busy, not only when one of
+            # them happens to hand something back.  Nothing can interrupt a
+            # boolean mid-flight, so a worker already inside one runs to the end
+            # of its chain either way — but the build stops waiting for the rest.
+            finished, pending = cf.wait(pending, timeout=0.5,
+                                        return_when=cf.FIRST_COMPLETED)
+            for fut in finished:
+                i = futures[fut]
+                done += 1
+                report(0.15 + 0.8 * (done / n),
+                       f"Meshed {chain_list[i].label()} ({done}/{n})…")
+                try:
+                    meshes[i] = fut.result()
+                except Exception as exc:      # keep going; report the bad chain
+                    failures[i] = exc
+            check_cancel()
+    except BaseException:
+        # Includes BuildCancelled.  Do not wait: the point of cancelling is to
+        # stop waiting.  Queued chains are dropped outright and the workers are
+        # torn down as they come free.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+
+    for i, chain in enumerate(chain_list):
+        if i in failures:
+            out.warnings.append(f"Skipped {chain.label()}: {failures[i]}")
+            continue
+        _accept_mesh(out, chain, meshes[i], not_watertight)
 
 
 def build_all(source: str, params: PrintParams,
@@ -106,46 +259,23 @@ def build_all(source: str, params: PrintParams,
 
     not_watertight = []
     n = len(chain_list)
-    for i, chain in enumerate(chain_list):
-        check_cancel()
-        base = 0.15 + 0.8 * (i / n)
-        report(base, f"Meshing {chain.label()} ({i + 1}/{n})…")
-        try:
-            # Each representation now owns its wall thickness at build time
-            # (surface: thick by construction; tube-slab: parametric offset on
-            # its primitives), so enforce_min_wall is a no-op for both and only
-            # exists as a fallback for future thin representations.  Repair keeps
-            # all sizeable components as a safety net.
-            mesh = geometry.generate_chain_mesh(chain, params)
-            mesh = meshops.enforce_min_wall(mesh, params)
-            mesh = meshops.repair(mesh)
-        except BuildCancelled:      # never downgrade a cancel to a skipped chain
-            raise
-        except Exception as exc:  # keep going; report the bad chain
-            out.warnings.append(f"Skipped {chain.label()}: {exc}")
-            continue
-        # Builders record any parameter they had to clamp to stay meshable
-        # (probe radius / grid spacing) so the user hears about it.
-        for note in mesh.metadata.get("notes", ()):
-            if note not in out.warnings:
-                out.warnings.append(note)
-        # A ligand that will not mesh cleanly is *dropped*, not fatal.  A chain is
-        # load-bearing — a complex missing a subunit is the wrong model and the
-        # user has to know — but a ligand is an addition, and taking the whole
-        # build down over one awkward cofactor would mean a structure that used to
-        # export fine stops exporting the moment ligands are switched on.  The
-        # warning says what was lost.
-        if not mesh.is_watertight:
-            if chain.mtype == MoleculeType.LIGAND:
-                out.warnings.append(
-                    f"Left out {chain.display_name()} (chain "
-                    f"{chain.chain_id}): its mesh did not come out watertight, so "
-                    f"it could not be exported. The rest of the model is "
-                    f"unaffected."
-                )
+    workers = min(_worker_count(), n)
+    if workers > 1:
+        _mesh_chains_parallel(chain_list, params, out, not_watertight,
+                              report, check_cancel, workers)
+    else:
+        for i, chain in enumerate(chain_list):
+            check_cancel()
+            base = 0.15 + 0.8 * (i / n)
+            report(base, f"Meshing {chain.label()} ({i + 1}/{n})…")
+            try:
+                mesh = mesh_chain(chain, params)
+            except BuildCancelled:  # never downgrade a cancel to a skipped chain
+                raise
+            except Exception as exc:  # keep going; report the bad chain
+                out.warnings.append(f"Skipped {chain.label()}: {exc}")
                 continue
-            not_watertight.append(chain.label())
-        out.built.append((chain, mesh))
+            _accept_mesh(out, chain, mesh, not_watertight)
 
     # Hard watertight gate: a non-watertight mesh must never reach the 3MF
     # exporter (slicers reject non-manifold geometry), so fail loudly here
