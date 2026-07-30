@@ -1,6 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "pdb2print: 3D-printable multi-material molecular models from PDB structures"
+version: "1.1.0"
+date-released: "2026-07-30"
 authors:
   - family-names: "Häckes"
     given-names: "David"
