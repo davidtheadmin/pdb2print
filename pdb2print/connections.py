@@ -1847,7 +1847,16 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         fit_notes.extend(f"After connecting — {note[0].lower()}{note[1:]}"
                          for note in late)
         # ...and say so plainly if anything survived that.
-        fit_notes.extend(interference.audit(mans, chains))
+        #
+        # ``resolve`` was called without a pre-computed overlap list, so it ran
+        # its own full sweep and ``_again`` *is* that sweep's result.  Empty means
+        # it found nothing, and a resolve that finds nothing returns ``mans``
+        # untouched — so ``audit`` would run a third identical O(n²) sweep over
+        # identical solids to reach the identical answer.  On a clean build, which
+        # is the normal one, that was a third of the interference stage spent
+        # confirming a known negative.
+        if _again:
+            fit_notes.extend(interference.audit(mans, chains))
 
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
     step(0.97, "Rebuilding meshes…")
