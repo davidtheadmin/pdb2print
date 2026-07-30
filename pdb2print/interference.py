@@ -255,7 +255,7 @@ def _measure_pieces(solid):
         chunks = solid.decompose() or [solid]
     except Exception:
         chunks = [solid]
-    measured: List[OverlapPiece] = []
+    sized: List[Tuple[float, object]] = []
     boxes: List[Tuple[np.ndarray, np.ndarray]] = []
     for chunk in chunks:
         if chunk is None or chunk.is_empty():
@@ -268,15 +268,25 @@ def _measure_pieces(solid):
             boxes.append((np.array(bb[:3], float), np.array(bb[3:], float)))
         except Exception:
             pass
+        sized.append((vol, chunk))
+    if not sized:
+        return [], boxes
+    # Rank on volume, then measure only what survives.  Volume comes straight
+    # from the kernel; a centroid and a principal axis cost a mesh conversion and
+    # an SVD each.  The two lines below have always thrown most of that away — a
+    # 50-base-pair duplex interferes at every rung, so ~50 lobes were measured in
+    # full and 12 were kept.
+    sized.sort(key=lambda t: -t[0])
+    cutoff = sized[0][0] * _PIECE_MIN_FRACTION
+    measured: List[OverlapPiece] = []
+    for vol, chunk in sized[:_MAX_PIECES]:
+        if vol < cutoff:
+            break
         center, normal = _centroid_and_extent(chunk)
         if center is None:
             continue
         measured.append(OverlapPiece(center=center, normal=normal, volume=vol))
-    if not measured:
-        return [], boxes
-    measured.sort(key=lambda p: -p.volume)
-    cutoff = measured[0].volume * _PIECE_MIN_FRACTION
-    return [p for p in measured if p.volume >= cutoff][:_MAX_PIECES], boxes
+    return measured, boxes
 
 
 # --------------------------------------------------------------------------
