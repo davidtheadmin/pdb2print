@@ -1,0 +1,23 @@
+# pdb2print — https://pdb2print.org/
+#
+# The whole site is one page and it is welcome in any index. Two trees are shut
+# off, for the same reason rather than for privacy:
+#
+#   /cache/  finished geometry, tens of megabytes per entry, on a small rented
+#            box with a bandwidth allowance. A crawler walking it would spend
+#            the month's traffic on files nobody asked for.
+#   /files/  one-time download addresses for a build that was just made. They
+#            expire, so an indexed one is a dead link by the time anyone clicks.
+#   /api/    POST endpoints and a health check. Nothing to index.
+#
+# Nothing here blocks the icons: Google reads the favicon as both Googlebot and
+# Googlebot-Image, and /favicon-192.png, /favicon.svg, /apple-touch-icon-180.png
+# and /og-image.png all sit at the root, covered by Allow: /.
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /cache/
+Disallow: /files/
+
+Sitemap: https://pdb2print.org/sitemap.xml
