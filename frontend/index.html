@@ -2744,6 +2744,17 @@
   // Shared by Generate and the display stand, which stream identically — the
   // stand endpoint was written to the same contract precisely so this handling
   // did not have to be written twice and kept in step.
+  // How long a stream may say nothing before it is treated as dead, and the
+  // sentinel the race resolves to when it does.
+  //
+  // The server sends a keepalive comment every 20 seconds whether or not it has
+  // anything to report, so silence past a minute is a broken connection and not
+  // a slow chain. Before that heartbeat existed this had to be set longer than
+  // the slowest legitimate quiet stretch — minutes — which made it a poor
+  // detector: it would sit through most of a real freeze before saying anything.
+  const STREAM_SILENCE_MS = 60000;
+  const STREAM_SILENT = Symbol('stream-silent');
+
   async function consumeStream(res) {
     const ctype = res.headers.get('content-type') || '';
     if (!ctype.includes('text/event-stream') || !res.body) {
@@ -2754,7 +2765,27 @@
     const decoder = new TextDecoder();
     let buf = '', finalResult = null;
     while (true) {
-      const { done, value } = await reader.read();
+      // A fetch stream has no timeout of its own: if the bytes simply stop —
+      // a proxy dropping the connection without closing it, a terminator lost
+      // on the way — this await never returns and the page sits there with a
+      // half-drawn bar until somebody reloads. That is the freeze, and this is
+      // the thing that notices it.
+      //
+      // The limit is deliberately generous. A large complex can spend minutes
+      // inside a single boolean with nothing to report, and calling a working
+      // build dead would be a worse bug than the one being fixed.
+      const silent = new Promise(r => setTimeout(() => r(STREAM_SILENT), STREAM_SILENCE_MS));
+      const step = await Promise.race([reader.read(), silent]);
+      if (step === STREAM_SILENT) {
+        try { await reader.cancel(); } catch (_) { /* already gone */ }
+        hideProgress();
+        setReport('The server stopped sending progress — nothing for '
+          + Math.round(STREAM_SILENCE_MS / 60000) + ' minutes. The build may still '
+          + 'be running on the server; reload the page to see if it finished, or '
+          + 'press Generate to try again.', true);
+        return;
+      }
+      const { done, value } = step;
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       let idx;

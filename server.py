@@ -173,6 +173,47 @@ def _sse(kind: str, data) -> str:
     return f"event: {kind}\ndata: {json.dumps(data)}\n\n"
 
 
+#: How long a stream may go quiet before it sends a keepalive.
+#:
+#: Progress is reported once per chain, and nothing reports from inside one, so
+#: a large structure at fine settings can legitimately say nothing for minutes.
+#: That is indistinguishable from a dead connection — to the browser, to the
+#: proxy, and to the user — so the difference is made explicit here rather than
+#: guessed at by whoever is watching.
+_HEARTBEAT_S = 20.0
+
+
+async def _stream_events(queue: asyncio.Queue):
+    """Yield SSE frames from ``queue`` until ``__done__``, keeping the line warm.
+
+    The heartbeat is an SSE *comment*: no event name, no data, ignored by the
+    front end's parser — but bytes on the wire, which is the whole job. It gives
+    the browser's read something to return, it gives Caddy something to flush,
+    and it means a silent connection really is a broken one.
+
+    The pending ``get`` is held across timeouts rather than cancelled and
+    remade. Cancelling a queue getter is the kind of thing that loses an item
+    once in a thousand builds and is never reproducible afterwards.
+    """
+    getter = None
+    try:
+        while True:
+            if getter is None:
+                getter = asyncio.ensure_future(queue.get())
+            done, _pending = await asyncio.wait({getter}, timeout=_HEARTBEAT_S)
+            if not done:
+                yield ": keepalive\n\n"
+                continue
+            kind, data = getter.result()
+            getter = None
+            if kind == "__done__":
+                return
+            yield _sse(kind, data)
+    finally:
+        if getter is not None:
+            getter.cancel()
+
+
 def _queue_message(ahead: int) -> str:
     if ahead == 1:
         return "Waiting for the server — 1 build ahead of you…"
@@ -485,23 +526,48 @@ def _sweep_output_root(now: Optional[float] = None) -> int:
 _RECENT_BUILDS: "OrderedDict[str, dict]" = OrderedDict()
 _RECENT_LOCK = threading.Lock()
 
-#: How many builds to hold. Deliberately small: a large complex is hundreds of
-#: megabytes of triangles, and this process also has to mesh the next one.
+#: How many *mesh-holding* builds to keep. Deliberately small: a large complex
+#: is hundreds of megabytes of triangles, and this process also has to mesh the
+#: next one.
 _RECENT_MAX = 2
+
+#: How many tokens to keep in total. A cache hit remembers no geometry — a key
+#: and a params object, bytes not megabytes — so those are worth holding far
+#: longer than the meshes are, and they must not push a real build out.
+_RECENT_TOKENS = 64
 
 
 def _remember_build(token: str, source: str, params: PrintParams, built,
-                    meta: Optional[dict] = None) -> None:
+                    meta: Optional[dict] = None, hit: Optional[dict] = None) -> None:
+    """Record what a token was built from, so a stand does not re-derive it.
+
+    ``built`` are the finished meshes when this process made them, and ``None``
+    when the result came off the disk cache — in which case ``hit`` is that
+    entry, and the meshes can be reopened from its per-chain STL zip.
+
+    Recording ``params`` matters as much as either.  The stand routes rebuild
+    their own ``PrintParams`` from the form the browser posts, and that form is
+    read at the moment the user clicks "Create display stand" — so a setting
+    nudged between generating and standing produced a different cache key, a
+    miss, and a full rebuild of a model that was sitting right there.  The
+    token now says what the model on screen was actually built from.
+    """
     with _RECENT_LOCK:
         _RECENT_BUILDS[token] = {
-            "built": built, "params": params, "source": source,
+            "built": built, "params": params, "source": source, "hit": hit,
             # What the plaque would print. Kept with the build because that is
             # the last moment it is cheap: an uploaded file is deleted when the
             # build finishes, and a fetched one is a download away.
             "meta": dict(meta or {}),
         }
         _RECENT_BUILDS.move_to_end(token)
-        while len(_RECENT_BUILDS) > _RECENT_MAX:
+        # Two ceilings, because the two kinds of entry cost wildly different
+        # amounts. Oldest first, and only mesh-holding entries count against
+        # the small one.
+        meshy = [k for k, e in _RECENT_BUILDS.items() if e.get("built") is not None]
+        for stale in meshy[:max(0, len(meshy) - _RECENT_MAX)]:
+            _RECENT_BUILDS.pop(stale, None)
+        while len(_RECENT_BUILDS) > _RECENT_TOKENS:
             _RECENT_BUILDS.popitem(last=False)
 
 
@@ -573,7 +639,18 @@ def _run_and_export(source: str, params: PrintParams, progress,
         hit = None          # a broken cache must never take the app down
     if hit:
         progress(1.0, "Loaded from cache.")
-        return _cached_result(hit, source)
+        result = _cached_result(hit, source)
+        # A hit used to return here carrying no token, which quietly cost the
+        # stand everything: with nothing to recall, it re-derived the params
+        # from the live settings form and looked the build up again, and any
+        # drift in that form meant a full rebuild of the model on screen. The
+        # token holds no geometry — just this entry and the params that found
+        # it — so the stand can reopen the STL zip directly.
+        token = uuid.uuid4().hex
+        _remember_build(token, source, params, None,
+                        result.get("plaque_meta"), hit=hit)
+        result["build_token"] = token
+        return result
 
     try:
         report = build_all(source, params, progress=progress,
@@ -846,16 +923,24 @@ async def generate(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
         def work():
+            # ``__done__`` is queued from an outer finally, and that placement is
+            # the whole point of it: the reader loop below ends on that event and
+            # on nothing else, so any path that skips it leaves the browser
+            # waiting on a connection that will never speak again.  There is no
+            # timeout on a fetch stream — that is the freeze only a refresh
+            # clears.  Whatever happens above, the stream gets its terminator.
             try:
-                result = _run_and_export(source, params, progress,
-                                         should_cancel=cancelled.is_set)
-            except Exception as exc:  # defensive: _run_and_export shouldn't raise
-                result = _error_payload(str(exc))
+                try:
+                    result = _run_and_export(source, params, progress,
+                                             should_cancel=cancelled.is_set)
+                except Exception as exc:  # _run_and_export shouldn't raise
+                    result = _error_payload(str(exc))
+                finally:
+                    if tmp_upload_dir:
+                        shutil.rmtree(tmp_upload_dir, ignore_errors=True)
+                loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
             finally:
-                if tmp_upload_dir:
-                    shutil.rmtree(tmp_upload_dir, ignore_errors=True)
-            loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
-            loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
+                loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
         # Wait for a slot before starting any geometry.  The upload has already
         # been written to disk by this point, so a queued request costs a temp
@@ -870,11 +955,8 @@ async def generate(
             acquired = True
 
             loop.run_in_executor(None, work)
-            while True:
-                kind, data = await queue.get()
-                if kind == "__done__":
-                    break
-                yield _sse(kind, data)
+            async for frame in _stream_events(queue):
+                yield frame
         finally:
             # Reached on normal completion *and* when the client disconnects
             # (the generator is closed / cancelled).  Setting it after a normal
@@ -1067,11 +1149,30 @@ def _built_from_cache(hit: dict, source: str = ""):
     if not objects:
         return None
 
+    from pdb2print import meshops
+
     built = []
     for obj in objects:
         mesh = by_label.get(obj.label())
         if mesh is None:
             return None            # a partial model is worse than a rebuild
+        # An STL is a triangle soup written in float32, so what comes back is
+        # not the mesh that went in: vertices that were one point are now
+        # several, and putting them back together is a tolerance, not an
+        # identity.  Usually it closes.  When it does not, the crack is
+        # invisible right up until the 3MF exporter's watertight gate refuses
+        # the finished stand — and by then the user has watched a stand being
+        # built and cannot download it, which is the worst place to find out.
+        #
+        # So a reopened mesh has to clear the same bar a freshly built one
+        # does.  If it cannot, this route declines and the caller rebuilds:
+        # slower, and correct, which is the right way round.
+        try:
+            mesh = meshops.repair(mesh)
+        except Exception:
+            return None
+        if not mesh.is_watertight:
+            return None
         built.append((obj, mesh))
     return built or None
 
@@ -1088,10 +1189,19 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
     not at all.
     """
     entry = _recall_build(token)
-    if entry is not None:
+    if entry is not None and entry.get("built") is not None:
         if progress:
             progress(0.30, "Using the model already built…")
         return entry["built"], entry["params"], "meshes in memory"
+    if entry is not None and entry.get("hit"):
+        # The token came from a cache hit: no meshes were ever made in this
+        # process, but the entry that served it is known exactly, so there is
+        # nothing to look up and nothing to get wrong.
+        if progress:
+            progress(0.20, "Reopening the cached model…")
+        built = _built_from_cache(entry["hit"], source)
+        if built is not None:
+            return built, entry["params"], "the cached build"
     try:
         # Look the build up the way the build itself was stored: with the stand
         # switched OFF. canonical_params drops the whole stand block when it is
@@ -1383,13 +1493,17 @@ async def stand(request: Request):
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
         def work():
+            # Same guarantee as /api/generate: the terminator is queued from an
+            # outer finally so no failure above can leave the stream silent.
             try:
-                result = _run_stand(source, params, token, progress,
-                                    should_cancel=cancelled.is_set)
-            except Exception as exc:
-                result = _error_payload(str(exc))
-            loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
-            loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
+                try:
+                    result = _run_stand(source, params, token, progress,
+                                        should_cancel=cancelled.is_set)
+                except Exception as exc:
+                    result = _error_payload(str(exc))
+                loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, ("__done__", None))
 
         # Stands go through the same gate as builds.  A stand that hits the
         # cache is nearly free, but one that misses runs the whole pipeline —
@@ -1405,11 +1519,8 @@ async def stand(request: Request):
             acquired = True
 
             loop.run_in_executor(None, work)
-            while True:
-                kind, data = await queue.get()
-                if kind == "__done__":
-                    break
-                yield _sse(kind, data)
+            async for frame in _stream_events(queue):
+                yield frame
         finally:
             cancelled.set()
             _hand_back_slot(gate, ticket, waiter, acquired)

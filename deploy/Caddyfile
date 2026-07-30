@@ -22,7 +22,20 @@ pdb2print.org, www.pdb2print.org {
 		max_size 100MB
 	}
 
-	encode gzip
+	# Compress everything except the two Server-Sent Events endpoints.
+	#
+	# `encode gzip` on its own matches by content type, and `text/event-stream`
+	# matches `text/*` — so the progress stream was being compressed. Caddy does
+	# pass a flush through the encoder, so this is not known to have broken
+	# anything; it is excluded because it is the one component on the server path
+	# that is not on the local one, it sits directly on the bytes that go quiet
+	# when the site freezes, and gzip buys nothing on a stream of hundred-byte
+	# JSON frames. If freezes continue after this, the proxy is exonerated and
+	# the cause is upstream.
+	@compressible {
+		not path /api/generate /api/stand
+	}
+	encode @compressible gzip
 
 	header {
 		# Standard hardening. No CSP here because the front end loads
