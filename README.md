@@ -8,9 +8,10 @@ your slicer understands.
 
 ### **[pdb2print.org →](https://pdb2print.org)**
 
-![PDB 9MBB printed as two chains in two filaments on a Prusa Core One](docs/img/9mbb-assembled-front.jpg)
+![The p53 tetramer bound to DNA, printed from PDB 1TUP in five filaments and standing on its generated display stand](docs/img/1tup-p53-dna.jpg)
 
-*9MBB, straight out of the tool. Two chains, two filaments, two magnets.*
+*1TUP — p53 bound to DNA. Five chains, five filaments, magnets at every interface,
+on a stand the tool generated with the model.*
 
 ## What it does
 
@@ -26,7 +27,7 @@ usual tools are built around proteins and treat nucleic acids as an afterthought
 so you get ribbons too thin to survive the bed and have to thicken them by hand.
 Getting sensible colours out was worse.
 
-So this does three things properly:
+So this does five things properly:
 
 **Multi-colour complexes.** Every chain is its own named object in a single 3MF.
 Open it, click a chain, pick a filament. Nothing to align by hand, nothing to
@@ -40,12 +41,34 @@ so the helix keeps its shape instead of flopping about as two loose spirals.
 direction the joint can actually come apart in, and cuts a press-fit pocket into
 each side. Print, push the magnets in, snap it together.
 
+![Haemoglobin printed from 2HHB being pulled apart and snapped back together by hand](docs/img/2hhb-magnets.webp)
+
+*2HHB, α₂β₂. Pockets cut where the subunits touch, 4 mm magnets pressed in.*
+
 **Bound ligands.** Switch them on and a drug, a cofactor or a substrate comes out
-as its own object in its own filament, ball-and-stick, with the protein around it
-carved into an exact negative — so the ligand lifts out of its pocket and drops
-back in.
+as its own object in its own filament, with the protein around it carved into an
+exact negative — so the ligand lifts out of its pocket and drops back in. Four
+styles, from ball-and-stick to a fused spacefill lump that survives a nozzle.
+
+**A display stand.** After a build, turn the model to the pose you want and the
+tool solves a stand for it: a plate, one to three columns whose tops are hollowed
+to the underside of that exact pose, and an apron carrying an engraved plaque with
+the entry ID, the title, a scale bar and a colour key. It comes out in the same
+3MF as separate objects.
+
+![A 1TUP print on its generated stand, with the engraved plaque reading the entry ID, title, scale bar and chain colour key](docs/img/1tup-stand.jpg)
 
 And it runs in a browser, so there's nothing to install.
+
+### Does it come out looking like the structure?
+
+![The 9P3Y print photographed from above next to the Molecule of the Month illustration of the same complex, at the same scale and orientation](docs/img/9p3y-vs-motm.jpg)
+
+Left, printed from 9P3Y at 1.2 mm/Å; right, the July 2026 Molecule of the Month
+illustration of the same Andes virus glycoprotein tetramer. Same view, same scale,
+nothing moved but the camera. Illustration by Janet Iwasa, RCSB PDB,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) —
+[doi:10.2210/rcsb_pdb/mom_2026_7](https://doi.org/10.2210/rcsb_pdb/mom_2026_7).
 
 ## Using it
 
@@ -75,10 +98,19 @@ base. The three chips at the top set the tube-slab look in one click:
 ### 3. Decide about ligands
 
 Off by default. Turn **Include ligands** on and anything bound that is not
-protein, nucleic acid or water becomes its own object: the inhibitor in 9YMP, the
-four haems in 2HHB. Each one is ball-and-stick, gets its own filament, and sits in
-a pocket carved to its shape, held by friction — no magnet, because a 4 mm magnet
-is bigger than most drugs.
+protein, nucleic acid or water becomes its own object: the KRAS inhibitor in 9YMP,
+the four haems in 2HHB. Each one gets its own filament and sits in a pocket carved
+to its shape, held by friction — no magnet, because a 4 mm magnet is bigger than
+most drugs.
+
+Four styles, in order of how likely they are to survive the printer:
+
+| | |
+|---|---|
+| **Spacefill** | Van der Waals spheres fused into one solid. The chunkiest and the safest. |
+| **Surface** | The same molecular surface the protein uses, so drug and pocket are built the same way and match. |
+| **Ball & stick** | Atoms as spheres, bonds as rods, sized independently. Reads as chemistry. |
+| **Sticks** | Bonds only. Clearest, most fragile. |
 
 It is opt-in because it changes the protein too, not just what is in the box. The
 host ends up with a drug-shaped void in it, and on a molecular surface that void is
@@ -114,20 +146,23 @@ is already thick everywhere.
 
 ### 5. Connect the chains
 
-Off by default. Turn on **Connect chains** and pick one:
+Under **Printability → Assembly**.
 
-**Fixed joint** welds the chains in plastic, either by growing them together
-(Inflate) or bridging them with a rod (Bridge). Comes off the printer as one
-piece.
-
-**Magnets** cuts a pocket in each side instead, so you get separate parts that
-snap together. Set the diameter and thickness to match the magnets you own.
-Press-fit clearance defaults to 0.2 mm, which is right on a Prusa Core One —
+**Takes apart** is the default: the chains stay separate objects. Held by
+**Magnets** in a pocket cut into each side, or by **Nothing** at all, which is
+what you start with. Set the magnet diameter and thickness to match the ones you
+own. Press-fit clearance defaults to 0.2 mm, which is right on a Prusa Core One —
 raise it if the magnets won't go in, lower it if they fall out. The preview
 highlights where they'll end up.
 
+**One piece** welds the chains in plastic instead, either by growing them together
+(**Inflate**, nothing to size) or bridging them with a rod (**Bridges**, you set
+the diameter). Comes off the printer assembled.
+
 **Connect DNA base pairs** is the one that welds the two strands of a duplex.
 Leave it on for DNA unless you specifically want them separate.
+
+![The five chains of 1TUP laid out separately, magnets seated in the pockets](docs/img/1tup-chains-apart.jpg)
 
 ### 6. Download and slice
 
@@ -139,6 +174,26 @@ Grab the **3MF**. In PrusaSlicer:
 
 If you used magnets, push one into each pocket after printing, then put the
 halves together.
+
+### 7. Put it on a stand
+
+Optional, and only after a build. **Create display stand** adds a plate, one to
+three columns hollowed to fit the underside of the model, and a front apron
+carrying an engraved plaque.
+
+Turn the model to the pose you want first: whatever ends up down on your screen
+becomes down on the desk. **Roll** spins the view in place — the one turn orbiting
+cannot do — but while it is off zero, dragging follows the rolled picture, so aim
+first and roll last. Lock the view and the stand settings open on the right with a
+live sketch that redraws as you change things.
+
+The stand arrives in the same 3MF as separate objects, so plate, columns and
+lettering can each take a filament. Printed in one material the raised letters sit
+loose in their recesses — glue them, or assign a second filament. Stands are never
+cached: they are keyed to a pose nobody else will repeat, so each one is solved
+fresh.
+
+![Close-up of a stand column, its top hollowed to the exact underside of the model it carries](docs/img/1tup-stand-column.jpg)
 
 ## Running it locally
 
@@ -226,15 +281,23 @@ To deploy an update: `git pull && docker compose up -d --build`.
 ```
 server.py                 FastAPI: serves the page and /api/generate
 frontend/index.html       the UI, one file, no build step
+icons/                    logo and wordmark, wordmark as outlines
+docs/img/                 the photographs this README uses
 pdb2print/
   io.py                   RCSB fetch and file loading
   chains.py               chain split, protein/nucleic/ligand classification
+  names.py                entry titles and chain labels for the plaque
   config.py               all settings
   presets.py              the preset chips
   cache.py                build cache
   geometry.py             dispatch to a representation
   representations/        surface, cartoon, tube_slab, ligand
   connections.py          magnets, bridges, base pairs
+  interference.py         finds and resolves overlapping chains
+  meshops.py              repair, minimum wall
+  stand.py                display stand: plate, columns, plaque
+  typeset.py              outline typefaces for the plaque
+  strokefont.py           the single-stroke fallback typeface
   export.py               3MF, STL, GLB
   pipeline.py             build_all()
 tests/
@@ -291,6 +354,15 @@ BibTeX:
 Structures from the [RCSB Protein Data Bank](https://www.rcsb.org/). Geometry by
 [manifold3d](https://github.com/elalish/manifold), 3MF via
 [lib3mf](https://github.com/3MFConsortium/lib3mf).
+
+The Molecule of the Month illustration in the 9P3Y comparison is by Janet Iwasa,
+RCSB PDB, used under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/):
+Iwasa, J. (2026). *Molecule of the Month: Hantavirus.* RCSB Protein Data Bank.
+[doi:10.2210/rcsb_pdb/mom_2026_7](https://doi.org/10.2210/rcsb_pdb/mom_2026_7).
+
+The plaque typefaces are subsets of DejaVu Sans and DejaVu Serif under the
+DejaVu/Bitstream Vera licence. The wordmark is IBM Plex Sans, shipped as outlines,
+under the [SIL Open Font License 1.1](icons/LICENSE-IBMPlex.txt).
 
 ## License
 
