@@ -239,6 +239,12 @@ __marimo__/
 # anyone reading the project.
 /private/
 
+# Photo and video originals. The phone files are 4-6 MB each and the clips 20 MB;
+# git would keep every byte forever. What the README needs lives in docs/img/ at
+# web size with the metadata stripped, and is committed. Keep the originals here
+# for Reddit, mail and print, where they should be big.
+/media/
+
 # Staging area for files removed from the repo but not yet deleted from disk
 # (the Cowork device bridge cannot unlink, so removals land here first).
 /_to_delete/

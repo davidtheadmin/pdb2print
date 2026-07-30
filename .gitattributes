@@ -4,6 +4,9 @@
 
 # Binary, never touch.
 *.png binary
+*.webp binary
+*.gif binary
+*.mp4 binary
 *.jpg binary
 *.jpeg binary
 *.3mf binary

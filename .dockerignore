@@ -14,3 +14,6 @@ commit-v3.ps1
 # Docs are for the repo, not the running app. The cache is NOT excluded — the
 # pre-generated entries are the whole point of shipping it.
 docs/
+
+# Photo and video originals. Not needed by the app and 78 MB of build context.
+media/
