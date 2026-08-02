@@ -2809,7 +2809,12 @@
     if (data.connections && data.connections.length) {
       const cs = data.connections.map(c => {
         const n = c.count > 1 ? ' ×' + c.count : '';
-        return `${c.a}↔${c.b} ${c.method}${n}${c.applied ? '' : ' (skipped)'}`;
+        // The *kind* as well as the method. The rule that forces DNA-DNA to a
+        // pin has no exceptions, so a magnet appearing between two strands
+        // means the pair was not classified DNA-DNA — and without the kind on
+        // screen there is no way to tell that from the outside.
+        const k = c.kind ? ` [${c.kind}]` : '';
+        return `${c.a}↔${c.b} ${c.method}${k}${n}${c.applied ? '' : ' (skipped)'}`;
       }).join(', ');
       text += (text ? '\n\n' : '') + 'Connections: ' + cs;
     }
