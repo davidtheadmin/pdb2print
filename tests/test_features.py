@@ -377,9 +377,12 @@ def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
     """
     report = build_all(COMPLEX, _params(
         connect=True, use_magnets=True, socket=False, contact_threshold_mm=4.0,
-        connector_diameter_mm=3.0, magnet_thickness_mm=1.0))  # 2T = 2.0 mm
+        connector_diameter_mm=3.0, magnet_thickness_mm=0.1))  # 2T = 0.2 mm
     assert _all_watertight_single(report)
-    # The A↔P contact (~3 mm gap) exceeds 2×1.0 mm and must be reported skipped.
+    # The new probe-volume search seats joints much closer than the old
+    # nearest-point one did, so the thickness has to be genuinely tiny for
+    # no seat on this fixture to be spannable. The rule under test is
+    # unchanged: 2×thickness must reach across, or the magnet is skipped.
     skipped = [c for c in report.connections
                if c["method"] == "magnet" and not c["applied"]
                and "thickness" in c["note"]]
@@ -388,8 +391,10 @@ def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
 
 def test_socket_bridges_a_gap_that_bare_magnets_cannot():
     """The collar spans the gap, so the same joint that was skipped now builds."""
+    # Thin enough that no seat the search can find is spannable bare — see
+    # the previous test. The point is the collar, not the number.
     kw = dict(connect=True, use_magnets=True, contact_threshold_mm=4.0,
-              connector_diameter_mm=3.0, magnet_thickness_mm=1.0)
+              connector_diameter_mm=3.0, magnet_thickness_mm=0.1)
     bare = build_all(COMPLEX, _params(socket=False, **kw))
     socketed = build_all(COMPLEX, _params(socket=True, **kw))
     assert _all_watertight_single(socketed)
