@@ -2573,6 +2573,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     continue
                 if cp.use_magnets:
                     method = "magnet"
+                    first_mark = len(markers)
                     ok, note = _apply_magnet(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
                         markers, overlap=overlap,
@@ -2588,6 +2589,14 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         # insisting would only cost a joint.
                         hidden_weight=(cp.seat_hidden_weight_flat
                                        if kind == "protein-protein" else None))
+                    # Which two parts each magnet belongs to. Nothing carried
+                    # that before, so a marker could not be told apart from a
+                    # third chain that happens to cross the same line -- which
+                    # is a different problem with a different answer, and one
+                    # this joint is not the place to solve.
+                    for mark in markers[first_mark:]:
+                        mark["a"] = chains[i].chain_id
+                        mark["b"] = chains[j].chain_id
                 else:
                     method = "bridge"
                     ok, note = _apply_bridge(

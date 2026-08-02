@@ -369,41 +369,74 @@ def test_inflate_reports_a_cartoon_only_joint_as_skipped():
     assert cx._inflate_shares(0, 1, 0.5, [_Stub(), _Stub()], p) == []
 
 
+def _facing_blocks(gap_mm: float, size: float = 14.0):
+    """Two solid blocks facing each other across a gap of exactly ``gap_mm``.
+
+    The gap rule below is about a *gap*, so the fixture has to contain one, and
+    a structure fixture does not reliably provide it: the probe-volume search
+    deliberately seats a joint where the two surfaces come closest, so on
+    mini_complex it lands on a contact with essentially no gap at all and the
+    rule under test never fires. Carve clearance does not manufacture one
+    either -- the seat gap is measured between the two surface crossings along
+    the joint axis, not set by the clearance. Two blocks a known distance apart
+    is the honest way to build the case, and it exercises the same code path:
+    ``_apply_magnet`` on a real pair of manifolds.
+
+    Subdivided rather than left as eight corners, because the search reads the
+    mesh vertices as its surface cloud and a bare box has none anywhere near
+    the joint axis.
+    """
+    import numpy as np
+    import trimesh
+    from pdb2print.representations import _manifold
+
+    meshes, mans = [], []
+    for sign in (-1.0, 1.0):
+        m = trimesh.creation.box(extents=(size, size, size))
+        m.apply_translation([sign * (size / 2.0 + gap_mm / 2.0), 0.0, 0.0])
+        m = m.subdivide_to_size(1.0)
+        m.merge_vertices()
+        meshes.append(m)
+        mans.append(_manifold.from_trimesh(m))
+    return mans, meshes
+
+
+def _blocks_join(gap_mm: float, socket: bool):
+    """Try one magnet joint across ``gap_mm``; returns ``(ok, note, markers, parts)``."""
+    from pdb2print import connections as cx
+    from pdb2print.representations import _manifold
+
+    mans, meshes = _facing_blocks(gap_mm)
+    cp = ConnectionParams(socket=socket, use_magnets=True,
+                          connector_diameter_mm=3.0,
+                          magnet_thickness_mm=0.5,      # 2T = 1.0 mm
+                          contact_threshold_mm=4.0)
+    markers: list = []
+    ok, note = cx._apply_magnet(mans, 0, 1, meshes[0], meshes[1], 1, cp,
+                                PrintParams(), markers)
+    return ok, note, markers, [_manifold.to_trimesh(m) for m in mans]
+
+
 def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
     """Bare magnets can only meet if 2×thickness spans the gap; else skip + explain.
 
     Only applies with the socket off — a socket collar closes the gap itself, so
     the thickness-vs-gap test is not a limit there (see the next test).
     """
-    report = build_all(COMPLEX, _params(
-        connect=True, use_magnets=True, socket=False, contact_threshold_mm=4.0,
-        connector_diameter_mm=3.0, magnet_thickness_mm=0.5,   # 2T = 1.0 mm
-        fit_clearance_mm=1.5))                                # carved gap 1.5 mm
-    assert _all_watertight_single(report)
-    # The gap is *constructed* rather than relied upon. The probe-volume search
-    # seats joints wherever the two surfaces come closest, so pinning a
-    # thickness against one fixture contact's natural gap only tested where
-    # that search happened to land. fit_clearance_mm is what the interference
-    # pass leaves between the carved parts, so it sets the gap directly: 1.5 mm
-    # of it against 2×0.5 mm of magnet, and no seat anywhere can be spanned.
-    skipped = [c for c in report.connections
-               if c["method"] == "magnet" and not c["applied"]
-               and "thickness" in c["note"]]
-    assert skipped, report.connections
+    ok, note, markers, parts = _blocks_join(1.5, socket=False)
+    assert not ok, note
+    assert "thickness" in note, note
+    assert markers == []
+    # Refusing must leave both parts exactly as they were.
+    assert all(p.is_watertight and p.body_count == 1 for p in parts)
 
 
 def test_socket_bridges_a_gap_that_bare_magnets_cannot():
     """The collar spans the gap, so the same joint that was skipped now builds."""
-    # Same constructed gap as the previous test: 1.5 mm carved, 1.0 mm of bare
-    # magnet to span it. The point is the collar, not the numbers.
-    kw = dict(connect=True, use_magnets=True, contact_threshold_mm=4.0,
-              connector_diameter_mm=3.0, magnet_thickness_mm=0.5,
-              fit_clearance_mm=1.5)
-    bare = build_all(COMPLEX, _params(socket=False, **kw))
-    socketed = build_all(COMPLEX, _params(socket=True, **kw))
-    assert _all_watertight_single(socketed)
-    placed = lambda r: sum(c["applied"] for c in r.connections if c["method"] == "magnet")
-    assert placed(socketed) > placed(bare)
+    ok, note, markers, parts = _blocks_join(1.5, socket=True)
+    assert ok, note
+    assert len(markers) == 1
+    assert all(p.is_watertight and p.body_count == 1 for p in parts)
 
 
 def test_socket_adds_material_and_pocket_removes_it():
@@ -734,12 +767,15 @@ def test_overhang_in_the_joint_path_is_cut_away():
         connector_diameter_mm=3.0, magnet_thickness_mm=1.5))
     assert _all_watertight_single(report)
     by_id = {c.chain_id: m for c, m in report.built}
-    ids = [c.chain_id for c, _m in report.built]
     for mark in report.connection_markers:
         center = np.asarray(mark["center"], float)
         axis = np.asarray(mark["axis"], float)
         radius = 0.5 * (mark.get("socket_diameter") or mark["diameter"])
-        for cid in ids:
+        # The two parts this magnet joins, and only those. A joint clears its
+        # own approach path; a third chain that happens to lie on the same line
+        # is a real and separate problem -- nothing cuts it, and nothing here
+        # pretends otherwise.
+        for cid in (mark["a"], mark["b"]):
             v = np.asarray(by_id[cid].vertices, float)
             rel = v - center
             t = rel @ axis
