@@ -516,21 +516,6 @@ _AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "global": 3.5,
 #: obstructed one reaches -600 at the default blocked weight — so these are a
 #: nudge against the top of the range, not against its whole span.)
 
-#: How *clean* the joint axis from each source is, for seat ranking (not axis
-#: selection).  An overlap lobe's thin axis and the local mass line are true
-#: interface normals, so the disc sits square and the joint reads clean;
-#: ``mass-flat`` is a good recovery but only fires on an awkward strip; the plain
-#: ``contact`` line is the noisy fallback and a seat that can only reach its axis
-#: that way is the one that ends up looking tilted.  Scaled by
-#: ``axis_quality_weight`` so a nearby seat with a better-founded normal can win.
-#: Deliberately *not* above ``mass``: the normal already earns its keep in the
-#: axis contest through _AXIS_PREFERENCE, and stacking a seat-ranking bonus on
-#: top of that would systematically promote seats on flat interfaces twice over
-#: for one property.
-_AXIS_QUALITY = {"probe": 1.0, "overlap": 1.0, "normal": 0.9, "mass": 0.9,
-                 "global": 0.85, "mass-flat": 0.7, "contact": 0.3}
-
-
 def _local_solid(man, center, radius):
     """One part's material inside a ball at ``center``, or ``None``.
 
@@ -711,11 +696,20 @@ def _blob_centre(blob):
 
 
 def _surface_along(points, origin, axis, radius: float):
-    """Where a cloud crosses a line: its extents along ``axis``, or ``None``."""
-    rel = np.asarray(points, float) - origin
-    t = rel @ axis
-    radial = np.linalg.norm(rel - np.outer(t, axis), axis=1)
-    near = radial <= radius
+    """Where a cloud crosses a line: its extents along ``axis``, or ``None``.
+
+    Written without an N x 3 temporary on purpose.  The obvious form -- subtract
+    the origin, then ``norm(rel - outer(t, axis))`` -- allocates four arrays the
+    size of the input, and :func:`_clear_depths` runs this over *every* vertex of
+    a chain, where those allocations are most of the cost.  Expanding both dot
+    products against the original array gives the same numbers with nothing
+    bigger than a column vector.
+    """
+    p = np.asarray(points, float)
+    t = p @ axis - float(origin @ axis)
+    d2 = (np.einsum('ij,ij->i', p, p) - 2.0 * (p @ origin)
+          + float(origin @ origin))
+    near = d2 - t * t <= radius * radius
     return t[near] if np.any(near) else None
 
 
@@ -769,6 +763,23 @@ def _balance_burial(seat: Seat, man_a, man_b, socket_r: float,
     still beaten by an already-even one.  That is the cheap direction of the
     trade: balancing the whole shortlist costs an order of magnitude more.
     """
+    # The cheap question first: are the two sides uneven at all? At shift 0 the
+    # collar sits inside the probe ball the seat already carries, so this costs
+    # two booleans against a small solid that is already cut -- and on most
+    # joints the answer is "even enough", which skips the two full-chain
+    # intersections below entirely. Those are the expensive kind: a sphere
+    # against a whole chain.
+    #
+    # A short-circuit, not a precondition: a seat that arrives without those
+    # solids simply pays for the full measurement below rather than being
+    # skipped.
+    if (seat.emb_a is not None and seat.emb_b is not None
+            and abs(_embedding(seat.emb_a, seat.center, -seat.axis,
+                               socket_r, need_depth)
+                    - _embedding(seat.emb_b, seat.center, seat.axis,
+                                 socket_r, need_depth)) <= _BALANCE_TOL):
+        return
+
     room = _BALANCE_MAX_SHIFT * need_depth
     # Cut a fresh pair of blobs for this. The probe ball is barely wider than
     # the collar it contains -- its floor is 1.5x the socket radius, and at
@@ -784,7 +795,7 @@ def _balance_burial(seat: Seat, man_a, man_b, socket_r: float,
     blob_a = _local_solid(man_a, seat.center, reach)
     blob_b = _local_solid(man_b, seat.center, reach)
     if blob_a is None or blob_b is None:
-        return
+        return                        # nothing to weigh; leave the seat alone
 
     def buried(shift):
         c = seat.center + seat.axis * shift
