@@ -344,12 +344,22 @@ class ConnectionParams:
     #: around the magnet and then undercuts it, leaving the magnet standing proud
     #: of a socket carved away from behind.
     #:
-    #: The cone is 45°, so its height is simply how far the radius has to come in,
-    #: held within the same extension budget above.  Its flat top is sized so its
-    #: area falls under ``socket_cap_exposed_max`` — the same threshold that
-    #: triggered the work — so what stays visible is below the level considered
-    #: worth acting on in the first place.
+    #: The cone's flat top is sized so its area falls under
+    #: ``socket_cap_exposed_max`` — the same threshold that triggered the work —
+    #: so what stays visible is below the level considered worth acting on in the
+    #: first place.
     socket_back_taper: bool = True
+    #: How tall that cone is, as a fraction of the natural 45° height (which is
+    #: simply how far the radius has to come in to reach the flat top).
+    #:
+    #: A full-height cone is a visible point on the back of the model. Flattening
+    #: it is the ask; the limit on how far is the printer, not the eye. At 1.0 the
+    #: taper is 45° from horizontal, exactly the FDM self-support limit. At 0.75
+    #: it is about 37° — still printable unsupported on most machines — and at
+    #: 0.6 about 31°, which is a shallow unsupported roof if the part is printed
+    #: with that face upward. Shortened rather than widened on purpose: widening
+    #: the flat top instead made the cap so flat it read as no cap at all.
+    socket_nose_scale: float = 0.75
     #: Extra radius on the bore cut through each part's *approach path*.  A joint
     #: is only assemblable if neither part has material sitting in the other's
     #: way, so anything of one part that reaches past the shared face inside the
@@ -462,7 +472,14 @@ class ConnectionParams:
     #: where a genuinely invisible magnet is achievable, so it counts for more.
     #: On a backbone tube there is nowhere to hide one and insisting would only
     #: cost the joint.
-    seat_hidden_weight_flat: float = 0.75
+    #:
+    #: Not 1.0: at full weight a fully exposed seat scores exactly zero, so on a
+    #: pair where nothing can be buried at all *every* candidate scores zero and
+    #: the pick becomes arbitrary — the ranking stops carrying information exactly
+    #: when it is needed. At 0.88 an exposed seat keeps 12% of its score, which is
+    #: little enough to lose to any buried rival and more than enough to still
+    #: rank against its equals.
+    seat_hidden_weight_flat: float = 0.88
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:

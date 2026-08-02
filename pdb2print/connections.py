@@ -1464,6 +1464,14 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     near = 1.0 - falloff * min(1.0, gap / reach) ** 2
     hide = cp.seat_hidden_weight if hidden_weight is None else float(hidden_weight)
     seat.hidden = float(seat_hidden)
+    # The same figure under the name the rest of the build reads it by.
+    # ``_resolve_back_faces`` uses it to decide whether to try *shortening* the
+    # collar before lengthening it, and ``_build_seat`` uses it to fit the back
+    # cone inside the collar instead of stacking it past the back face. Left
+    # unassigned when the probe search replaced ``_score_seats``, so it held its
+    # 0.0 default: every collar was lengthened first and every cone was stacked,
+    # which is the spike poking out of the back of a thin part.
+    seat.embedding = float(seat_hidden)
     seat.fill = float(min(frac_a, frac_b))
     # Multiplied, like the distance term, so a socket standing in open air
     # cannot be bought back with volume. At the default weight a fully exposed
@@ -1565,7 +1573,8 @@ def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
 def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 pocket: dict | None, socket_on: bool,
                 clearance: float = 0.3, cap_limit: float = 0.0,
-                extend_max: float = 0.0) -> Tuple[bool, str]:
+                extend_max: float = 0.0,
+                nose_scale: float = 1.0) -> Tuple[bool, str]:
     """Build one joint at ``seat`` on both parts, or leave both untouched.
 
     This is the single geometry path behind both joint types, in three steps per
@@ -1597,9 +1606,12 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
     reach = {i: seat.extend_a, j: seat.extend_b}
     cone = {i: seat.taper_a, j: seat.taper_b}
     top_ratio = float(np.sqrt(cap_limit)) if cap_limit > 0.0 else 0.0
-    # A 45° cone is the natural shape and needs no arbitrary constant — its
-    # height is just how far the radius has to come in.
-    nose_height = (min(socket_r * (1.0 - top_ratio), embed * extend_max)
+    # A 45° cone is the natural shape — its height is just how far the radius
+    # has to come in — but at full height it is a visible point on the back of
+    # the model, so ``nose_scale`` flattens it. Below about 0.7 the taper stops
+    # being self-supporting on an FDM printer; see ``socket_nose_scale``.
+    nose_height = (min(socket_r * (1.0 - top_ratio) * max(0.0, float(nose_scale)),
+                       embed * extend_max)
                    if top_ratio > 0.0 else 0.0)
     # How short the *cylindrical* part may be and still have a wall behind the
     # magnet, for the containment case below.
@@ -1808,7 +1820,8 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                             min_mult=min(1.0, (depth + 0.6) / max(embed, 1e-6)))
         ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
                               cp.socket, cp.path_clearance_mm,
-                              cp.socket_cap_exposed_max, cp.socket_extend_max)
+                              cp.socket_cap_exposed_max, cp.socket_extend_max,
+                              cp.socket_nose_scale)
         if not ok:
             reasons.append(why)
             continue
@@ -1859,7 +1872,8 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
         _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
         ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
                               None, True, cp.path_clearance_mm,
-                              cp.socket_cap_exposed_max, cp.socket_extend_max)
+                              cp.socket_cap_exposed_max, cp.socket_extend_max,
+                              cp.socket_nose_scale)
         if ok:
             placed += 1
         else:
