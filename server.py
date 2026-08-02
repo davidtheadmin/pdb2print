@@ -478,6 +478,100 @@ def index() -> FileResponse:
     )
 
 
+#: Every admitted build, while it is running: what it is, when it started, and
+#: what it last said.
+#:
+#: The freeze has been chased three times by reasoning about the code, because
+#: from the outside a build that is wedged and a build that is legitimately
+#: spending four minutes inside one boolean look identical -- both are silent,
+#: both keep the connection warm. This turns that into a question anyone can
+#: answer in a browser: open /api/debug and read how long it has been since the
+#: build last said anything, and what it was doing at the time.
+_LIVE: dict = {}
+_LIVE_LOCK = threading.Lock()
+
+
+def _live_start(ticket: int, what: str, source: str) -> None:
+    with _LIVE_LOCK:
+        _LIVE[ticket] = {"what": what, "source": source, "started": time.time(),
+                         "frac": 0.0, "msg": "admitted, not started yet",
+                         "said_at": time.time(),
+                         "thread": threading.current_thread().name}
+
+
+def _live_say(ticket: int, frac, msg) -> None:
+    with _LIVE_LOCK:
+        entry = _LIVE.get(ticket)
+        if entry is not None:
+            entry["frac"] = float(frac)
+            entry["msg"] = str(msg)
+            entry["said_at"] = time.time()
+            entry["thread"] = threading.current_thread().name
+
+
+def _live_end(ticket: int) -> None:
+    with _LIVE_LOCK:
+        _LIVE.pop(ticket, None)
+
+
+@app.get("/api/debug")
+def debug_state() -> JSONResponse:
+    """What the server is doing *right now*. Open it in a browser when it hangs.
+
+    Read it in this order:
+
+    * ``builds`` empty and your page still spinning -> nothing is running. The
+      request never got in, or it finished and the answer was lost on the way
+      back. A browser problem or a stream problem, not a geometry one.
+    * a build with a large ``silent_for`` -> it is alive and stuck inside one
+      operation. ``msg`` names which one. That is a geometry problem and the
+      structure and settings in ``source`` reproduce it.
+    * a build with a large ``waiting_to_start`` -> it was admitted and never
+      reached a worker thread. That is the pool starvation the separate build
+      and preview pools exist to prevent, and it would mean they are not.
+    * ``queued`` non-zero with nothing in ``builds`` -> a slot was taken and
+      never handed back. That wedges the site shut and is its own bug.
+
+    Times are seconds. No geometry, no side effects; safe to hit at any time.
+    """
+    now = time.time()
+    gate = _GATE
+    with _LIVE_LOCK:
+        builds = []
+        for ticket, e in sorted(_LIVE.items()):
+            started = e["started"]
+            builds.append({
+                "ticket": ticket, "what": e["what"], "source": e["source"],
+                "running_for": round(now - started, 1),
+                "silent_for": round(now - e["said_at"], 1),
+                "waiting_to_start": (round(now - started, 1)
+                                     if e["frac"] <= 0.0 else 0.0),
+                "frac": round(e["frac"], 3), "msg": e["msg"],
+                "thread": e["thread"],
+            })
+
+    def pool(p):
+        if p is None:
+            return None
+        return {"threads": len(getattr(p, "_threads", []) or []),
+                "max": getattr(p, "_max_workers", None),
+                "queued": getattr(getattr(p, "_work_queue", None), "qsize",
+                                  lambda: None)()}
+
+    return JSONResponse({
+        "now": round(now - _STARTED, 1),
+        "max_builds": _max_builds(),
+        "tickets_live": list(getattr(gate, "_tickets", []) or []) if gate else [],
+        "tickets_issued": getattr(gate, "_issued", 0) if gate else 0,
+        "slots_free": getattr(getattr(gate, "_sem", None), "_value", None)
+                      if gate else None,
+        "builds": builds,
+        "build_pool": pool(_BUILD_POOL),
+        "preview_pool": pool(_PREVIEW_POOL),
+        "recent_tokens": len(_RECENT_BUILDS),
+    })
+
+
 @app.get("/api/health")
 def health() -> JSONResponse:
     """What the *running process* actually has. Open it in a browser.
@@ -1255,6 +1349,7 @@ async def generate(
         started = threading.Event()
 
         def progress(frac, msg):
+            _live_say(ticket, frac, msg)
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
@@ -1298,11 +1393,13 @@ async def generate(
                 yield frame
             acquired = True
 
+            _live_start(ticket, "generate", str(source))
             worker = loop.run_in_executor(_build_pool(), work)
             watchdog = asyncio.ensure_future(_watch_start(queue, started))
             async for frame in _stream_events(queue):
                 yield frame
         finally:
+            _live_end(ticket)
             # Reached on normal completion *and* when the client disconnects
             # (the generator is closed / cancelled).  Setting it after a normal
             # finish is harmless — the worker has already returned.
@@ -1963,6 +2060,7 @@ async def stand(request: Request):
         started = threading.Event()
 
         def progress(frac, msg):
+            _live_say(ticket, frac, msg)
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
@@ -1995,11 +2093,13 @@ async def stand(request: Request):
                 yield frame
             acquired = True
 
+            _live_start(ticket, "stand", str(source))
             worker = loop.run_in_executor(_build_pool(), work)
             watchdog = asyncio.ensure_future(_watch_start(queue, started))
             async for frame in _stream_events(queue):
                 yield frame
         finally:
+            _live_end(ticket)
             cancelled.set()
             if watchdog is not None:
                 watchdog.cancel()
