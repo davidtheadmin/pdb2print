@@ -136,84 +136,35 @@ def dilate(man, amount: float):
     return _manifold.union([man.translate(tuple(v)) for v in offsets])
 
 
-def _solid_moments(mesh):
-    """``(volume, centroid, covariance)`` of the solid a closed mesh encloses.
-
-    Exact closed-form integrals over the tetrahedra spanned from the origin, so
-    the result depends on the *solid* and not at all on how it was triangulated.
-    That is the whole point. The previous version ran an SVD over the mesh's
-    vertices with every vertex weighted equally, and a boolean's output is not
-    uniformly tessellated — slivers where two surfaces nearly coincide, dense
-    clusters where they cross — so the principal axes followed the mesher.
-
-    Measured on 126 lobes built through both production meshing routes: for the
-    **same solid**, remeshed, the old vertex axis moved a median of 9.5 degrees,
-    p90 37.6, max 87.0. This moves 0.000, and not as a matter of luck — nothing
-    in these integrals can see the triangulation.
-
-    Also cheaper than what it replaces: ``trimesh.center_mass`` alone was ~47 ms
-    on a 47k-triangle lobe, this is ~21 ms and returns the covariance too.
-    """
-    verts = np.asarray(mesh.vertices, float)
-    faces = np.asarray(mesh.faces, np.int64)
-    if len(verts) < 4 or len(faces) < 4:
-        return 0.0, None, None
-    a, b, c = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
-    # Signed volume of each tetrahedron (origin, a, b, c).
-    vol6 = np.einsum("ij,ij->i", a, np.cross(b, c))
-    volume = float(vol6.sum()) / 6.0
-    if abs(volume) < 1e-12:
-        return 0.0, None, None
-    centroid = (np.einsum("i,ij->j", vol6, (a + b + c)) / 4.0) / (6.0 * volume)
-    # Second moment of each tet about the origin:
-    #   integral of x x^T = (V/20) * (aa^T + bb^T + cc^T + s s^T),  s = a+b+c
-    s = a + b + c
-    outer = (np.einsum("i,ij,ik->jk", vol6, a, a)
-             + np.einsum("i,ij,ik->jk", vol6, b, b)
-             + np.einsum("i,ij,ik->jk", vol6, c, c)
-             + np.einsum("i,ij,ik->jk", vol6, s, s)) / (6.0 * 20.0)
-    cov = outer / volume - np.outer(centroid, centroid)
-    return abs(volume), centroid, 0.5 * (cov + cov.T)
-
-
 def _centroid_and_extent(man) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """``(centre of mass, thin-axis unit vector)`` of one overlap fragment.
 
-    An interference lobe is usually a *lens*: wide across the interface, thin
-    through it.  Its smallest principal direction is then the interface normal,
-    and far better conditioned than any single nearest-point pair — which is why
-    a seat derived from the overlap sits square.  The sign is arbitrary here;
-    the caller orients it.
-
-    What it no longer does is read the axis off the mesh's *vertices* — see
-    :func:`_solid_moments` for why that was worth 9.5 degrees of noise.
-
-    It does **not** try to detect a lobe that is not a lens, and that omission
-    is deliberate.  A gate on ``sqrt(thin/mid)`` was written and removed: the
-    threshold separated the synthetic fixtures cleanly but was never measured
-    against real lobes, whose ratios span 0.13 to 0.96 — so it refused a large
-    and unknown share of perfectly good interfaces.  Worse, refusing here does
-    not send the seat to the axis search as intended; ``_overlap_seats`` falls
-    back to a single nearest-vertex pair, which is the noisiest estimator in the
-    codebase.  A gate is still the right idea, but it needs a measured threshold
-    and a fallback that goes somewhere better than that.
+    An interference lobe is a *lens*: wide across the interface, thin through
+    it.  Its smallest principal direction is therefore the interface normal, and
+    it is far better conditioned than any single nearest-point pair — which is
+    the whole reason a seat derived from the overlap sits square.  The sign is
+    arbitrary here; the caller orients it.
     """
     try:
         mesh = _manifold.to_trimesh(man)
     except Exception:
         return None, None
-    volume, centre, cov = _solid_moments(mesh)
-    if centre is None:
+    verts = np.asarray(mesh.vertices, float)
+    if len(verts) < 4:
         return None, None
     try:
-        evals, evecs = np.linalg.eigh(cov)          # ascending
+        center = np.asarray(mesh.center_mass, float)
     except Exception:
-        return centre, None
-    if float(evals[1]) <= 1e-15:
-        return centre, None                # degenerate; nothing to read
-    axis = np.asarray(evecs[:, 0], float)
-    n = float(np.linalg.norm(axis))
-    return centre, (axis / n if n > 1e-12 else None)
+        center = verts.mean(axis=0)
+    try:
+        _u, _s, vh = np.linalg.svd(verts - verts.mean(axis=0), full_matrices=False)
+    except Exception:
+        return center, None
+    if len(vh) < 3:
+        return center, None
+    thin = vh[-1]
+    n = float(np.linalg.norm(thin))
+    return center, (thin / n if n > 1e-12 else None)
 
 
 # --------------------------------------------------------------------------

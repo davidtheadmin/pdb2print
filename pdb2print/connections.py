@@ -1061,17 +1061,6 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
                 pa, pb, seat.center, seat.axis,
                 socket_r + cp.path_clearance_mm, need_depth)
             seat.agreement = 1.0
-            #
-            # Known gap, left open on purpose: a well-founded normal is not the
-            # same as an assemblable one. On a cup wrapping 200 degrees around a
-            # rod every estimator returns the true interface normal to 0.000
-            # degrees and the parts still cannot come apart, because the cup
-            # grips past the equator. Only the census can see that. A guard on
-            # blocked-vs-seated was tried and removed — the ratio was guessed
-            # rather than measured, and it diverted seats into a search designed
-            # around contact seats and anchored on a veto pointing at this very
-            # axis. Fixing it properly means measuring what that ratio actually
-            # looks like on a real interface first.
         else:
             axis, source, agreement, blocked = _choose_axis(
                 seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
@@ -1535,19 +1524,6 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     seated = seats[:max(placed, 1)]
     used = {s.axis_source for s in seated}
     extra = [_AXIS_NOTE[a] for a in sorted(used) if a in _AXIS_NOTE]
-    # Where each built joint's direction actually came from.
-    #
-    # Diagnostic, and it earns its place: three rounds of orientation work went
-    # partly astray because which code path a joint takes was being inferred
-    # from reading the source rather than read off a build. "overlap" bypasses
-    # the axis search entirely; the other labels went through it.
-    if placed:
-        tally: dict = {}
-        for s in seated:
-            tally[s.axis_source] = tally.get(s.axis_source, 0) + 1
-        extra.append("axis: " + ", ".join(
-            f"{src}" if n == 1 else f"{src} x{n}"
-            for src, n in sorted(tally.items())))
     # A seat can clear the watertight gate and still be sunk into very little
     # plastic — a socket wider than the backbone it lands on, typically.  It is
     # printable, so it is not refused, but the user should hear about it before
