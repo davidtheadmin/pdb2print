@@ -42,6 +42,7 @@ samples per residue keeps the twist per segment small in any case.
 from __future__ import annotations
 
 import numpy as np
+from functools import lru_cache as _lru_cache
 
 from ..config import PrintParams
 from ._common import _catmull_pos_tan  # analytic Catmull-Rom position + tangent
@@ -281,6 +282,24 @@ def _smooth_control_points(ca, sse, smoothing):
 
 
 def _section(hw: float, ht: float, k: int) -> np.ndarray:
+    """Memoised wrapper around :func:`_section_uncached`.
+
+    ``(hw, ht)`` takes only a handful of distinct values along a chain -- within
+    an SSE run the two are constant, so the interpolation upstream is a no-op and
+    only arrowhead samples vary -- but this was called once per swept sample,
+    about 3,000 times on a 300-residue chain, at ~48us each.  The copy is so a
+    caller that decides to write into its ring cannot corrupt every later one; it
+    costs about a microsecond against the 48 it saves.
+    """
+    return _section_cached(float(hw), float(ht), int(k)).copy()
+
+
+@_lru_cache(maxsize=512)
+def _section_cached(hw: float, ht: float, k: int) -> np.ndarray:
+    return _section_uncached(hw, ht, k)
+
+
+def _section_uncached(hw: float, ht: float, k: int) -> np.ndarray:
     """A closed **rounded-rectangle** cross-section, ``(k, 2)`` in (width, normal).
 
     The corner radius is the smaller half-axis, so a wide ribbon (``hw > ht``)

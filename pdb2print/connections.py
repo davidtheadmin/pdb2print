@@ -414,6 +414,11 @@ class Seat:
     extend_b: float = 1.0    # ...and B's
     taper_a: bool = False    # A's back could not be closed — cone it instead
     taper_b: bool = False    # ...and B's
+    #: The local solids the back-face search reads, kept on the seat so that
+    #: search can run late -- see :func:`_resolve_back_faces`.
+    emb_a: object = None
+    emb_b: object = None
+    back_done: bool = False
     agreement: float = 1.0   # cos angle between chosen axis and nearest-point line
     blocked: int = 0         # surface points sitting in the assembly path
     axis_source: str = "contact"   # "overlap" | "mass" | "mass-flat" | "contact"
@@ -892,15 +897,12 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
             _embedding(emb_a, seat.center, -seat.axis, socket_r, need_depth),
             _embedding(emb_b, seat.center, seat.axis, socket_r, need_depth))
 
-        # Whether each side's flat back face is left hanging, and what to do
-        # about it.  Decided here because the small local solid is already cut;
-        # ``_build_seat`` only has the full chains, where the same probes would
-        # each be a full-size boolean.  Recorded as a *multiple* of the depth so
-        # it carries over to the bridge, which sizes its socket differently.
-        seat.extend_a, seat.taper_a = _close_the_back(
-            emb_a, seat.center, -seat.axis, need_depth, socket_r, cp)
-        seat.extend_b, seat.taper_b = _close_the_back(
-            emb_b, seat.center, seat.axis, need_depth, socket_r, cp)
+        # Whether each side's flat back face is left hanging is decided from
+        # these small local solids -- ``_build_seat`` only has the full chains,
+        # where the same probes would each be a full-size boolean -- so they are
+        # kept on the seat.  The measurement itself is deferred: see
+        # ``_resolve_back_faces``.
+        seat.emb_a, seat.emb_b = emb_a, emb_b
 
         # Fill: how much of the plastic each side must supply is already there.
         # Measured from that side's own surface inward, not from the mid-plane —
@@ -947,6 +949,33 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
 
     scored.sort(key=lambda s: -s.score)
     return scored
+
+
+def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
+                        cp: ConnectionParams) -> None:
+    """Work out ``extend_*`` / ``taper_*`` for a seat that is about to be built.
+
+    Deferred out of :func:`_score_seats` on purpose.  None of these four values
+    appears anywhere in ``seat.score`` -- only :func:`_build_seat` reads them --
+    and the shortlist scores about eight seats to build one, so seven sets of
+    them were measured and thrown away.  Each set is up to ten
+    ``_manifold.volume`` calls on an intersection, which is where the ~440
+    volume calls per build were coming from.
+
+    Must be called with the same ``need_depth`` and ``socket_r`` that were
+    passed to :func:`_joint_seats`, not the ones :func:`_build_seat` is given:
+    the result is a *multiple* of the depth it was measured at, which is how it
+    carries over to the bridge, which sizes its socket differently.
+    """
+    if seat.back_done:
+        return
+    seat.back_done = True
+    if seat.emb_a is None or seat.emb_b is None:
+        return                        # nothing to measure; keep the defaults
+    seat.extend_a, seat.taper_a = _close_the_back(
+        seat.emb_a, seat.center, -seat.axis, need_depth, socket_r, cp)
+    seat.extend_b, seat.taper_b = _close_the_back(
+        seat.emb_b, seat.center, seat.axis, need_depth, socket_r, cp)
 
 
 def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
@@ -1114,6 +1143,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             reasons.append(f"gap {seat.gap:.1f} mm ≥ 2×thickness {2*t:.1f} mm "
                            f"(turn the socket on to bridge it)")
             continue
+        _resolve_back_faces(seat, embed, socket_r, cp)
         ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
                               cp.socket, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max)
@@ -1153,6 +1183,7 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     placed, reasons = 0, []
     for seat in seats:
         # The peg must span the gap as well as bite into both bodies.
+        _resolve_back_faces(seat, r * 2.0, r, cp)
         ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
                               None, True, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max)

@@ -47,10 +47,13 @@ print tolerance.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
+
+_LOG = logging.getLogger(__name__)
 
 from .config import PrintParams, MoleculeType, InterferenceRule
 from .chains import Chain
@@ -380,6 +383,24 @@ def _merge_boxes(boxes, pad: float, limit: int):
     return merged
 
 
+#: How many times :func:`_carve_tool` fell back to dilating a whole chain.
+#:
+#: Each of those is a six-copy union of a full-size solid -- measured at 2.75s on
+#: a 70k-triangle chain, against ~250ms for the localised tool it stands in for
+#: -- and it happens inside a swallowed exception, so today it costs three
+#: seconds with no note, no warning and nothing in the report.  If this is ever
+#: non-zero there is a bigger problem in this module than anything else in it.
+CARVE_FALLBACKS = 0
+
+
+def _carve_fallback(why: str):
+    """Count and announce a whole-chain dilation. Returns nothing."""
+    global CARVE_FALLBACKS
+    CARVE_FALLBACKS += 1
+    _LOG.warning("interference: carve fell back to dilating a whole chain "
+                 "(%s); this is slow and should not happen", why)
+
+
 def _carve_tool(keeper, ov: "Overlap", amount: float):
     """The cutting tool for one carve: ``keeper`` grown by ``amount``, localised.
 
@@ -412,6 +433,7 @@ def _carve_tool(keeper, ov: "Overlap", amount: float):
             bb = ov.solid.bounding_box()
             regions = [(np.array(bb[:3], float), np.array(bb[3:], float))]
         except Exception:
+            _carve_fallback("no bounding box for the overlap")
             return dilate(keeper, amount)
     tools = []
     for lo, hi in regions:
@@ -422,12 +444,14 @@ def _carve_tool(keeper, ov: "Overlap", amount: float):
             tools.append(_manifold.intersection(dilate(local, amount),
                                                 _box(lo - tight, hi + tight)))
         except Exception:
+            _carve_fallback("localised tool failed")
             return dilate(keeper, amount)
     if not tools:
         return None
     try:
         return _manifold.union(tools)
     except Exception:
+        _carve_fallback("union of localised tools failed")
         return dilate(keeper, amount)
 
 
@@ -498,6 +522,30 @@ def resolve(mans, chains: List[Chain], params: PrintParams,
             _volumes[idx] = _volume(original[idx])
         return _volumes[idx]
 
+    # Same argument for the piece count, which was not being cached at all: four
+    # full-chain decompose() calls per reported overlap, and the ones on
+    # ``original`` were recomputed from scratch for every overlap that chain took
+    # part in.  A decompose on a 70k-triangle chain is ~96ms, so a handful of
+    # overlaps was seconds of work to decorate a sentence.  The current solids
+    # are keyed on identity and the object is held alongside the count, so a
+    # carve (which replaces the object) invalidates its own entry and an id
+    # cannot be reused while the entry is live.
+    _orig_comp: dict = {}
+    _cur_comp: dict = {}
+
+    def orig_components(idx: int) -> int:
+        if idx not in _orig_comp:
+            _orig_comp[idx] = _components(original[idx])
+        return _orig_comp[idx]
+
+    def cur_components(idx: int) -> int:
+        cached = _cur_comp.get(idx)
+        if cached is not None and cached[0] is mans[idx]:
+            return cached[1]
+        count = _components(mans[idx])
+        _cur_comp[idx] = (mans[idx], count)
+        return count
+
     for ov in overlaps:
         i, j = ov.i, ov.j
         target = _carve_target(chains[i], chains[j], vol(i), vol(j), rule)
@@ -530,8 +578,8 @@ def resolve(mans, chains: List[Chain], params: PrintParams,
         if ov.volume < _REPORT_MIN_MM3:
             continue                      # carved, but too small to be news
         extra = ""
-        if _components(mans[i]) > _components(original[i]) or \
-                _components(mans[j]) > _components(original[j]):
+        if cur_components(i) > orig_components(i) or \
+                cur_components(j) > orig_components(j):
             extra = " — this split a part into separate pieces"
         notes.append(f"Interference at {label}: {ov.volume:.1f} mm³ shared, "
                      f"{who}{extra}.")
