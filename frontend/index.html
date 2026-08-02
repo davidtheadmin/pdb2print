@@ -4733,7 +4733,12 @@
   function syncCameraControls() {
     const v = $('#viewer');
     if (!v) return;
-    if (standLocked) v.removeAttribute('camera-controls');
+    // Derived from the DOM, never from a flag. `standLocked` is written in
+    // three places and cleared in two, and if it is ever left true the viewer
+    // is dead with no way back but a reload — which is exactly the symptom.
+    // The panel being open is the same fact and cannot desynchronise.
+    const locked = standPanel && !standPanel.hidden;
+    if (locked) v.removeAttribute('camera-controls');
     else if (!v.hasAttribute('camera-controls')) v.setAttribute('camera-controls', '');
   }
 
@@ -4741,15 +4746,34 @@
     const v = $('#viewer');
     v.setAttribute('min-camera-orbit', '-Infinity 0deg auto');
     v.setAttribute('max-camera-orbit', 'Infinity 180deg auto');
-    if (v.hasAttribute('camera-controls') && !standLocked) {
-      v.removeAttribute('camera-controls');
-      // Three ways back, because only the first is quick and none is certain:
-      // the frame, a timer that runs on a hidden tab, and the moment the tab
-      // becomes visible again.
-      requestAnimationFrame(syncCameraControls);
-      setTimeout(syncCameraControls, 250);
+    // model-viewer's own way to re-resolve an `auto` limit against the model
+    // that has just loaded.
+    //
+    // What used to be here was: remove `camera-controls`, put it back a frame
+    // later. It reset the same state, but it made the viewer's *only* means of
+    // control into something that had to be successfully restored — and every
+    // path that failed to restore it left a viewer that renders perfectly and
+    // ignores the mouse until the page is reloaded. Adding more ways to restore
+    // it treated the symptom; not taking it away is the fix.
+    if (typeof v.updateFraming === 'function') {
+      try { v.updateFraming(); } catch (_) { /* older build; the limits still apply */ }
     }
+    syncCameraControls();
   }
+
+  // So a stuck viewer can be described in one line instead of guessed at:
+  // paste `viewerDebug()` into the console while it is stuck.
+  window.viewerDebug = () => {
+    const v = $('#viewer');
+    return {
+      hasControls: !!v && v.hasAttribute('camera-controls'),
+      panelOpen: !!standPanel && !standPanel.hidden,
+      standLocked, standRoll,
+      transform: v ? v.style.transform : null,
+      upgraded: !!customElements.get('model-viewer'),
+      hasSrc: !!v && !!v.getAttribute('src'),
+    };
+  };
   $('#viewer').addEventListener('load', refreshCameraLimits);
   document.addEventListener('visibilitychange', syncCameraControls);
 
