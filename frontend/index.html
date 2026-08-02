@@ -81,7 +81,6 @@
     document.documentElement.dataset.theme = t;
   })();
 </script>
-<script type="module" src="/vendor/model-viewer-3.5.0.min.js"></script>
 <style>
   /* ===================================================================
      TOKENS
@@ -2708,11 +2707,34 @@
     try { return { event, data: JSON.parse(data) }; } catch { return null; }
   }
 
+  // model-viewer is 913 KB raw / 245 KB gzipped -- 3.6x this whole page -- and
+  // it used to download and compile on every cold visit, for an element that
+  // stays display:none until a build finishes. Most visitors never build
+  // anything, so most of them paid for it and got nothing.
+  //
+  // Kicked off when a build starts rather than when its result arrives, so the
+  // download overlaps the build and is finished well before there is a model to
+  // show. Setting src on an element whose definition has not loaded yet is
+  // fine: the custom-element upgrade replays the attributes that are already
+  // there, which is exactly what the spec guarantees.
+  let viewerModule = null;
+  function ensureViewer() {
+    if (!viewerModule) {
+      viewerModule = import('/vendor/model-viewer-3.5.0.min.js')
+        .catch(err => {
+          viewerModule = null;               // let a later attempt retry
+          console.error('model-viewer failed to load', err);
+        });
+    }
+    return viewerModule;
+  }
+
   function applyResult(data) {
     if (data.glb_url) {
       const v = $('#viewer');
       v.style.display = 'block';
       $('#viewer-empty').style.display = 'none';
+      ensureViewer();
       v.setAttribute('src', data.glb_url);
     }
     renderLegend(data.chains);
@@ -2921,6 +2943,7 @@
       let done = false;
       const finish = () => { if (done) return; done = true; v.removeEventListener('load', finish); res(); };
       v.addEventListener('load', finish);
+      ensureViewer();
       v.setAttribute('src', standBuild.glb);
       setTimeout(finish, 3000);              // a swept file must not hang the panel
     });
@@ -4586,6 +4609,7 @@
     titleTouched = false;
     const ctrl = new AbortController();
     inflight = ctrl;
+    ensureViewer();          // downloads while the build runs, not after it
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Building…';
     setReport('Starting…', false);

@@ -544,6 +544,14 @@ class Cache:
             return None
         if not all(os.path.exists(os.path.join(d, f)) for f in files.values()):
             return None
+        # An entry written by a different CACHE_VERSION is not this build's
+        # geometry. In practice the version is already part of the key, so such
+        # an entry can never be found by name -- but nothing checked, and that
+        # made the invisible half of the problem worse: see enforce_limit.
+        # Entries predating the field have no version and are treated as
+        # current, which is what they are.
+        if meta.get("cache_version", CACHE_VERSION) != CACHE_VERSION:
+            return None
         meta["key"] = key
         meta["dir"] = d
         if touch:
@@ -654,7 +662,14 @@ class Cache:
 
         keys = [n for n in os.listdir(self.root)
                 if os.path.isdir(os.path.join(self.root, n))]
-        keys.sort(key=self.last_used)          # oldest first
+        # Stale-version entries first, then least-recently-used.
+        #
+        # A CACHE_VERSION bump makes every existing entry unreachable -- the
+        # version is baked into the key -- but they stay on disk and keep
+        # counting against the cap, so the next eviction pass deleted *live*
+        # entries to make room for dead ones. That turns a version bump from a
+        # cheap operation into one that quietly costs you the whole cache twice.
+        keys.sort(key=lambda k: (not self._is_stale(k), self.last_used(k)))
 
         evicted = []
         for key in keys:
@@ -668,6 +683,24 @@ class Cache:
             total -= self.evict(key)
             evicted.append(key)
         return evicted
+
+    def _is_stale(self, key: str) -> bool:
+        """True if this entry was written by a different ``CACHE_VERSION``.
+
+        Its key was derived with that version baked in, so nothing will ever
+        look it up again. Unreadable metadata counts as stale for the same
+        reason: an entry nobody can interpret is an entry nobody can serve.
+
+        Only consulted when the store is over its cap, so the extra read per
+        entry costs nothing in the ordinary case.
+        """
+        try:
+            with open(os.path.join(self.entry_dir(key), "meta.json"),
+                      "r", encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            return True
+        return meta.get("cache_version", CACHE_VERSION) != CACHE_VERSION
 
     def write_index(self) -> str:
         """Write ``index.json`` — a human-readable listing of what is cached."""

@@ -38,8 +38,9 @@ pdb2print.org, www.pdb2print.org {
 	encode @compressible gzip
 
 	header {
-		# Standard hardening. No CSP here because the front end loads
-		# model-viewer from unpkg; add one only after checking it in a browser.
+		# Standard hardening. model-viewer is served from this host now, not
+		# from a CDN, so a CSP is no longer blocked on that — add one only
+		# after checking it in a browser.
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"

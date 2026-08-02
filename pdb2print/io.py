@@ -5,8 +5,10 @@ Only biotite is used here so the parsing layer stays lightweight and portable.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
+import socket
 import tempfile
 
 import biotite.structure as struc
@@ -23,6 +25,27 @@ def looks_like_pdb_id(text: str) -> bool:
     return bool(_PDB_ID_RE.match(text.strip()))
 
 
+#: Seconds to allow one RCSB request.
+#:
+#: biotite's ``rcsb.fetch`` calls ``requests`` with no timeout at all, and this
+#: runs on the worker thread holding the only build slot -- so one hung upstream
+#: connection stalls every build on the site, permanently, with no recovery.
+#: There is no timeout argument to pass through, so the socket default is set
+#: around the call instead: requests and urllib3 both fall back to it for the
+#: connect *and* the read when no explicit timeout is given.
+_FETCH_TIMEOUT_S = 30.0
+
+
+@contextlib.contextmanager
+def _socket_timeout(seconds: float):
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
+
+
 def fetch_pdb_id(pdb_id: str, target_dir: str | None = None) -> str:
     """Download a structure from RCSB and return the local file path.
 
@@ -33,7 +56,8 @@ def fetch_pdb_id(pdb_id: str, target_dir: str | None = None) -> str:
     target_dir = target_dir or tempfile.mkdtemp(prefix="pdb2print_")
     for fmt in ("cif", "pdb"):
         try:
-            return rcsb.fetch(pdb_id, fmt, target_dir)
+            with _socket_timeout(_FETCH_TIMEOUT_S):
+                return rcsb.fetch(pdb_id, fmt, target_dir)
         except Exception:
             continue
     raise ValueError(f"Could not fetch '{pdb_id}' from RCSB in cif or pdb format.")

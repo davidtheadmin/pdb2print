@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -42,6 +43,13 @@ from pdb2print.cache import Cache, DEFAULT_CACHE_DIR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(HERE, "frontend")
+
+# Neither extension has an entry in Python's built-in table, and python:3.12-slim
+# ships no /etc/mime.types, so StaticFiles fell back to text/plain in the
+# container -- which is in Caddy's default `encode` match list, so the proxy
+# spent CPU gzipping a 3MF (already a zip) on every download.
+mimetypes.add_type("model/3mf", ".3mf")
+mimetypes.add_type("model/gltf-binary", ".glb")
 
 # Every generation writes its outputs into a fresh sub-directory here, which is
 # served read-only at /files/<token>/... for both <model-viewer> and downloads.
@@ -75,6 +83,41 @@ cache = Cache(CACHE_DIR, read_only=CACHE_READ_ONLY,
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 UPLOAD_EXTS = {".pdb", ".ent", ".cif", ".mmcif", ".bcif"}
+
+#: Largest structure file this will write to disk. The biggest things people
+#: legitimately bring here are whole-virus mmCIFs, comfortably under this.
+_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+
+#: Server-side bounds for the parameters that decide how much memory a build
+#: allocates. The sliders advertise exactly these, and nothing enforced them
+#: here: _map_params took a bare float(), resolve_surface_grid only ever refines
+#: *finer*, and SURFACE_VOXEL_BUDGET caps refinement rather than a supplied
+#: value -- so a crafted POST asking for grid_spacing 0.15 at scale 3.0 on a
+#: small protein allocated about 2.5 GB, on a public endpoint with no rate
+#: limiting.
+#:
+#: Clamped rather than rejected, because these arrive from a slider: a value out
+#: of range is a bug or an attack, not a user choice worth an error page.
+_PARAM_BOUNDS = {
+    "scale": (0.2, 6.0),
+    "grid_spacing": (0.2, 1.5),
+    "min_wall": (0.0, 5.0),
+    "probe_radius": (0.6, 5.0),
+    "surface_padding": (0.0, 2.0),
+}
+
+
+def _bounded(fields: dict, name: str) -> float:
+    """``fields[name]`` as a float, clamped to the range the slider offers.
+
+    Raises like the bare ``float()`` it replaces when the field is missing or
+    unparseable, so a malformed request still gets its 400.
+    """
+    lo, hi = _PARAM_BOUNDS[name]
+    value = float(fields[name])
+    if value != value:                        # NaN survives every comparison
+        raise ValueError(f"{name} is not a number")
+    return max(lo, min(hi, value))
 
 #: Bumped whenever the front end and the server change together.
 #:
@@ -380,9 +423,29 @@ async def _wait_for_slot(gate: _BuildGate, ticket: int, waiter):
         if done:
             return
 
+class _ImmutableStatic(StaticFiles):
+    """StaticFiles that tells the browser the bytes will never change.
+
+    Only safe where the URL changes when the content does, which is true of both
+    places it is used: a cache entry's directory is its content hash, and the
+    vendored viewer carries its version in the filename.  ``get_response`` is
+    the documented extension point, so this does not depend on Starlette's
+    internals.
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 app = FastAPI(title="pdb2print")
 app.mount("/files", StaticFiles(directory=OUTPUT_ROOT), name="files")
-app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
+app.mount("/cache", _ImmutableStatic(directory=CACHE_DIR), name="cache")
+_VENDOR_DIR = os.path.join(FRONTEND_DIR, "vendor")
+if os.path.isdir(_VENDOR_DIR):
+    # Mounted ahead of the catch-all below so the immutable header wins.
+    app.mount("/vendor", _ImmutableStatic(directory=_VENDOR_DIR), name="vendor")
 
 
 def _rgb_to_hex(rgb) -> str:
@@ -392,14 +455,18 @@ def _rgb_to_hex(rgb) -> str:
 
 @app.get("/")
 def index() -> FileResponse:
-    # No-store on the shell page. The whole UI is one HTML file, so a browser
-    # holding a cached copy is a browser running last week's front end against
-    # this week's API — which presents as a fixed bug that is still there, and
-    # sends everyone hunting in the wrong place. The file is small and the page
-    # is loaded once per session; there is nothing to gain by caching it.
+    # The whole UI is one HTML file, so a browser holding a cached copy is a
+    # browser running last week's front end against this week's API — which
+    # presents as a fixed bug that is still there, and sends everyone hunting in
+    # the wrong place.
+    #
+    # no-cache, not no-store: both revalidate on every load, so neither can ever
+    # serve stale code, but no-cache permits a conditional request and a 304
+    # while no-store forbids even that. The page is 68 KB gzipped and it was
+    # being re-sent in full on every visit for no benefit.
     return FileResponse(
         os.path.join(FRONTEND_DIR, "index.html"),
-        headers={"Cache-Control": "no-store, must-revalidate"},
+        headers={"Cache-Control": "no-cache, must-revalidate"},
     )
 
 
@@ -554,9 +621,9 @@ def _map_connections(fields: dict) -> ConnectionParams:
 def _map_params(fields: dict) -> PrintParams:
     """Map raw HTTP form fields to a :class:`PrintParams` (may raise ValueError)."""
     return PrintParams(
-        scale_mm_per_angstrom=float(fields["scale"]),
-        grid_spacing_mm=float(fields["grid_spacing"]),
-        min_wall_mm=float(fields["min_wall"]),
+        scale_mm_per_angstrom=_bounded(fields, "scale"),
+        grid_spacing_mm=_bounded(fields, "grid_spacing"),
+        min_wall_mm=_bounded(fields, "min_wall"),
         min_wall_mode=MinWallMode(fields["min_wall_mode"]),
         protein_representation=Representation(fields["protein_rep"]),
         nucleic_representation=Representation(fields["nucleic_rep"]),
@@ -574,8 +641,8 @@ def _map_params(fields: dict) -> PrintParams:
         bond_radius_mm=float(fields["bond_radius"]),
         backbone_atom_radius_mm=float(fields.get("backbone_atom_radius", 1.0)),
         backbone_bond_radius_mm=float(fields.get("backbone_bond_radius", 0.5)),
-        probe_radius_ang=float(fields["probe_radius"]),
-        surface_atom_padding_ang=float(fields["surface_padding"]),
+        probe_radius_ang=_bounded(fields, "probe_radius"),
+        surface_atom_padding_ang=_bounded(fields, "surface_padding"),
         # Defaults to False when the field is absent, matching the checkbox: a
         # caller that says nothing about ligands gets the plain structure, which is
         # both the old behaviour and the conservative one.
@@ -1025,8 +1092,29 @@ async def generate(
             )
         tmp_upload_dir = tempfile.mkdtemp(prefix="pdb2print_up_")
         source = os.path.join(tmp_upload_dir, os.path.basename(file.filename))
+        # Bounded copy. There was no size limit anywhere on this path, and this
+        # is a public endpoint. A backstop rather than the real fix: Starlette
+        # has already spooled the entire body to disk by the time this function
+        # runs, so the limit that actually matters is request_body { max_size }
+        # in the Caddyfile. This one stops the disk filling up behind it.
+        oversize, written = False, 0
         with open(source, "wb") as fh:
-            shutil.copyfileobj(file.file, fh)
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_BYTES:
+                    oversize = True
+                    break
+                fh.write(chunk)
+        if oversize:
+            shutil.rmtree(tmp_upload_dir, ignore_errors=True)
+            return JSONResponse(
+                _error_payload(f"That file is over the "
+                               f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit."),
+                status_code=413,
+            )
     elif pdb_id.strip():
         source = pdb_id.strip()
 
