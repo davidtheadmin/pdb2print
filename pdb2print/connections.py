@@ -457,7 +457,7 @@ class Seat:
     emb_a: object = None
     emb_b: object = None
     back_done: bool = False
-    #: Where the search put this seat before ``_balance_walls`` moved it, and
+    #: Where the search put this seat before ``_balance_burial`` moved it, and
     #: the local solids that went with it.  Restored if the moved seat turns out
     #: not to be buildable.
     home: object = None
@@ -551,18 +551,23 @@ def _local_solid(man, center, radius):
 def _embedding(blob, center, into, radius, length) -> float:
     """How much of the collar this side would build is already inside the part.
 
-    1.0 means the socket is entirely buried in existing material; 0.0 means it
-    would be built out of thin air.  Unlike ``fill`` it is taken on the collar
-    *as built*: from the shared mid-plane, so the stub spanning the half-gap
-    counts against it, because that stub is exactly the part with nothing behind
-    it.
+    1.0 means the socket is entirely buried in existing material and only the
+    mating disc shows; 0.0 means it would be built out of thin air and stand
+    proud of the surface.  This is the direct measure of the thing that looks
+    wrong on a finished model — a magnet or its collar sticking out — and unlike
+    ``fill`` it is taken on the collar *as built*: from the shared mid-plane,
+    so the stub spanning the half-gap counts against it, because that stub is
+    exactly the part with nothing behind it.
 
-    This is a question about **bulk**, and it is asked for exactly one purpose:
-    telling a collar that came out the far side of a thin part from one standing
-    on a surface that fell away (see ``_PUNCH_THROUGH_EMBEDDING``, whose
-    threshold is calibrated against this measure).  For *how visible* a joint is,
-    see :func:`_wall_hidden` — that is a question about surface, and the two
-    diverge.
+    **A side-wall version of this was built and reverted.**  It measured a thin
+    shell at the collar's radius, so the number was literally the fraction of
+    the wall you can see, which is the more direct description of "visible" and
+    is why it was worth trying.  On real models it placed joints *worse*, which
+    is the only test that counts.  The argument for it was that volume counts
+    plastic in the middle of the cylinder that nobody looks at; the answer seems
+    to be that the middle of the cylinder is exactly what says whether there is
+    a **body** under the joint, where a wall measure is happy with a collar
+    sleeved in a thin crust.  Do not rebuild it without a model to look at.
 
     ``blob`` must contain the collar; the caller sizes it to guarantee that, so
     intersecting against the blob gives the same answer as against the whole
@@ -576,45 +581,6 @@ def _embedding(blob, center, into, radius, length) -> float:
         return 0.0
     try:
         have = _manifold.volume(_manifold.intersection(blob, collar))
-    except Exception:
-        return 0.0
-    return float(max(0.0, min(1.0, have / want)))
-
-
-def _wall_hidden(blob, center, into, radius: float, length: float,
-                 skin: float = 0.2) -> float:
-    """Fraction of the socket's **side wall** that ends up inside the part.
-
-    1.0 means the wall is covered everywhere and only the mating disc shows;
-    0.0 means the whole cylinder stands in open air.  This is the direct measure
-    of the thing that looks wrong on a finished model — a magnet or its collar
-    you can see from across the room.
-
-    Taken on a thin shell rather than on the solid collar, because the solid
-    answers a different question.  It counts plastic in the *middle* of the
-    cylinder, which nobody can see, and it badly under-reads a collar lying
-    tangentially against a surface: a chord at 0.8R buries 4% of the volume and
-    20% of the wall, and the wall is what you look at.  Over a shell this thin
-    the volume fraction and the lateral-area fraction are the same number, which
-    is the same trick :func:`_cap_exposure` uses on the back face.
-
-    The back face is deliberately not included.  It is measured separately and
-    it is a different offence: a socket emerging from a bumpy surface always
-    shows some wall and reads as a socket, where a flat disc hanging in space
-    reads as a mistake.
-    """
-    if blob is None:
-        return 0.0
-    inner = radius - min(skin, 0.4 * radius)
-    if inner <= 0.0 or length <= 1e-9:
-        return 0.0
-    try:
-        shell = _manifold.difference(_seat_solid(center, into, length, radius),
-                                     _seat_solid(center, into, length, inner))
-        want = _manifold.volume(shell)
-        if want <= 1e-9:
-            return 0.0
-        have = _manifold.volume(_manifold.intersection(blob, shell))
     except Exception:
         return 0.0
     return float(max(0.0, min(1.0, have / want)))
@@ -762,8 +728,8 @@ def _surface_along(points, origin, axis, radius: float):
 #: a big hole cut for no gain. Half the collar is as far as it is worth going.
 _BALANCE_MAX_SHIFT = 0.5
 
-#: Wall-exposure difference below which the two sides are called even, and the
-#: search does not run at all. Finer than the surface is smooth.
+#: Burial difference below which the two sides are called even, and the search
+#: does not run at all. Finer than the surface is smooth.
 _BALANCE_TOL = 0.05
 
 #: How much the worse side must actually gain before the seat is moved at all.
@@ -778,9 +744,9 @@ _BALANCE_TOL = 0.05
 _BALANCE_MIN_GAIN = 0.05
 
 
-def _balance_walls(seat: Seat, man_a, man_b, socket_r: float,
-                   need_depth: float, probe_r: float) -> None:
-    """Slide the mating plane along the axis until both sides show equal wall.
+def _balance_burial(seat: Seat, man_a, man_b, socket_r: float,
+                    need_depth: float, probe_r: float) -> None:
+    """Slide the mating plane along the axis until both sides are equally buried.
 
     The plane starts midway across the gap, which is a rule about the *gap* and
     says nothing about how much of either collar you can see.  On two flat
@@ -812,20 +778,20 @@ def _balance_walls(seat: Seat, man_a, man_b, socket_r: float,
     #
     # Enlarging is safe here where it would not be elsewhere: the warning about
     # a big ball is that its centre of mass reaches around a thin feature and
-    # flips the axis. Nothing here derives an axis. Wall coverage is a local
-    # question and a wider ball only answers it over more of the part.
+    # flips the axis. Nothing here derives an axis. Burial is a local question
+    # and a wider ball only answers it over more of the part.
     reach = float(np.hypot(need_depth + room, socket_r)) + 0.5
     blob_a = _local_solid(man_a, seat.center, reach)
     blob_b = _local_solid(man_b, seat.center, reach)
     if blob_a is None or blob_b is None:
         return
 
-    def walls(shift):
+    def buried(shift):
         c = seat.center + seat.axis * shift
-        return (_wall_hidden(blob_a, c, -seat.axis, socket_r, need_depth),
-                _wall_hidden(blob_b, c, seat.axis, socket_r, need_depth))
+        return (_embedding(blob_a, c, -seat.axis, socket_r, need_depth),
+                _embedding(blob_b, c, seat.axis, socket_r, need_depth))
 
-    wa, wb = walls(0.0)
+    wa, wb = buried(0.0)
     best, best0 = (0.0, wa, wb), (wa, wb)
     if abs(wa - wb) > _BALANCE_TOL:
         # A is buried more the further the plane moves toward A and less as it
@@ -835,7 +801,7 @@ def _balance_walls(seat: Seat, man_a, man_b, socket_r: float,
         lo, hi = (0.0, room) if wa > wb else (-room, 0.0)
         for _ in range(4):
             mid = 0.5 * (lo + hi)
-            ma, mb = walls(mid)
+            ma, mb = buried(mid)
             if min(ma, mb) > min(best[1], best[2]):
                 best = (mid, ma, mb)
             if abs(ma - mb) <= _BALANCE_TOL:
@@ -1002,13 +968,13 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # the fullest probe is the one furthest from a joint that would actually
     # close. Multiplied rather than subtracted, so a gap the collar cannot span
     # cannot be bought back with volume however much of it there is.
-    # How much of the collar's side wall ends up inside existing material, on
-    # the worse of the two sides. 1.0 means only the mating disc shows; 0.0
-    # means it stands in open air. This is the difference between a magnet you
-    # have to look for and one you can see from across the room, and it costs
-    # one small boolean per side against blobs that are already cut.
-    seat_hidden = min(_wall_hidden(blob_a, seat_centre, -axis, socket_r, need_depth),
-                      _wall_hidden(blob_b, seat_centre, axis, socket_r, need_depth))
+    # How much of the collar ends up inside existing material, on the worse of
+    # the two sides. 1.0 means only the mating disc shows; 0.0 means it stands
+    # in open air. This is the difference between a magnet you have to look for
+    # and one you can see from across the room, and it costs one small boolean
+    # per side against blobs that are already cut.
+    seat_hidden = min(_embedding(blob_a, seat_centre, -axis, socket_r, need_depth),
+                      _embedding(blob_b, seat_centre, axis, socket_r, need_depth))
 
     reach = max(float(cp.contact_threshold_mm), 1e-6)
     falloff = cp.seat_gap_falloff if gap_falloff is None else float(gap_falloff)
@@ -1086,7 +1052,7 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
         for seat in kept:
             # Order matters: balancing moves the mating plane, and the overhang
             # is measured from it.
-            _balance_walls(seat, man_a, man_b, socket_r, need_depth, probe_r)
+            _balance_burial(seat, man_a, man_b, socket_r, need_depth, probe_r)
             _clear_depths(seat, va, vb, socket_r + cp.path_clearance_mm)
     return kept
 

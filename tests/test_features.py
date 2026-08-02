@@ -483,7 +483,7 @@ def test_the_mating_plane_slides_to_even_out_the_two_sides():
     """One collar buried and one standing proud is worth moving the plane for.
 
     Midway across the gap is a rule about the *gap*; it says nothing about how
-    much of either collar you can see. Where one surface falls away under the
+    much of either collar is buried. Where one surface falls away under the
     joint and the other is solid, the two sides end up wildly uneven, and
     ``seat.hidden`` -- which the score ranks on -- is the worse of them.
     """
@@ -496,19 +496,19 @@ def test_the_mating_plane_slides_to_even_out_the_two_sides():
                    gap=0.4, footprint=50)
     seat.probe_r = probe_r
 
-    def walls(where):
+    def buried(where):
         ba = cx._local_solid(man_a, where, 6.5)
         bb = cx._local_solid(man_b, where, 6.5)
-        return (cx._wall_hidden(ba, where, -seat.axis, socket_r, depth),
-                cx._wall_hidden(bb, where, +seat.axis, socket_r, depth))
+        return (cx._embedding(ba, where, -seat.axis, socket_r, depth),
+                cx._embedding(bb, where, +seat.axis, socket_r, depth))
 
-    before = walls(seat.center)
+    before = buried(seat.center)
     assert abs(before[0] - before[1]) > 0.3, before      # the case under test
 
-    cx._balance_walls(seat, man_a, man_b, socket_r, depth, probe_r)
+    cx._balance_burial(seat, man_a, man_b, socket_r, depth, probe_r)
 
     assert seat.center[0] < -1e-6, "the plane should move into the shy side"
-    after = walls(seat.center)
+    after = buried(seat.center)
     assert abs(after[0] - after[1]) < abs(before[0] - before[1])
     assert min(after) > min(before) + 0.05, (before, after)
     # It must be reversible: a plane that cannot be cut without severing the
@@ -526,7 +526,7 @@ def test_an_even_joint_is_left_where_the_search_put_it():
     seat = cx.Seat(center=np.zeros(3), axis=np.array([1.0, 0.0, 0.0]),
                    gap=0.4, footprint=50)
     seat.probe_r = 4.65
-    cx._balance_walls(seat, mans[0], mans[1], 3.1, 3.2, 4.65)
+    cx._balance_burial(seat, mans[0], mans[1], 3.1, 3.2, 4.65)
     assert np.allclose(seat.center, 0.0)
     assert seat.home is None
 
