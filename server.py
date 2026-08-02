@@ -770,14 +770,16 @@ def _trim_recent_locked() -> None:
     Two of them, because the two kinds of entry cost wildly different amounts.
     Oldest first, and only mesh-holding entries count against the small one.
     """
-    meshy = [k for k, e in _RECENT_BUILDS.items() if e.get("built") is not None]
+    meshy = [k for k, e in _RECENT_BUILDS.items()
+             if e.get("built") is not None or e.get("built_loose") is not None]
     for stale in meshy[:max(0, len(meshy) - _RECENT_MAX)]:
         _RECENT_BUILDS.pop(stale, None)
     while len(_RECENT_BUILDS) > _RECENT_TOKENS:
         _RECENT_BUILDS.popitem(last=False)
 
 
-def _remember_reopened(token: str, built, params=None) -> None:
+def _remember_reopened(token: str, built, params=None,
+                       slot: str = "built") -> None:
     """Hold on to meshes reopened from the disk cache.
 
     Reopening is not cheap -- unzip the per-chain STL zip, load every chain, run
@@ -796,7 +798,7 @@ def _remember_reopened(token: str, built, params=None) -> None:
         entry = _RECENT_BUILDS.get(token)
         if entry is None:
             return
-        entry["built"] = built
+        entry[slot] = built
         if params is not None:
             # The meshes and the params have to describe the same build. This
             # branch can be reached with an entry whose own hit failed to reopen
@@ -804,12 +806,17 @@ def _remember_reopened(token: str, built, params=None) -> None:
             # meshes without their params would leave the token answering with a
             # pair that never existed.
             entry["params"] = params
-        entry.pop("reopen_failed", None)
+        # A watertight reopen satisfies both callers, so it clears both flags.
+        # A relaxed one only clears its own — the strict attempt genuinely
+        # failed and re-trying it costs the full reopen to learn that again.
+        entry.pop("reopen_failed_loose", None)
+        if slot == "built":
+            entry.pop("reopen_failed", None)
         _RECENT_BUILDS.move_to_end(token)
         _trim_recent_locked()
 
 
-def _remember_reopen_failed(token: str) -> None:
+def _remember_reopen_failed(token: str, slot: str = "reopen_failed") -> None:
     """Remember that this entry's meshes could not be reopened.
 
     The failure is the common case, not the rare one: an STL round trip cannot
@@ -822,7 +829,7 @@ def _remember_reopen_failed(token: str) -> None:
     with _RECENT_LOCK:
         entry = _RECENT_BUILDS.get(token)
         if entry is not None:
-            entry["reopen_failed"] = True
+            entry[slot] = True
 
 
 def _recall_build(token: str):
@@ -1425,7 +1432,68 @@ def _backfill_names(objects, source: str) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _built_from_cache(hit: dict, source: str = ""):
+def _meshes_from_3mf(hit: dict, count: int):
+    """The entry's 3MF reopened as ``count`` meshes in build order, or ``None``.
+
+    Worth trying before the STL zip, and the reason is not float precision.
+    An STL is a *triangle soup*: it carries no vertex indices at all, so a
+    loader has to re-weld coincident corners by tolerance, and on an organic
+    surface with near-coincident sheets that weld produces duplicate faces and
+    4-valent edges.  That is why a reopened cache entry is almost never
+    watertight, and why looser tolerances and a full pymeshlab repair pass both
+    failed to recover one.
+
+    A 3MF stores explicit triangle indices — ``export.write_3mf`` writes
+    ``tri.Indices`` per face — so there is nothing to guess.  The coordinates
+    are float32 either way; the topology is what was being lost.
+
+    Deliberately strict: anything unexpected returns ``None`` and the caller
+    falls back to the STL path, so the worst case is exactly what happened
+    before.
+    """
+    name = (hit.get("files") or {}).get("threemf")
+    if not name or not name.lower().endswith(".3mf"):
+        return None                     # older entries fell back to a GLB
+    path = os.path.join(cache.entry_dir(hit["key"]), name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import trimesh
+        loaded = trimesh.load(path, file_type="3mf", process=False)
+    except Exception:
+        return None
+
+    meshes = []
+    if isinstance(loaded, trimesh.Trimesh):
+        meshes = [loaded]
+    else:
+        graph = getattr(loaded, "graph", None)
+        geometry = getattr(loaded, "geometry", None)
+        if graph is None or not geometry:
+            return None
+        try:
+            # Through the scene graph rather than geometry.values(), so a build
+            # item placed with a transform is honoured instead of silently
+            # loading at the origin.
+            for node in graph.nodes_geometry:
+                transform, gname = graph[node]
+                mesh = geometry.get(gname)
+                if mesh is None:
+                    return None
+                mesh = mesh.copy()
+                mesh.apply_transform(transform)
+                meshes.append(mesh)
+        except Exception:
+            return None
+
+    if len(meshes) != count:
+        # A stand entry, a components object, or a loader that flattened
+        # differently than expected. Not worth guessing at — take the old road.
+        return None
+    return meshes
+
+
+def _built_from_cache(hit: dict, source: str = "", require_watertight: bool = True):
     """Reopen a cache entry as ``[(object, mesh), ...]``, or ``None``.
 
     The per-chain STL zip an entry already carries *is* the finished geometry —
@@ -1444,6 +1512,29 @@ def _built_from_cache(hit: dict, source: str = ""):
     import zipfile
 
     import trimesh
+
+    from pdb2print import meshops
+
+    # The 3MF first, because it keeps its indices — see _meshes_from_3mf. Needs
+    # the object list up front, which only the stored metadata can give; entries
+    # old enough to lack it go straight to the zip, which can name them.
+    meta_objects = cache_mod.objects_from_meta(hit)
+    if meta_objects:
+        indexed = _meshes_from_3mf(hit, len(meta_objects))
+        if indexed is not None:
+            out = []
+            for obj, mesh in zip(meta_objects, indexed):
+                try:
+                    mesh = meshops.repair(mesh)
+                except Exception:
+                    out = None
+                    break
+                if require_watertight and not mesh.is_watertight:
+                    out = None
+                    break
+                out.append((obj, mesh))
+            if out:
+                return out
 
     name = (hit.get("files") or {}).get("stl_zip")
     if not name:
@@ -1487,8 +1578,6 @@ def _built_from_cache(hit: dict, source: str = ""):
     if not objects:
         return None
 
-    from pdb2print import meshops
-
     built = []
     for obj in objects:
         mesh = by_label.get(obj.label())
@@ -1509,13 +1598,20 @@ def _built_from_cache(hit: dict, source: str = ""):
             mesh = meshops.repair(mesh)
         except Exception:
             return None
-        if not mesh.is_watertight:
+        # ``require_watertight`` is off only for the live stand preview.  The
+        # column solver does no boolean work at all — no reference to _manifold
+        # anywhere in it — so it does not need a closed surface; the gate is
+        # here for the 3MF exporter, which the preview never reaches.  With it
+        # on for previews, a cache-served model showed the generic sketch
+        # forever and paid ~6.7s per nudge to decide that.
+        if require_watertight and not mesh.is_watertight:
             return None
         built.append((obj, mesh))
     return built or None
 
 
-def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
+def _stand_meshes(source: str, params: PrintParams, token: str, progress=None,
+                  require_watertight: bool = True):
     """``(built, base_params, where)`` for a stand, without ever rebuilding.
 
     Two routes, in cost order: the meshes this process still has in memory for
@@ -1526,11 +1622,21 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
     progress bar for; it is not, for a preview that has to answer in a moment or
     not at all.
     """
+    # Two memo slots, because the two callers want different things and one
+    # must not be served the other's answer. A watertight set satisfies both; a
+    # relaxed one satisfies only the preview, and handing it to a real stand
+    # build would fail at the 3MF gate after the user watched it being made.
+    built_key = "built" if require_watertight else "built_loose"
+    failed_key = "reopen_failed" if require_watertight else "reopen_failed_loose"
+
     entry = _recall_build(token)
     if entry is not None and entry.get("built") is not None:
         if progress:
             progress(0.30, "Using the model already built…")
         return entry["built"], entry["params"], "meshes in memory"
+    if (entry is not None and not require_watertight
+            and entry.get("built_loose") is not None):
+        return entry["built_loose"], entry["params"], "the cached build"
     # Key of an entry already tried and declined this session, so the disk
     # lookup below does not reopen the very same zip a second time.  It did:
     # the lookup reconstructs the key /api/generate stored, which for a token
@@ -1539,17 +1645,17 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
     declined_key = None
     if entry is not None and entry.get("hit"):
         declined_key = (entry.get("hit") or {}).get("key")
-        if not entry.get("reopen_failed"):
+        if not entry.get(failed_key):
             # The token came from a cache hit: no meshes were ever made in this
             # process, but the entry that served it is known exactly, so there is
             # nothing to look up and nothing to get wrong.
             if progress:
                 progress(0.20, "Reopening the cached model…")
-            built = _built_from_cache(entry["hit"], source)
+            built = _built_from_cache(entry["hit"], source, require_watertight)
             if built is not None:
-                _remember_reopened(token, built)
+                _remember_reopened(token, built, slot=built_key)
                 return built, entry["params"], "the cached build"
-            _remember_reopen_failed(token)
+            _remember_reopen_failed(token, slot=failed_key)
     try:
         # Look the build up the way the build itself was stored: with the stand
         # switched OFF. canonical_params drops the whole stand block when it is
@@ -1571,9 +1677,9 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
     if hit:
         if progress:
             progress(0.20, "Reopening the cached model…")
-        built = _built_from_cache(hit, source)
+        built = _built_from_cache(hit, source, require_watertight)
         if built is not None:
-            _remember_reopened(token, built, params)
+            _remember_reopened(token, built, params, slot=built_key)
             return built, params, "the cached build"
     return None, params, None
 
@@ -1777,7 +1883,8 @@ async def stand_preview(request: Request):
         from pdb2print import stand as stand_mod
         import dataclasses
 
-        built, base_params, _where = _stand_meshes(source, params, token)
+        built, base_params, _where = _stand_meshes(source, params, token,
+                                                   require_watertight=False)
         if built is None:
             return {"ok": True, "ready": False, "reason": "not-in-memory",
                 "stamp": CODE_STAMP}

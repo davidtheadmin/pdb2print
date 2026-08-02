@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import math
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -1340,6 +1342,65 @@ class StandLayout:
     notes: List[str]
 
 
+#: Solved column sets, keyed on everything that can move a column.
+#:
+#: Measured control by control on a 3-chain model: of the twelve stand
+#: controls, **eight produce bit-identical columns** -- plaque text, corner
+#: style, plate margin, apron rake, the note, the title, the tile toggle and
+#: the relief -- while the column search itself costs 0.71s on a 245k-face
+#: model and 4.80s on a 983k-face one, and the plaque layout it is holding up
+#: costs 0.14ms.  So two thirds of the panel was paying seconds for an answer
+#: that could not change.
+#:
+#: Small and LRU because each entry pins the meshes it was solved against.
+#: That reference is load-bearing: the key identifies the meshes by ``id()``,
+#: which is only sound while they are alive -- a collected object's id can be
+#: handed to a different one.
+_COLUMN_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_COLUMN_CACHE_MAX = 4
+_COLUMN_LOCK = threading.Lock()
+
+
+def _column_cache_key(built, rotation, offset, stand, wanted: int,
+                      radius: float, foot: float) -> tuple:
+    """Everything the column search reads, and nothing else.
+
+    ``plate_thickness`` and ``stand_off`` are in here through ``offset`` even
+    though they are provably a pure z translation of every candidate (measured:
+    xy delta exactly 0.0).  Deriving the shift instead would work and would win
+    two more sliders -- but a key missing a field it needed does not miss the
+    cache, it silently freezes a column somewhere wrong, which is a far worse
+    failure than re-solving.  The eight controls that matter most are the free
+    ones either way.
+    """
+    return (
+        tuple(id(m) for _c, m in built),
+        tuple(np.asarray(rotation, float).ravel().tolist()),
+        tuple(np.asarray(offset, float).tolist()),
+        int(wanted), float(radius), float(foot),
+        float(stand.column_normal_min), float(stand.column_edge_frac),
+        float(stand.column_edge_margin_mm), bool(stand.column_prefer_protein),
+    )
+
+
+def _column_cache_get(key: tuple):
+    with _COLUMN_LOCK:
+        hit = _COLUMN_CACHE.get(key)
+        if hit is not None:
+            _COLUMN_CACHE.move_to_end(key)
+            return hit[1]
+        return None
+
+
+def _column_cache_put(key: tuple, built, value) -> None:
+    with _COLUMN_LOCK:
+        # built is held only to keep the id()s in the key honest.
+        _COLUMN_CACHE[key] = (list(built), value)
+        _COLUMN_CACHE.move_to_end(key)
+        while len(_COLUMN_CACHE) > _COLUMN_CACHE_MAX:
+            _COLUMN_CACHE.popitem(last=False)
+
+
 def solve_layout(built, params: PrintParams,
                  meta: Optional[dict] = None) -> Optional[StandLayout]:
     """Work out the whole stand without building any of it.
@@ -1513,38 +1574,51 @@ def solve_layout(built, params: PrintParams,
     radius = max(1.0, float(stand.column_diameter_mm) * 0.5)
     foot = radius * (float(stand.column_flare)
                      if bool(getattr(stand, "column_flared", True)) else 1.0)
-    model_centre = _centre_of_mass_xy_placed(built, rotation, offset, meshes)
-    hull = footprint_hull(meshes)
-    candidates = _underside_candidates(
-        meshes, stand, cell_mm=max(2.0, radius),
-        mtypes=[getattr(c, "mtype", None) for c in chains])
-    if candidates:
-        # Order matters. Reachability first: it is the cheap filter and usually
-        # removes the most. Then which molecule may carry the load, then the
-        # cosmetic trim of the outer fringe — narrowing by taste before
-        # narrowing by physics would throw away points the physics still needed.
-        candidates = _drop_obstructed(candidates, meshes, foot + 0.6)
-        candidates = _drop_shared_candidates(candidates, meshes, radius + 1.0)
-        if stand.column_prefer_protein:
-            candidates = _prefer_protein(candidates, minimum=max(1, wanted))
-        candidates = _drop_edge_candidates(
-            candidates, hull,
-            cap_mm=foot + float(stand.column_edge_margin_mm),
-            edge_frac=float(stand.column_edge_frac),
-            minimum=max(4, wanted + 2))
-    if not candidates:
-        notes.append(
-            "No column could be placed: in this orientation there is no "
-            "downward-facing surface with a clear path down to the plate. Turn "
-            "the model so a flatter, more exposed face points down.")
-        columns: List[_Candidate] = []
+    # Everything from here to the end of this block depends only on the meshes,
+    # the orientation and the column settings — never on the plaque — so it is
+    # cached under exactly those. See _column_cache_key for what that buys.
+    _ckey = _column_cache_key(built, rotation, offset, stand, wanted, radius, foot)
+    _cached = _column_cache_get(_ckey)
+    if _cached is not None:
+        hull, columns, column_notes = _cached
     else:
-        columns = _choose_columns(candidates, wanted, model_centre)
-        if len(columns) < wanted:
-            notes.append(
-                f"Placed {len(columns)} column(s) rather than {wanted}: the "
-                f"underside did not offer enough separated, unobstructed spots "
-                f"in this orientation.")
+        column_notes: List[str] = []
+        model_centre = _centre_of_mass_xy_placed(built, rotation, offset, meshes)
+        hull = footprint_hull(meshes)
+        candidates = _underside_candidates(
+            meshes, stand, cell_mm=max(2.0, radius),
+            mtypes=[getattr(c, "mtype", None) for c in chains])
+        if candidates:
+            # Order matters. Reachability first: it is the cheap filter and
+            # usually removes the most. Then which molecule may carry the load,
+            # then the cosmetic trim of the outer fringe — narrowing by taste
+            # before narrowing by physics would throw away points the physics
+            # still needed.
+            candidates = _drop_obstructed(candidates, meshes, foot + 0.6)
+            candidates = _drop_shared_candidates(candidates, meshes, radius + 1.0)
+            if stand.column_prefer_protein:
+                candidates = _prefer_protein(candidates, minimum=max(1, wanted))
+            candidates = _drop_edge_candidates(
+                candidates, hull,
+                cap_mm=foot + float(stand.column_edge_margin_mm),
+                edge_frac=float(stand.column_edge_frac),
+                minimum=max(4, wanted + 2))
+        if not candidates:
+            column_notes.append(
+                "No column could be placed: in this orientation there is no "
+                "downward-facing surface with a clear path down to the plate. "
+                "Turn the model so a flatter, more exposed face points down.")
+            columns: List[_Candidate] = []
+        else:
+            columns = _choose_columns(candidates, wanted, model_centre)
+            if len(columns) < wanted:
+                column_notes.append(
+                    f"Placed {len(columns)} column(s) rather than {wanted}: the "
+                    f"underside did not offer enough separated, unobstructed "
+                    f"spots in this orientation.")
+        _column_cache_put(_ckey, built, (hull, columns, column_notes))
+    # Callers treat these as read-only; a cache hit hands out the same objects.
+    notes.extend(column_notes)
 
     return StandLayout(
         oriented_built=oriented_built, meshes=meshes, chains=chains,

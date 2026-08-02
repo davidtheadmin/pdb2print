@@ -2041,7 +2041,8 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         step(0.93, "Re-checking the fit after connecting…")
         mans, _again, late = interference.resolve(mans, chains, params,
                                                   allow_split=False,
-                                                  want_pieces=False)
+                                                  want_pieces=False,
+                                                  want_boxes=True)
         fit_notes.extend(f"After connecting — {note[0].lower()}{note[1:]}"
                          for note in late)
         # ...and say so plainly if anything survived that.

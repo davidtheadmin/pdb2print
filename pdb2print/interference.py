@@ -214,8 +214,14 @@ def _boxes_disjoint(a, b) -> bool:
     return bool(np.any(a[1] < b[0]) or np.any(b[1] < a[0]))
 
 
-def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
+def pair_overlaps(mans, want_pieces: bool = True,
+                  want_boxes: Optional[bool] = None) -> List[Overlap]:
     """Every interpenetrating pair among ``mans``, with its shared solid.
+
+    ``want_boxes`` asks for each lobe's bounding box without the rest of the
+    measurement — that is what the carve localises on, and it is cheap.
+    Defaults to following ``want_pieces``, which is what every existing caller
+    expects.
 
     ``want_pieces`` decomposes each overlap into connected lobes and measures
     them, which is what the connector pass uses to seat magnets exactly where
@@ -230,6 +236,9 @@ def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
     objects, so 28 pairs instead of 6, and all but a handful are a protein and a
     drug at opposite ends of the model.
     """
+    # Boxes default to following want_pieces, so a caller that never asked
+    # sees exactly what it always did.
+    boxes_wanted = want_pieces if want_boxes is None else bool(want_boxes)
     out: List[Overlap] = []
     n = len(mans)
     boxes = [_bounds(m) for m in mans]
@@ -248,8 +257,41 @@ def pair_overlaps(mans, want_pieces: bool = True) -> List[Overlap]:
                 continue
             if want_pieces:
                 ov.pieces, ov.boxes = _measure_pieces(solid)
+            elif boxes_wanted:
+                ov.boxes = _lobe_boxes(solid)
             out.append(ov)
     return out
+
+
+def _lobe_boxes(solid) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """Just the bounding box of every lobe — no centroids, no principal axes.
+
+    This is the half of :func:`_measure_pieces` the *carve* needs.  The other
+    half — a centroid and a thin axis per lobe, each costing a mesh conversion
+    and an SVD — is for the connector seat search, and the two were tied to one
+    flag.  Switching the expensive measurement off therefore also emptied
+    ``ov.boxes``, and :func:`_carve_tool` silently lost its entire localisation:
+    with no boxes it falls back to a single box around the whole overlap, which
+    its own docstring explains saves nothing on a duplex.  The local solid then
+    grows from a few thousand triangles toward the whole chain, and the dilation
+    with it — measured 250ms against 2,750ms.
+    """
+    try:
+        chunks = solid.decompose() or [solid]
+    except Exception:
+        chunks = [solid]
+    boxes: List[Tuple[np.ndarray, np.ndarray]] = []
+    for chunk in chunks:
+        if chunk is None or chunk.is_empty():
+            continue
+        if _volume(chunk) <= 0.0:
+            continue
+        try:
+            bb = chunk.bounding_box()
+            boxes.append((np.array(bb[:3], float), np.array(bb[3:], float)))
+        except Exception:
+            pass
+    return boxes
 
 
 def _measure_pieces(solid):
@@ -483,7 +525,8 @@ def _subtract(man, tool, allow_split: bool = True):
 
 def resolve(mans, chains: List[Chain], params: PrintParams,
             overlaps: Optional[List[Overlap]] = None,
-            allow_split: bool = True, want_pieces: bool = True):
+            allow_split: bool = True, want_pieces: bool = True,
+            want_boxes: Optional[bool] = None):
     """Make every solid in ``mans`` disjoint from the others.
 
     Returns ``(new_mans, overlaps, notes)`` where ``overlaps`` are the overlaps
@@ -501,7 +544,8 @@ def resolve(mans, chains: List[Chain], params: PrintParams,
         # SVD.  The closing sweep only carves; it has no seats left to place, so
         # asking for that is pure waste and on a five-chain complex it was
         # seconds of it.
-        overlaps = pair_overlaps(mans, want_pieces=want_pieces)
+        overlaps = pair_overlaps(mans, want_pieces=want_pieces,
+                                 want_boxes=want_boxes)
     if not overlaps:
         return mans, [], []
 
