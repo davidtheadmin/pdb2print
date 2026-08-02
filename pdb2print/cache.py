@@ -660,8 +660,13 @@ class Cache:
         if total <= self.max_bytes:
             return []
 
+        # ``.tmp`` is a store() in progress (see :meth:`store`), not an entry.
+        # It has no meta.json yet, so the stale-first ordering below would put it
+        # at the very front of the eviction queue and delete it mid-write —
+        # os.replace would then fail and the store would silently do nothing.
         keys = [n for n in os.listdir(self.root)
-                if os.path.isdir(os.path.join(self.root, n))]
+                if os.path.isdir(os.path.join(self.root, n))
+                and not n.endswith(".tmp")]
         # Stale-version entries first, then least-recently-used.
         #
         # A CACHE_VERSION bump makes every existing entry unreachable -- the

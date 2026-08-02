@@ -433,9 +433,16 @@ class _ImmutableStatic(StaticFiles):
     internals.
     """
 
+    #: Files under these mounts whose name does *not* change with their
+    #: content. Only one so far: the cache writes a human-readable listing at
+    #: its root, and that is rewritten in place on every store.
+    MUTABLE = {"index.json"}
+
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        if os.path.basename(path) not in self.MUTABLE:
+            response.headers["Cache-Control"] = ("public, max-age=31536000, "
+                                                 "immutable")
         return response
 
 
@@ -717,9 +724,16 @@ _RECENT_LOCK = threading.Lock()
 #: next one.
 _RECENT_MAX = 2
 
-#: How many tokens to keep in total. A cache hit remembers no geometry — a key
-#: and a params object, bytes not megabytes — so those are worth holding far
-#: longer than the meshes are, and they must not push a real build out.
+#: How many tokens to keep in total. A cache hit starts out remembering no
+#: geometry — a key and a params object, bytes not megabytes — so those are
+#: worth holding far longer than the meshes are.
+#:
+#: They no longer *stay* that way: standing up a cached model reopens its
+#: meshes and _remember_reopened keeps them, which promotes that token to
+#: mesh-holding and lets it evict an earlier real build under _RECENT_MAX. That
+#: is the intended trade — the alternative was reopening the zip on every
+#: preview — but it does mean "add a stand to a cached model" can cost the
+#: previous build its place, and a stand on *that* one would then rebuild.
 _RECENT_TOKENS = 64
 
 
@@ -763,7 +777,7 @@ def _trim_recent_locked() -> None:
         _RECENT_BUILDS.popitem(last=False)
 
 
-def _remember_reopened(token: str, built) -> None:
+def _remember_reopened(token: str, built, params=None) -> None:
     """Hold on to meshes reopened from the disk cache.
 
     Reopening is not cheap -- unzip the per-chain STL zip, load every chain, run
@@ -783,6 +797,13 @@ def _remember_reopened(token: str, built) -> None:
         if entry is None:
             return
         entry["built"] = built
+        if params is not None:
+            # The meshes and the params have to describe the same build. This
+            # branch can be reached with an entry whose own hit failed to reopen
+            # and a *different* cache entry that succeeded, and storing the
+            # meshes without their params would leave the token answering with a
+            # pair that never existed.
+            entry["params"] = params
         entry.pop("reopen_failed", None)
         _RECENT_BUILDS.move_to_end(token)
         _trim_recent_locked()
@@ -961,11 +982,13 @@ def _run_and_export(source: str, params: PrintParams, progress,
     # Deliberately not the whole result. The download links and the stand button
     # need files that are not on disk yet, and offering them here would be
     # offering a 404.
+    sent_model = False
     if on_model is not None:
         try:
             on_model({"glb_url": f"/files/{token}/{stem}.glb",
                       "chains": chains, "size_mm": size_mm,
                       "scale_used": params.scale_mm_per_angstrom})
+            sent_model = True
         except Exception:
             pass                      # a preview must never be able to fail a build
         progress(0.97, "Model ready — writing the download files…")
@@ -1047,11 +1070,27 @@ def _run_and_export(source: str, params: PrintParams, progress,
         # weight — the cache serves the same bytes from a stable URL. Keeping
         # both doubled disk use per build, and nothing ever deleted the temp
         # copy, so it accumulated until the container restarted.
+        #
+        # Except the GLB, when the viewer has already been sent to it. Rewriting
+        # that URL would make model-viewer reload the same geometry from a
+        # different address — throwing away however the user had orbited it in
+        # the seconds since — and deleting the file first would blank the viewer
+        # outright if the fetch were still in flight. So the early URL stays
+        # valid and only the two downloads move; _sweep_output_root clears the
+        # directory on a later build. The 3MF and the STL zip are the big ones
+        # anyway, and nobody is holding a link to those yet.
         if stored:
-            result["glb_url"] = f"/cache/{stored}/{stem}.glb"
             result["threemf_url"] = f"/cache/{stored}/{stem}.3mf"
             result["stl_url"] = f"/cache/{stored}/{stem}_stl.zip"
-            shutil.rmtree(out_dir, ignore_errors=True)
+            if sent_model:
+                for name in (f"{stem}.3mf", f"{stem}_stl.zip"):
+                    try:
+                        os.remove(os.path.join(out_dir, name))
+                    except OSError:
+                        pass
+            else:
+                result["glb_url"] = f"/cache/{stored}/{stem}.glb"
+                shutil.rmtree(out_dir, ignore_errors=True)
 
     return result
 
@@ -1534,7 +1573,7 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
             progress(0.20, "Reopening the cached model…")
         built = _built_from_cache(hit, source)
         if built is not None:
-            _remember_reopened(token, built)
+            _remember_reopened(token, built, params)
             return built, params, "the cached build"
     return None, params, None
 

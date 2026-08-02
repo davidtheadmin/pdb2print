@@ -3110,10 +3110,12 @@
       input.maxLength = 48;
       input.dataset.legendIndex = String(r.index);
       input.value = r.full || r.text || '';
-      // Same rule as the name and note fields below: redraw locally on every
-      // keystroke, ask the server on blur. These were wired the old way and
-      // solved per letter, and the debounce caps at 1.4s, so on a slow solve a
-      // typist queued full solves that all ran and were all discarded.
+      // Same rule as the name and note fields below: ask the server on blur,
+      // not per letter. These were wired the old way, and the debounce caps at
+      // 1.4s, so on a slow solve a typist queued full solves that all ran and
+      // were all discarded. (The sketch draws its plaque rows from the last
+      // server answer, so the label itself still only appears on blur — same as
+      // the note field already behaved.)
       input.addEventListener('input', () => standChanged(false, { solve: false }));
       input.addEventListener('change', () => standChanged());
       label.appendChild(tag);
@@ -4466,6 +4468,13 @@
     document.body.classList.toggle('stand-open', on);
     if (on) {
       prefillTitle();
+      // The sketch photographs the viewer's canvas, so the element has to be
+      // upgraded first. On a cache hit the result lands in ~200ms, which can be
+      // sooner than the 913 KB module — and captureModel fails silently, so the
+      // symptom would be the generic silhouette appearing on exactly the
+      // structures that load fastest.
+      await ensureViewer();
+      await customElements.whenDefined('model-viewer');
       await captureModel();
       standChanged(true);
     }
