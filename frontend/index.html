@@ -3062,7 +3062,12 @@
       input.maxLength = 48;
       input.dataset.legendIndex = String(r.index);
       input.value = r.full || r.text || '';
-      input.addEventListener('input', () => standChanged());
+      // Same rule as the name and note fields below: redraw locally on every
+      // keystroke, ask the server on blur. These were wired the old way and
+      // solved per letter, and the debounce caps at 1.4s, so on a slow solve a
+      // typist queued full solves that all ran and were all discarded.
+      input.addEventListener('input', () => standChanged(false, { solve: false }));
+      input.addEventListener('change', () => standChanged());
       label.appendChild(tag);
       label.appendChild(input);
       box.appendChild(label);
@@ -4125,6 +4130,7 @@
 
   // ---- asking the server to solve it --------------------------------------
   let previewTimer = null;
+  let previewAbort = null;
   let waitTimer = null;
   let lastSolveMs = 320;
   // Streaming a drag is right, but a fixed 320 ms is only right for the cheap
@@ -4158,14 +4164,27 @@
     }, 1000);
     $('#sk-busy').hidden = false;
     const fd = collectForm();
+    // The preview takes its structure from the build token or the PDB id and
+    // throws any uploaded file away -- but collectForm attaches it, because
+    // Generate needs it. On a 30 MB mmCIF that is the whole file back up the
+    // wire on every nudge, spooled to disk server-side before being discarded.
+    fd.delete('file');
     fd.append('build_token', (standBuild && standBuild.token) || '');
     fd.append('orbit_theta', lockedOrbit.theta.toFixed(3));
     fd.append('orbit_phi', lockedOrbit.phi.toFixed(3));
     fd.append('orbit_roll', String(standRoll));
     const vals = standValues();
     Object.keys(vals).forEach(k => fd.append(k, String(vals[k])));
+    // Call off the request the previous nudge started. The seq guard below
+    // already discards a stale *answer*, but the server was still computing it:
+    // an abandoned solve ran to completion in the same threads a build wants.
+    // Generate has aborted properly since it was written; this never did.
+    if (previewAbort) previewAbort.abort();
+    const abort = new AbortController();
+    previewAbort = abort;
     try {
-      const res = await fetch('/api/stand/preview', { method: 'POST', body: fd });
+      const res = await fetch('/api/stand/preview',
+                              { method: 'POST', body: fd, signal: abort.signal });
       const data = await res.json();
       if (seq !== previewSeq) return;          // a later request already won
       const stale = $('#sp-stale');
@@ -4185,8 +4204,11 @@
       standLayout = (data && data.ready) ? data : null;
       applyWidthBounds();
     } catch (err) {
+      // An abort is this function superseding itself, not a failure.
+      if (err && err.name === 'AbortError') return;
       if (seq === previewSeq) standLayout = null;
     } finally {
+      if (previewAbort === abort) previewAbort = null;
       // Guarded on seq: an older request finishing must not clear the notice a
       // newer, slower one is waiting to show.
       if (seq === previewSeq) {

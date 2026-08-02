@@ -528,6 +528,40 @@ def _centre_of_mass_xy(meshes: Sequence[trimesh.Trimesh]) -> np.ndarray:
     return (accum / total)[:2]
 
 
+def _centre_of_mass_xy_placed(built, rotation: np.ndarray, offset: np.ndarray,
+                              placed: Sequence[trimesh.Trimesh]) -> np.ndarray:
+    """Same answer as ``_centre_of_mass_xy(placed)``, without re-measuring.
+
+    Volume is invariant under a rotation and a translation and the centre of
+    mass is equivariant under both, so there is nothing here that has to be
+    measured on the placed meshes -- and measuring is what cost: those are
+    fresh copies, so trimesh's mass-properties cache is cold every time and each
+    preview paid for a full volume integration over every chain (measured at
+    249ms on a 245k-face model, 1.8s on a 983k-face one, against 0.1ms on a warm
+    mesh).  The originals are the same objects from one preview to the next, so
+    they are integrated once and the answer is moved arithmetically thereafter.
+
+    ``placed`` is only touched for the degenerate fallback, which needs vertices
+    in the final frame.
+    """
+    total = 0.0
+    accum = np.zeros(3)
+    for _c, mesh in built:
+        try:
+            volume = float(abs(mesh.volume))
+            centre = np.asarray(mesh.center_mass, float)
+        except Exception:
+            continue
+        if volume <= 0 or not np.all(np.isfinite(centre)):
+            continue
+        accum += centre * volume
+        total += volume
+    if total <= 0:
+        allv = np.vstack([m.vertices for m in placed])
+        return allv.mean(axis=0)[:2]
+    return ((accum / total) @ rotation.T + offset)[:2]
+
+
 def _choose_columns(candidates: List[_Candidate], count: int,
                     centre_xy: np.ndarray) -> List[_Candidate]:
     """Pick ``count`` column sites: spread wide, but under the centre of mass.
@@ -552,7 +586,15 @@ def _choose_columns(candidates: List[_Candidate], count: int,
     down = np.array([max(0.0, float(c.downness)) for c in candidates])
 
     def flatness(idx) -> float:
-        return 0.62 + 0.38 * float(np.mean(down[list(idx)]))
+        # Plain arithmetic rather than np.mean, which is called once per
+        # candidate pair or triple -- C(44,3) = 13,244 of them for three
+        # columns -- and spent more time in numpy's dispatch than on the two or
+        # three floats it was averaging (57ms against 5.8ms, measured).  The
+        # summation order is the same, so the value is too.
+        total = 0.0
+        for i in idx:
+            total += down[i]
+        return 0.62 + 0.38 * float(total / len(idx))
 
     if count == 1:
         # Directly under the centre of mass, and low: a single column is a
@@ -1313,12 +1355,21 @@ def solve_layout(built, params: PrintParams,
 
     chains = [c for c, _m in built]
     rotation = stand_rotation(stand)
-    rotated = [_apply_rotation(m, rotation, np.zeros(3)) for _c, m in built]
-    if not rotated:
+    # One copy per chain, not two.  This was two passes of _apply_rotation, and
+    # a trimesh copy() walks a hash over the vertex and face arrays -- on a
+    # 983k-face model that is 1.18s of the solve, against 0.7ms for the
+    # arithmetic it exists to carry.  The second pass only added a constant, so
+    # it is applied in place below once the bounds it depends on are known.
+    meshes = []
+    for _c, m in built:
+        out = m.copy()
+        out.vertices = np.asarray(out.vertices, float) @ rotation.T
+        meshes.append(out)
+    if not meshes:
         return None
 
-    lows = np.array([m.bounds[0] for m in rotated])
-    highs = np.array([m.bounds[1] for m in rotated])
+    lows = np.array([m.bounds[0] for m in meshes])
+    highs = np.array([m.bounds[1] for m in meshes])
     model_min = lows.min(axis=0)
     model_max = highs.max(axis=0)
 
@@ -1329,7 +1380,8 @@ def solve_layout(built, params: PrintParams,
     offset = np.array([-centre_xy[0], -centre_xy[1],
                        -model_min[2] + float(stand.stand_off_mm)
                        + float(stand.plate_thickness_mm)])
-    meshes = [_apply_rotation(m, np.eye(3), offset) for m in rotated]
+    for out in meshes:
+        out.vertices = np.asarray(out.vertices, float) + offset
     oriented_built = [(chains[i], meshes[i]) for i in range(len(meshes))]
 
     lows = np.array([m.bounds[0] for m in meshes])
@@ -1461,7 +1513,7 @@ def solve_layout(built, params: PrintParams,
     radius = max(1.0, float(stand.column_diameter_mm) * 0.5)
     foot = radius * (float(stand.column_flare)
                      if bool(getattr(stand, "column_flared", True)) else 1.0)
-    model_centre = _centre_of_mass_xy(meshes)
+    model_centre = _centre_of_mass_xy_placed(built, rotation, offset, meshes)
     hull = footprint_hull(meshes)
     candidates = _underside_candidates(
         meshes, stand, cell_mm=max(2.0, radius),

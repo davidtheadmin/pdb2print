@@ -680,14 +680,61 @@ def _remember_build(token: str, source: str, params: PrintParams, built,
             "meta": dict(meta or {}),
         }
         _RECENT_BUILDS.move_to_end(token)
-        # Two ceilings, because the two kinds of entry cost wildly different
-        # amounts. Oldest first, and only mesh-holding entries count against
-        # the small one.
-        meshy = [k for k, e in _RECENT_BUILDS.items() if e.get("built") is not None]
-        for stale in meshy[:max(0, len(meshy) - _RECENT_MAX)]:
-            _RECENT_BUILDS.pop(stale, None)
-        while len(_RECENT_BUILDS) > _RECENT_TOKENS:
-            _RECENT_BUILDS.popitem(last=False)
+        _trim_recent_locked()
+
+
+def _trim_recent_locked() -> None:
+    """Apply both ceilings. The caller holds ``_RECENT_LOCK``.
+
+    Two of them, because the two kinds of entry cost wildly different amounts.
+    Oldest first, and only mesh-holding entries count against the small one.
+    """
+    meshy = [k for k, e in _RECENT_BUILDS.items() if e.get("built") is not None]
+    for stale in meshy[:max(0, len(meshy) - _RECENT_MAX)]:
+        _RECENT_BUILDS.pop(stale, None)
+    while len(_RECENT_BUILDS) > _RECENT_TOKENS:
+        _RECENT_BUILDS.popitem(last=False)
+
+
+def _remember_reopened(token: str, built) -> None:
+    """Hold on to meshes reopened from the disk cache.
+
+    Reopening is not cheap -- unzip the per-chain STL zip, load every chain, run
+    the repair pass -- and the stand preview asks for it once per slider nudge.
+    Measured at 6.7s on a 1.3M-face model, so a three-second drag was a minute
+    of duplicated disk work, every byte of it thrown away, in the same threads
+    the builds want.  Nothing here was memoised: there was no cache of any kind
+    in front of this.
+
+    The entry becomes mesh-holding, so it now counts against ``_RECENT_MAX``
+    like any other -- which is the right accounting, because it costs the same.
+    """
+    if not token:
+        return
+    with _RECENT_LOCK:
+        entry = _RECENT_BUILDS.get(token)
+        if entry is None:
+            return
+        entry["built"] = built
+        entry.pop("reopen_failed", None)
+        _RECENT_BUILDS.move_to_end(token)
+        _trim_recent_locked()
+
+
+def _remember_reopen_failed(token: str) -> None:
+    """Remember that this entry's meshes could not be reopened.
+
+    The failure is the common case, not the rare one: an STL round trip cannot
+    reproduce a watertight mesh, so most hits decline at the gate in
+    ``_built_from_cache``.  Without this the next preview pays the full reopen
+    cost to reach the same answer, and the one after that pays it again.
+    """
+    if not token:
+        return
+    with _RECENT_LOCK:
+        entry = _RECENT_BUILDS.get(token)
+        if entry is not None:
+            entry["reopen_failed"] = True
 
 
 def _recall_build(token: str):
@@ -1321,15 +1368,25 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
         if progress:
             progress(0.30, "Using the model already built…")
         return entry["built"], entry["params"], "meshes in memory"
+    # Key of an entry already tried and declined this session, so the disk
+    # lookup below does not reopen the very same zip a second time.  It did:
+    # the lookup reconstructs the key /api/generate stored, which for a token
+    # carrying a hit is that hit -- so a preview on a cache-served model paid
+    # the reopen cost twice before answering "not ready".
+    declined_key = None
     if entry is not None and entry.get("hit"):
-        # The token came from a cache hit: no meshes were ever made in this
-        # process, but the entry that served it is known exactly, so there is
-        # nothing to look up and nothing to get wrong.
-        if progress:
-            progress(0.20, "Reopening the cached model…")
-        built = _built_from_cache(entry["hit"], source)
-        if built is not None:
-            return built, entry["params"], "the cached build"
+        declined_key = (entry.get("hit") or {}).get("key")
+        if not entry.get("reopen_failed"):
+            # The token came from a cache hit: no meshes were ever made in this
+            # process, but the entry that served it is known exactly, so there is
+            # nothing to look up and nothing to get wrong.
+            if progress:
+                progress(0.20, "Reopening the cached model…")
+            built = _built_from_cache(entry["hit"], source)
+            if built is not None:
+                _remember_reopened(token, built)
+                return built, entry["params"], "the cached build"
+            _remember_reopen_failed(token)
     try:
         # Look the build up the way the build itself was stored: with the stand
         # switched OFF. canonical_params drops the whole stand block when it is
@@ -1346,11 +1403,14 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None):
         hit = cache.lookup(source, base)
     except Exception:
         hit = None
+    if hit and declined_key is not None and hit.get("key") == declined_key:
+        hit = None                    # same entry, already tried and declined
     if hit:
         if progress:
             progress(0.20, "Reopening the cached model…")
         built = _built_from_cache(hit, source)
         if built is not None:
+            _remember_reopened(token, built)
             return built, params, "the cached build"
     return None, params, None
 
