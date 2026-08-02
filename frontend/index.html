@@ -2729,6 +2729,26 @@
     return viewerModule;
   }
 
+  // The model as soon as it exists, ahead of the STL zip and the 3MF.
+  //
+  // Deliberately not applyResult: no download links, no stand button, no
+  // report. Those all need files the server has not written yet, so offering
+  // them here would be offering a 404. Everything this does touch is derived
+  // from the meshes, which are final by the time the GLB is on disk.
+  function showEarlyModel(data) {
+    if (!data || !data.glb_url) return;
+    const v = $('#viewer');
+    v.style.display = 'block';
+    $('#viewer-empty').style.display = 'none';
+    ensureViewer();
+    v.setAttribute('src', data.glb_url);
+    renderLegend(data.chains);
+    if (data.size_mm && data.scale_used) {
+      extentAng = data.size_mm.map(x => x / data.scale_used);
+      updateScaleSize();
+    }
+  }
+
   function applyResult(data) {
     if (data.glb_url) {
       const v = $('#viewer');
@@ -2821,6 +2841,11 @@
           // real one clears the notice without needing its own event.
           showQueued(evt.data.queued || 0);
           setReport(evt.data.msg || '', false);
+        } else if (evt.event === 'model') {
+          // An older cached page has never heard of this event and simply
+          // ignores it, which leaves it exactly where it was: waiting for the
+          // result. So this is safe to add without a CODE_STAMP dance.
+          showEarlyModel(evt.data);
         } else if (evt.event === 'result') {
           finalResult = evt.data;
         }
@@ -3288,7 +3313,7 @@
   // the real one taken at the moment the view was locked, so what is standing on
   // the columns is the structure, in the pose it will be built for.
   // Must match server.CODE_STAMP. See the comment there for why this exists.
-  const CODE_STAMP = '2026-07-30.1';
+  const CODE_STAMP = '2026-08-02.1';
 
   const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
   let standLayout = null;                     // last /api/stand/preview payload

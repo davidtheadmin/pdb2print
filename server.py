@@ -126,7 +126,7 @@ def _bounded(fields: dict, name: str) -> float:
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = '2026-07-30.1'
+CODE_STAMP = '2026-08-02.1'
 
 #: When this process started, for /api/health.
 _STARTED = time.time()
@@ -853,13 +853,18 @@ def _cached_result(meta: dict, source: str = "") -> dict:
 
 
 def _run_and_export(source: str, params: PrintParams, progress,
-                    should_cancel=None) -> dict:
+                    should_cancel=None, on_model=None) -> dict:
     """Blocking build + export; returns the result JSON dict (never raises).
 
     ``progress(frac, msg)`` is forwarded straight into ``build_all`` and reused
     for the export phase, so the SSE stream keeps ticking after meshing too.
     ``should_cancel`` is polled by the pipeline so a disconnected client stops
     the build instead of leaving it to run to completion unwatched.
+
+    ``on_model(payload)``, when given, is called the moment the GLB is on disk
+    and before the slower exports run, so the viewer can show the model while
+    the downloads are still being written.  Optional because a cache hit never
+    reaches it and the CLI has nothing to send it to.
     """
     # Cache first: the overwhelming majority of requests are a handful of famous
     # structures at preset settings, and serving those as static files is the
@@ -916,32 +921,6 @@ def _run_and_export(source: str, params: PrintParams, progress,
     # uuid directory (not the filename) is what keeps concurrent builds apart.
     stem = _download_stem(source, params)
 
-    # A full disk surfaces here first, because the exporters write before the
-    # cache does. Caught explicitly so it reports as a server problem the
-    # operator can act on, rather than as an unhandled traceback that reads like
-    # the structure was at fault.
-    try:
-        export.write_glb(report.built, os.path.join(out_dir, f"{stem}.glb"),
-                         markers=report.connection_markers)
-        export.write_stl_zip(report.built, os.path.join(out_dir, f"{stem}_stl.zip"))
-    except OSError as exc:
-        shutil.rmtree(out_dir, ignore_errors=True)
-        return _error_payload(
-            "The server ran out of disk space while writing the export files. "
-            f"This is not a problem with your structure. ({exc.strerror or exc})"
-        )
-
-    threemf_url = None
-    warning = None
-    try:
-        export.write_3mf(report.built, os.path.join(out_dir, f"{stem}.3mf"))
-        threemf_url = f"/files/{token}/{stem}.3mf"
-    except RuntimeError as exc:
-        # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
-        warning = str(exc)
-    except OSError as exc:
-        warning = f"Could not write the 3MF: {exc.strerror or exc}"
-
     chains = [
         {"id": chain.chain_id, "name": chain.name,
          "color": _rgb_to_hex(color_for_index(i))}
@@ -955,6 +934,58 @@ def _run_and_export(source: str, params: PrintParams, progress,
         mins = [min(m.bounds[0][k] for _, m in report.built) for k in range(3)]
         maxs = [max(m.bounds[1][k] for _, m in report.built) for k in range(3)]
         size_mm = [float(maxs[k] - mins[k]) for k in range(3)]
+
+    # A full disk surfaces here first, because the exporters write before the
+    # cache does. Caught explicitly so it reports as a server problem the
+    # operator can act on, rather than as an unhandled traceback that reads like
+    # the structure was at fault.
+    _DISK_FULL = ("The server ran out of disk space while writing the export "
+                  "files. This is not a problem with your structure. ")
+    try:
+        export.write_glb(report.built, os.path.join(out_dir, f"{stem}.glb"),
+                         markers=report.connection_markers)
+    except OSError as exc:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return _error_payload(_DISK_FULL + f"({exc.strerror or exc})")
+
+    # Show the model now, rather than when the *downloads* are ready.
+    #
+    # The viewer needs the GLB and nothing else, but the result event was held
+    # back until the STL zip and the 3MF were both written -- measured at 3.1s
+    # and 14.1s on a 1.3M-face model, so on a large structure the user sat
+    # watching an already-finished build for another seventeen seconds. The 3MF
+    # is slow for a structural reason (lib3mf builds a Python object per vertex
+    # and per triangle: 9.8s of that 14s), so sending the model early is the fix
+    # available without touching the exporter.
+    #
+    # Deliberately not the whole result. The download links and the stand button
+    # need files that are not on disk yet, and offering them here would be
+    # offering a 404.
+    if on_model is not None:
+        try:
+            on_model({"glb_url": f"/files/{token}/{stem}.glb",
+                      "chains": chains, "size_mm": size_mm,
+                      "scale_used": params.scale_mm_per_angstrom})
+        except Exception:
+            pass                      # a preview must never be able to fail a build
+        progress(0.97, "Model ready — writing the download files…")
+
+    try:
+        export.write_stl_zip(report.built, os.path.join(out_dir, f"{stem}_stl.zip"))
+    except OSError as exc:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return _error_payload(_DISK_FULL + f"({exc.strerror or exc})")
+
+    threemf_url = None
+    warning = None
+    try:
+        export.write_3mf(report.built, os.path.join(out_dir, f"{stem}.3mf"))
+        threemf_url = f"/files/{token}/{stem}.3mf"
+    except RuntimeError as exc:
+        # 3MF unavailable / non-manifold — still ship GLB + STL, surface message.
+        warning = str(exc)
+    except OSError as exc:
+        warning = f"Could not write the 3MF: {exc.strerror or exc}"
 
     progress(1.0, "Done.")
     result = {
@@ -1179,6 +1210,10 @@ async def generate(
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
+        def model_ready(payload):
+            """The GLB exists; put it on screen without waiting for the rest."""
+            loop.call_soon_threadsafe(queue.put_nowait, ("model", payload))
+
         def work():
             started.set()
             # ``__done__`` is queued from an outer finally, and that placement is
@@ -1190,7 +1225,8 @@ async def generate(
             try:
                 try:
                     result = _run_and_export(source, params, progress,
-                                             should_cancel=cancelled.is_set)
+                                             should_cancel=cancelled.is_set,
+                                             on_model=model_ready)
                 except Exception as exc:  # _run_and_export shouldn't raise
                     result = _error_payload(str(exc))
                 finally:
