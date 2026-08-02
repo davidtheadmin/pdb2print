@@ -1108,24 +1108,25 @@ def test_cartoon_degrades_to_tube_without_sse():
 # --------------------------------------------------------------------------
 # DNA↔DNA is never magnetised; builds can be cancelled
 # --------------------------------------------------------------------------
-def test_dna_dna_is_bridged_never_magnetised():
-    """A magnet pocket is wider than a backbone tube, so DNA↔DNA must bridge.
+def test_dna_dna_is_never_joined_unless_base_pairing_asked_for_it():
+    """Two strands get nothing. Protein↔DNA is unaffected and still magnetises.
 
-    Protein↔DNA is unaffected — it still magnetises when asked.
+    They used to be silently bridged, on the reasoning that a magnet pocket is
+    wider than a backbone tube so a magnet could not be seated there. True, but
+    the conclusion was wrong: a joint nobody asked for appeared between two
+    strands, and the base-pair pass is the feature that *is* meant to link them.
+    So it is now the only thing that does.
     """
     report = build_all(BNA, _params(
         connect=True, use_magnets=True, contact_threshold_mm=3.5,
         connector_diameter_mm=3.0, magnet_thickness_mm=1.5))
     assert _all_watertight_single(report)
-    dd = [c for c in report.connections if c["kind"] == "dna-dna"]
-    assert dd, "expected the two strands to be in contact"
-    assert all(c["method"] == "bridge" for c in dd)
+    assert not [c for c in report.connections if c["kind"] == "dna-dna"]
 
     mixed = build_all(COMPLEX, _params(
         connect=True, use_magnets=True, contact_threshold_mm=3.5,
         connector_diameter_mm=3.0, magnet_thickness_mm=1.5))
-    assert all(c["method"] == "bridge"
-               for c in mixed.connections if c["kind"] == "dna-dna")
+    assert not [c for c in mixed.connections if c["kind"] == "dna-dna"]
     assert any(c["method"] == "magnet"
                for c in mixed.connections if c["kind"] == "dna-protein")
 

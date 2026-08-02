@@ -1249,9 +1249,26 @@ def _object_centre(mesh):
         return None
 
 
-#: How much of a candidate's probe ball each side must fill before the joint is
-#: worth building at all. A spike grazing a surface fills almost none of it.
-_MIN_PROBE_FRACTION = 0.06
+#: How much material each side needs around a candidate before the joint is
+#: worth building, as a multiple of the collar's own volume.
+#:
+#: Measured against the *collar*, not against the probe ball, and that
+#: distinction is not cosmetic: the ball's radius is floored on the socket
+#: radius, so turning the socket on grows it by nearly half and its volume by
+#: seven times. A fraction-of-ball threshold therefore rejected everything the
+#: moment a socket was switched on, which is exactly what happened -- a joint
+#: that built happily without a collar failed the *acceptance test* with one,
+#: for no reason connected to the geometry.
+#:
+#: A multiple of the collar means the same thing at every socket size, every
+#: ball size and every scale.
+_MIN_PROBE_COLLARS = 1.5
+
+#: Blocked-to-seated ratio past which the parts plainly cannot come apart along
+#: this axis. Deliberately generous -- a rough carved interface has plenty of
+#: points on the "wrong" side of any plane through it, and this is meant to
+#: catch interlocking, not roughness.
+_MAX_BLOCKED_RATIO = 3.0
 
 
 def _probe_radius(mesh_a, mesh_b, socket_r: float) -> float:
@@ -1297,8 +1314,12 @@ def _surface_along(points, origin, axis, radius: float):
     return t[near] if np.any(near) else None
 
 
+#: Why the last interface's candidates were refused, when none survived.
+_LAST_REFUSALS: dict = {}
+
+
 def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
-                cp: ConnectionParams, need_depth: float):
+                cp: ConnectionParams, need_depth: float, refused=None):
     """One candidate spot, measured. Returns a :class:`Seat` or ``None``.
 
     The whole placement rule, and it is deliberately one idea rather than
@@ -1322,25 +1343,32 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     feature and flips only when that part barely fills the ball, and step 2 has
     already thrown those candidates out.
     """
+    def no(why):
+        if refused is not None:
+            refused.append(why)
+        return None
+
     blob_a = _local_solid(man_a, centre, probe_r)
     blob_b = _local_solid(man_b, centre, probe_r)
     if blob_a is None or blob_b is None:
-        return None
+        return no("no material in the probe")
     try:
         ball = (4.0 / 3.0) * np.pi * probe_r ** 3
-        frac_a = float(_manifold.volume(blob_a)) / ball
-        frac_b = float(_manifold.volume(blob_b)) / ball
+        vol_a = float(_manifold.volume(blob_a))
+        vol_b = float(_manifold.volume(blob_b))
     except Exception:
         return None
-    if min(frac_a, frac_b) < _MIN_PROBE_FRACTION:
-        return None
+    frac_a, frac_b = vol_a / ball, vol_b / ball
+    collar = float(np.pi * socket_r * socket_r * need_depth)
+    if min(vol_a, vol_b) < _MIN_PROBE_COLLARS * collar:
+        return no("too little material for the collar")
 
     com_a, com_b = _blob_centre(blob_a), _blob_centre(blob_b)
     if com_a is None or com_b is None:
-        return None
+        return no("no centre of mass")
     delta = com_b - com_a
     if float(np.linalg.norm(delta)) < 1e-6:
-        return None
+        return no("the two centres coincide")
     axis = _unit(delta)
 
     # Where that line actually crosses from one part to the other. The seat goes
@@ -1348,10 +1376,10 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     ta = _surface_along(pa, com_a, axis, socket_r)
     tb = _surface_along(pb, com_a, axis, socket_r)
     if ta is None or tb is None:
-        return None
+        return no("the axis misses one surface")
     a_face, b_face = float(ta.max()), float(tb.min())
     if b_face < a_face - socket_r:
-        return None                     # the line leaves A after entering B
+        return no("the axis leaves A after entering B")
     seat_centre = com_a + axis * (0.5 * (a_face + b_face))
     gap = max(0.0, b_face - a_face)
 
@@ -1361,8 +1389,8 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # another weighted term.
     blocked, seated = _path_census(pa, pb, seat_centre, axis,
                                    socket_r + cp.path_clearance_mm, need_depth)
-    if blocked > seated:
-        return None
+    if blocked > _MAX_BLOCKED_RATIO * seated:
+        return no("the parts cannot come apart along this axis")
 
     seat = Seat(center=seat_centre, axis=axis, gap=gap,
                 footprint=int(seated), patch=None, axis_source="probe")
@@ -1371,8 +1399,15 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # about, which is the one thing that has to be true of it.
     seat.emb_a, seat.emb_b = blob_a, blob_b
     seat.blocked = int(blocked)
+    # Volume alone will happily take a wider gap for slightly more material —
+    # which is wrong at the end of a DNA duplex, where the strands splay and
+    # the fullest probe is the one furthest from a joint that would actually
+    # close. Multiplied rather than subtracted, so a gap the collar cannot span
+    # cannot be bought back with volume however much of it there is.
+    reach = max(float(cp.contact_threshold_mm), 1e-6)
+    near = 1.0 - cp.seat_gap_falloff * min(1.0, gap / reach)
     seat.fill = float(min(frac_a, frac_b))
-    seat.score = float(min(frac_a, frac_b))
+    seat.score = float(min(frac_a, frac_b) * max(near, 0.0))
     seat.probe_a, seat.probe_b, seat.probe_r = float(frac_a), float(frac_b), probe_r
     return seat
 
@@ -1402,9 +1437,21 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
     wanted = min(len(mids), max(10, 4 * count + 6))
     picks = _farthest_seeds(mids, wanted)
 
-    seats = [s for s in (_probe_seat(man_a, man_b, pa, pb, mids[k], probe_r,
-                                     socket_r, cp, need_depth) for k in picks)
-             if s is not None]
+    seats, refused = [], []
+    for k in picks:
+        seat = _probe_seat(man_a, man_b, pa, pb, mids[k], probe_r,
+                           socket_r, cp, need_depth, refused)
+        if seat is not None:
+            seats.append(seat)
+    if not seats and refused:
+        # Never leave "no joint here" unexplained again: the tally says which
+        # test threw the candidates away, which is the one thing that cannot be
+        # worked out afterwards from the model.
+        tally = {}
+        for why in refused:
+            tally[why] = tally.get(why, 0) + 1
+        _LAST_REFUSALS.clear()
+        _LAST_REFUSALS.update(tally)
     seats.sort(key=lambda s: -s.score)
 
     kept: List[Seat] = []
@@ -1783,6 +1830,10 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     joined = "; ".join(sorted(set(reasons)) + extra)
     if placed:
         return True, f"placed {placed}/{attempted} — skipped: {joined}"
+    if not attempted and _LAST_REFUSALS:
+        why = ", ".join(f"{n}x {reason}" for reason, n
+                        in sorted(_LAST_REFUSALS.items(), key=lambda kv: -kv[1]))
+        return False, f"no {what} placed — every candidate was refused: {why}"
     return False, f"no {what} placed — " + (joined or "no contact")
 
 

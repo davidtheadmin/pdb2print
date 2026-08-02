@@ -438,6 +438,15 @@ class ConnectionParams:
     #: it only has to be strong enough not to snap -- so it fits where a magnet
     #: cannot, which is the whole reason to reach for one.
     bridge_diameter_mm: float = 3.0
+    #: How hard a wider gap counts against a joint, 0 = not at all.
+    #:
+    #: The probe-volume search scores a place on how much material surrounds it,
+    #: and on its own that will take a wider gap for slightly more material.
+    #: Wrong at the end of a DNA duplex, where the strands splay apart and the
+    #: fullest probe is the one furthest from a joint that would actually close.
+    #: Applied as a multiplier on the score, so a gap the collar cannot span
+    #: cannot be bought back with volume however much of it there is.
+    seat_gap_falloff: float = 0.6
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:
