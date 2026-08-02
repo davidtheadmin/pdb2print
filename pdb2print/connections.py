@@ -1350,6 +1350,31 @@ def _surface_along(points, origin, axis, radius: float):
     return t[near] if np.any(near) else None
 
 
+def _clear_depths(seat: Seat, va, vb, radius: float) -> None:
+    """How far each part reaches past the mating face, remeasured properly.
+
+    This number is the length of the approach cut, so anything it cannot see is
+    material left standing in the other part's way -- and the version taken
+    while the seat was scored could not see much:
+
+    * it ran over the **probe cloud**, which is capped at ``_MAX_PROBE_VERTS``
+      and on a large chain samples roughly one vertex in ten, so the tip of a
+      lobe is simply not in it;
+    * it used the **socket radius**, while the cut is made at the socket radius
+      plus the sliding clearance, leaving an unmeasured ring of material inside
+      the cut's own footprint;
+    * it was taken from the probe's centre of mass rather than from the seat.
+
+    None of that matters to the *score* -- which is why it was fine there -- and
+    all of it matters here, where being 6 mm short means a model that cannot be
+    assembled.  Two dot products over the full vertex set, for the handful of
+    seats that will actually be built.
+    """
+    for pts, sign, attr in ((va, 1.0, "overhang_a"), (vb, -1.0, "overhang_b")):
+        t = _surface_along(pts, seat.center, seat.axis * sign, radius)
+        setattr(seat, attr, 0.0 if t is None else float(max(0.0, t.max())))
+
+
 #: Why the last interface's candidates were refused, when none survived.
 _LAST_REFUSALS: dict = {}
 
@@ -1433,6 +1458,8 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # footprint. The approach cut is sized from this rather than from the collar
     # length: a part that leans 9 mm over the face keeps 9 mm of material on the
     # other part's side of it, and a 3.9 mm cut leaves the joint unable to close.
+    # Only a placeholder here -- see ``_clear_depths``, which remeasures it over
+    # the full vertex set for the seats that are kept.
     over_a = float(max(0.0, ta.max() - (0.5 * (a_face + b_face))))
     over_b = float(max(0.0, (0.5 * (a_face + b_face)) - tb.min()))
     seat = Seat(center=seat_centre, axis=axis, gap=gap,
@@ -1534,6 +1561,11 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
         kept.append(seat)
         if len(kept) >= count:
             break
+    if kept:
+        va = np.asarray(mesh_a.vertices, float)
+        vb = np.asarray(mesh_b.vertices, float)
+        for seat in kept:
+            _clear_depths(seat, va, vb, socket_r + cp.path_clearance_mm)
     return kept
 
 
@@ -1638,9 +1670,12 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
             #    overhang has to be cut back is a fact about the *other* part's
             #    approach and has nothing to do with how deep our own socket
             #    happens to run.
-            # Long enough to reach whatever the *other* part actually leans
-            # over the face, not merely as long as our own collar.
-            over = seat.overhang_b if idx == i else seat.overhang_a
+            # Long enough to reach however far *this* part actually leans over
+            # the face, not merely as long as our own collar. This part's own
+            # overhang, because this cut removes this part's material: the two
+            # were the wrong way round, so a chain reaching 9.9 mm across the
+            # face was cut back by whatever its neighbour happened to reach.
+            over = seat.overhang_a if idx == i else seat.overhang_b
             path = _seat_solid(seat.center - into * 0.002, -into,
                                max(embed * grow + seat.gap + 1.0, over + 1.0),
                                socket_r + clearance)
