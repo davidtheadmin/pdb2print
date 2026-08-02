@@ -451,6 +451,18 @@ class ConnectionParams:
     #: middle of the contact is simply the right answer, so distance decides it.
     #: 1.0 means a candidate at the contact threshold scores nothing at all.
     seat_gap_falloff_flat: float = 1.0
+    #: How much a joint is rewarded for the socket being *buried* rather than
+    #: standing proud — the difference between a magnet you have to look for and
+    #: one you can see from across the room.
+    #:
+    #: Applied as a multiplier, so a socket in open air cannot be bought back
+    #: with material. At 0.5 a fully exposed collar keeps half its score.
+    seat_hidden_weight: float = 0.5
+    #: The same, for two proteins: broad faces with real depth behind them are
+    #: where a genuinely invisible magnet is achievable, so it counts for more.
+    #: On a backbone tube there is nowhere to hide one and insisting would only
+    #: cost the joint.
+    seat_hidden_weight_flat: float = 0.75
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:

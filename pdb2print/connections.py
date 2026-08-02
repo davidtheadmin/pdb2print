@@ -480,6 +480,11 @@ class Seat:
     probe_a: float = 0.0
     probe_b: float = 0.0
     probe_r: float = 0.0
+    #: How far each part reaches past the mating face, inside the footprint (mm).
+    overhang_a: float = 0.0
+    overhang_b: float = 0.0
+    #: Fraction of the collar that ends up buried, on the worse side.
+    hidden: float = 0.0
     score: float = 0.0
     #: mm³ of interpenetration this seat was derived from (0 for point-cloud
     #: seats).  A joint that sits where the two parts *were* fighting for the
@@ -1351,7 +1356,7 @@ _LAST_REFUSALS: dict = {}
 
 def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
                 cp: ConnectionParams, need_depth: float, refused=None,
-                gap_falloff: float = None):
+                gap_falloff: float = None, hidden_weight: float = None):
     """One candidate spot, measured. Returns a :class:`Seat` or ``None``.
 
     The whole placement rule, and it is deliberately one idea rather than
@@ -1424,8 +1429,15 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     if blocked > _MAX_BLOCKED_RATIO * seated:
         return no("the parts cannot come apart along this axis")
 
+    # How far each part reaches past the mating face inside the joint's own
+    # footprint. The approach cut is sized from this rather than from the collar
+    # length: a part that leans 9 mm over the face keeps 9 mm of material on the
+    # other part's side of it, and a 3.9 mm cut leaves the joint unable to close.
+    over_a = float(max(0.0, ta.max() - (0.5 * (a_face + b_face))))
+    over_b = float(max(0.0, (0.5 * (a_face + b_face)) - tb.min()))
     seat = Seat(center=seat_centre, axis=axis, gap=gap,
                 footprint=int(seated), patch=None, axis_source="probe")
+    seat.overhang_a, seat.overhang_b = over_a, over_b
     # The back-face search reads these. The probe ball is at least 2.5x the
     # socket radius, so it comfortably contains the collar it will be asked
     # about, which is the one thing that has to be true of it.
@@ -1436,21 +1448,36 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # the fullest probe is the one furthest from a joint that would actually
     # close. Multiplied rather than subtracted, so a gap the collar cannot span
     # cannot be bought back with volume however much of it there is.
+    # How much of the collar ends up inside existing material, on the worse of
+    # the two sides. 1.0 means only the mating disc shows; 0.0 means it stands
+    # in open air. This is the difference between a magnet you have to look for
+    # and one you can see from across the room, and it costs one small boolean
+    # per side against blobs that are already cut.
+    seat_hidden = min(_embedding(blob_a, seat_centre, -axis, socket_r, need_depth),
+                      _embedding(blob_b, seat_centre, axis, socket_r, need_depth))
+
     reach = max(float(cp.contact_threshold_mm), 1e-6)
     falloff = cp.seat_gap_falloff if gap_falloff is None else float(gap_falloff)
     # Squared, so the penalty is gentle among genuinely close candidates and
     # steep once a gap is real. Linear treated "touching" and "half a millimetre
     # apart" as nearly the same, which is not how the joint behaves.
     near = 1.0 - falloff * min(1.0, gap / reach) ** 2
+    hide = cp.seat_hidden_weight if hidden_weight is None else float(hidden_weight)
+    seat.hidden = float(seat_hidden)
     seat.fill = float(min(frac_a, frac_b))
-    seat.score = float(min(frac_a, frac_b) * max(near, 0.0))
+    # Multiplied, like the distance term, so a socket standing in open air
+    # cannot be bought back with volume. At the default weight a fully exposed
+    # collar keeps half its score and a fully buried one keeps all of it.
+    seat.score = float(min(frac_a, frac_b) * max(near, 0.0)
+                       * (1.0 - hide + hide * seat_hidden))
     seat.probe_a, seat.probe_b, seat.probe_r = float(frac_a), float(frac_b), probe_r
     return seat
 
 
 def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                 cp: ConnectionParams, socket_r: float,
-                need_depth: float, gap_falloff: float = None) -> List[Seat]:
+                need_depth: float, gap_falloff: float = None,
+                hidden_weight: float = None) -> List[Seat]:
     """The ranked places to build a joint, best first.
 
     Candidates are simply *everywhere the two surfaces come close*, spread
@@ -1476,7 +1503,8 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
     seats, refused = [], []
     for k in picks:
         seat = _probe_seat(man_a, man_b, pa, pb, mids[k], probe_r,
-                           socket_r, cp, need_depth, refused, gap_falloff)
+                           socket_r, cp, need_depth, refused, gap_falloff,
+                           hidden_weight)
         if seat is not None:
             seats.append(seat)
     if not seats and refused:
@@ -1598,8 +1626,12 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
             #    overhang has to be cut back is a fact about the *other* part's
             #    approach and has nothing to do with how deep our own socket
             #    happens to run.
+            # Long enough to reach whatever the *other* part actually leans
+            # over the face, not merely as long as our own collar.
+            over = seat.overhang_b if idx == i else seat.overhang_a
             path = _seat_solid(seat.center - into * 0.002, -into,
-                               embed * grow + seat.gap + 1.0, socket_r + clearance)
+                               max(embed * grow + seat.gap + 1.0, over + 1.0),
+                               socket_r + clearance)
             cleared = _commit(man, path, add=False)
             if cleared is None:
                 # Cutting the overhang would sever the part — this seat is not
@@ -1736,7 +1768,8 @@ def _socket_scale_note(built, cp: ConnectionParams) -> str:
 
 def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                   params: PrintParams, markers: list,
-                  overlap=None, gap_falloff: float = None) -> Tuple[bool, str]:
+                  overlap=None, gap_falloff: float = None,
+                  hidden_weight: float = None) -> Tuple[bool, str]:
     """Seat ``count`` press-fit magnet pockets on the best-scoring contacts.
 
     The pocket is cut oversize on purpose (see ``magnet_fit_clearance_mm`` /
@@ -1756,7 +1789,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     chamfer = min(cp.magnet_chamfer_mm, 0.3 * t)
 
     seats = _find_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
-                        socket_r, embed, gap_falloff)
+                        socket_r, embed, gap_falloff, hidden_weight)
     pocket = {"radius": pocket_r, "depth": depth,
               "chamfer": chamfer, "shape": shape}
 
@@ -1794,6 +1827,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "probe_a": round(seat.probe_a, 3),
             "probe_b": round(seat.probe_b, 3),
             "probe_r": round(seat.probe_r, 2),
+            "hidden": round(seat.hidden, 3),
         })
 
     return _joint_note(placed, len(seats), reasons, "magnet", seats)
@@ -2498,7 +2532,13 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         # everything there. On a mixed interface the geometry is
                         # lumpier and material still has to have a say.
                         gap_falloff=(cp.seat_gap_falloff_flat
-                                     if kind == "protein-protein" else None))
+                                     if kind == "protein-protein" else None),
+                        # Two proteins are where a hidden magnet is achievable
+                        # and worth the most: broad faces with real depth behind
+                        # them. On a backbone there is nowhere to hide one, and
+                        # insisting would only cost a joint.
+                        hidden_weight=(cp.seat_hidden_weight_flat
+                                       if kind == "protein-protein" else None))
                 else:
                     method = "bridge"
                     ok, note = _apply_bridge(
