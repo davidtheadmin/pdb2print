@@ -22,6 +22,7 @@ import uuid
 from typing import Optional
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -168,6 +169,54 @@ def _gate() -> _BuildGate:
         _GATE = _BuildGate(_max_builds())
     return _GATE
 
+# --------------------------------------------------------------------------
+# Worker pools
+# --------------------------------------------------------------------------
+#: Builds and stand previews get their own thread pools, deliberately.
+#:
+#: They used to share asyncio's default executor, which is
+#: ``min(32, cpu_count + 4)`` threads -- 8 on the 4-vCPU box.  ``/api/stand/preview``
+#: is ungated on purpose (it is meant to be a sub-second sketch), so a few
+#: seconds of dragging a stand slider can put every one of those threads to
+#: work.  A build admitted by the gate at that moment is submitted to a pool
+#: with no free thread and simply never starts: ``work()`` does not run, so
+#: ``__done__`` is never queued, so ``_stream_events`` sends keepalives forever
+#: -- and because a keepalive is bytes on the wire, the front end's silence
+#: detector never fires either.  Nothing anywhere reports a problem.  That is
+#: the freeze only a refresh clears.
+#:
+#: Separate pools make it structurally impossible: a preview cannot consume a
+#: build thread, and a build cannot consume a preview one.
+_BUILD_POOL: Optional[ThreadPoolExecutor] = None
+_PREVIEW_POOL: Optional[ThreadPoolExecutor] = None
+
+
+def _build_pool() -> ThreadPoolExecutor:
+    """Threads for the geometry core. Sized to the gate, plus one.
+
+    The spare covers the moment a build has finished its work but its thread has
+    not yet been handed back to the pool; without it a gate of one can stall for
+    as long as that takes.
+    """
+    global _BUILD_POOL
+    if _BUILD_POOL is None:
+        _BUILD_POOL = ThreadPoolExecutor(
+            max_workers=_max_builds() + 1, thread_name_prefix="pdb2print-build")
+    return _BUILD_POOL
+
+
+def _preview_pool() -> ThreadPoolExecutor:
+    """Threads for the stand sketch. Small on purpose.
+
+    Two: enough that one preview in flight does not delay the next, few enough
+    that a burst of them can never become the machine's workload.
+    """
+    global _PREVIEW_POOL
+    if _PREVIEW_POOL is None:
+        _PREVIEW_POOL = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="pdb2print-preview")
+    return _PREVIEW_POOL
+
 
 def _sse(kind: str, data) -> str:
     return f"event: {kind}\ndata: {json.dumps(data)}\n\n"
@@ -220,7 +269,64 @@ def _queue_message(ahead: int) -> str:
     return f"Waiting for the server — {ahead} builds ahead of you…"
 
 
-def _hand_back_slot(gate: _BuildGate, ticket: int, waiter, acquired: bool) -> None:
+#: How long the gate will wait for an abandoned worker before taking the slot.
+#:
+#: A Python thread cannot be killed from outside, so a build wedged inside a C
+#: extension would otherwise hold the gate shut for the life of the process.
+#: Past this the slot is handed on regardless: the box then briefly runs two
+#: builds, which is worse than one and far better than none.
+_SLOT_MAX_HOLD_S = 900.0
+
+#: How long an admitted build may sit unstarted before the stream gives up.
+_BUILD_START_TIMEOUT_S = 90.0
+
+
+def _release_on_completion(gate: _BuildGate, ticket: int, worker) -> None:
+    """Release ``ticket`` when ``worker`` finishes, or after the hold ceiling.
+
+    Both paths run on the event loop -- ``add_done_callback`` on the future
+    returned by ``run_in_executor`` is scheduled there, and so is ``call_later``
+    -- so touching the gate's semaphore from here is safe.  The guard matters:
+    releasing twice would let two builds through a gate of one.
+    """
+    loop = asyncio.get_running_loop()
+    state = {"done": False, "timer": None}
+
+    def _release(*_args) -> None:
+        if state["done"]:
+            return
+        state["done"] = True
+        if state["timer"] is not None:
+            state["timer"].cancel()
+        gate.release(ticket)
+
+    state["timer"] = loop.call_later(_SLOT_MAX_HOLD_S, _release)
+    worker.add_done_callback(_release)
+
+
+async def _watch_start(queue: asyncio.Queue, started: threading.Event) -> None:
+    """Say something if an admitted build never reaches a worker thread.
+
+    Belt to the separate pools' braces.  The failure this catches was silent by
+    construction -- no worker means no ``__done__``, and the keepalive kept the
+    connection looking healthy -- so it is worth one message even though the
+    pool split should have made it unreachable.
+    """
+    deadline = time.monotonic() + _BUILD_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if started.is_set():
+            return
+        await asyncio.sleep(0.5)
+    if started.is_set():
+        return
+    queue.put_nowait(("result", _error_payload(
+        "The server accepted this build but could not start it. "
+        "Please try again in a moment.")))
+    queue.put_nowait(("__done__", None))
+
+
+def _hand_back_slot(gate: _BuildGate, ticket: int, waiter, acquired: bool,
+                    worker=None) -> None:
     """Give the slot back, whether the build ran or the client walked away.
 
     The awkward case is a client that disconnects while queued: the acquire may
@@ -228,9 +334,22 @@ def _hand_back_slot(gate: _BuildGate, ticket: int, waiter, acquired: bool) -> No
     cleanup, in which case the slot is ours and nobody is going to use it.  Not
     checking for that leaks a slot per abandoned request, and a gate of one
     leaks itself shut on the first cancelled queue.
+
+    When the slot *was* acquired the release now waits for ``worker`` -- the
+    future for the thread actually doing the geometry.  Handing it back on
+    disconnect instead, which is what this did, gives the slot to the next
+    visitor while the abandoned build is still running: cancellation is only
+    polled between chains and an in-flight boolean cannot be interrupted, so
+    four Cancel-then-Generate cycles produced four concurrent builds under a
+    gate of one.  That is exactly the contention the gate exists to prevent, and
+    it feeds itself -- a slower box means more cancelling, which means more
+    builds.
     """
     if acquired:
-        gate.release(ticket)
+        if worker is None or worker.done():
+            gate.release(ticket)
+        else:
+            _release_on_completion(gate, ticket, worker)
         return
     waiter.cancel()
     if waiter.done() and not waiter.cancelled() and waiter.exception() is None:
@@ -917,12 +1036,16 @@ async def generate(
         # abandoned build stops at the next chain instead of tying up a core
         # meshing a complex nobody is waiting for any more.
         cancelled = threading.Event()
+        # Set by the worker as its first act, so the watchdog below can tell
+        # "still meshing" from "never started".
+        started = threading.Event()
 
         def progress(frac, msg):
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
         def work():
+            started.set()
             # ``__done__`` is queued from an outer finally, and that placement is
             # the whole point of it: the reader loop below ends on that event and
             # on nothing else, so any path that skips it leaves the browser
@@ -949,12 +1072,15 @@ async def generate(
         ticket = gate.take_ticket()
         waiter = asyncio.ensure_future(gate.acquire(ticket))
         acquired = False
+        worker = None
+        watchdog = None
         try:
             async for frame in _wait_for_slot(gate, ticket, waiter):
                 yield frame
             acquired = True
 
-            loop.run_in_executor(None, work)
+            worker = loop.run_in_executor(_build_pool(), work)
+            watchdog = asyncio.ensure_future(_watch_start(queue, started))
             async for frame in _stream_events(queue):
                 yield frame
         finally:
@@ -962,9 +1088,11 @@ async def generate(
             # (the generator is closed / cancelled).  Setting it after a normal
             # finish is harmless — the worker has already returned.
             cancelled.set()
+            if watchdog is not None:
+                watchdog.cancel()
             if tmp_upload_dir and not acquired:
                 shutil.rmtree(tmp_upload_dir, ignore_errors=True)
-            _hand_back_slot(gate, ticket, waiter, acquired)
+            _hand_back_slot(gate, ticket, waiter, acquired, worker)
 
     return StreamingResponse(
         event_stream(),
@@ -1441,7 +1569,7 @@ async def stand_preview(request: Request):
 
     loop = asyncio.get_running_loop()
     try:
-        payload = await loop.run_in_executor(None, work)
+        payload = await loop.run_in_executor(_preview_pool(), work)
     except Exception as exc:                 # a preview must never take the page down
         return JSONResponse({"ok": True, "ready": False, "reason": str(exc)})
     return JSONResponse(payload)
@@ -1487,12 +1615,14 @@ async def stand(request: Request):
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
         cancelled = threading.Event()
+        started = threading.Event()
 
         def progress(frac, msg):
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
         def work():
+            started.set()
             # Same guarantee as /api/generate: the terminator is queued from an
             # outer finally so no failure above can leave the stream silent.
             try:
@@ -1513,17 +1643,22 @@ async def stand(request: Request):
         ticket = gate.take_ticket()
         waiter = asyncio.ensure_future(gate.acquire(ticket))
         acquired = False
+        worker = None
+        watchdog = None
         try:
             async for frame in _wait_for_slot(gate, ticket, waiter):
                 yield frame
             acquired = True
 
-            loop.run_in_executor(None, work)
+            worker = loop.run_in_executor(_build_pool(), work)
+            watchdog = asyncio.ensure_future(_watch_start(queue, started))
             async for frame in _stream_events(queue):
                 yield frame
         finally:
             cancelled.set()
-            _hand_back_slot(gate, ticket, waiter, acquired)
+            if watchdog is not None:
+                watchdog.cancel()
+            _hand_back_slot(gate, ticket, waiter, acquired, worker)
 
     return StreamingResponse(
         event_stream(),
