@@ -95,6 +95,19 @@ _TILE_GAP_MM = 2.5
 #: the lettering to go even on a small model.
 _APRON_MIN_MM = 22.0
 
+#: Widest plate the legend is allowed to ask for (mm).
+#:
+#: The plate grows to fit the chain names rather than the names being cut to
+#: fit the plate — a legend reading "Glyceraldehyde-3-pho…" tells you less than
+#: a slightly wider base costs you. But it cannot grow forever: past a print
+#: bed there is nothing to gain, so this is where growing stops and shortening
+#: starts again, with a note saying which happened. Sized for a 250 mm bed,
+#: which covers the common desktop machines.
+#:
+#: A model wider than this still gets a plate that fits it — the model's own
+#: footprint is a floor, not subject to this.
+_MAX_PLATE_MM = 250.0
+
 #: The most the lettering may be shrunk to fit.  Below this a stroke drops under
 #: one extrusion width and prints as a smudge, so the apron is deepened instead.
 _TEXT_MIN_SHRINK = 0.62
@@ -831,6 +844,66 @@ def _tapered_prism(profile: np.ndarray, x: float, y: float,
     return _manifold.from_trimesh(mesh)
 
 
+def _carve_column(solid, tool, top: float):
+    """Cut the model out of a column without leaving a window in its side.
+
+    The plain difference is right at the *top* — that is the cradle, and its
+    saucer shape is exactly what the model drops into.  Lower down it is not:
+    where the model dips past the column's flank it bites an opening out of the
+    side with column both above and below it.  That prints only with support
+    inside it, and on a part whose whole job is to look deliberate it reads as
+    a defect.
+
+    So each region the cut would remove is judged on where it sits.  The region
+    reaching the top is the cradle and is subtracted as it is.  A region with
+    column still above it is swept straight up to the top instead, at its own
+    widest cross-section — which turns the window into a slot that is open at
+    the top, exactly as wide as the opening was at its widest point.
+
+    Falls back to the plain difference whenever the sweep would be worse than
+    the problem: a column left in more than one piece, or one that has given up
+    more than half of what the plain cut would have left.
+    """
+    plain = _manifold.difference(solid, tool)
+    try:
+        removed = _manifold.intersection(solid, tool)
+        if removed.is_empty():
+            return plain
+        pieces = [p for p in (removed.decompose() or [removed]) if not p.is_empty()]
+    except Exception:
+        return plain
+    # genus is O(1) and a window through a wall is exactly a handle, so this
+    # skips the sweep entirely on the ordinary column that only has a cradle.
+    try:
+        if len(pieces) < 2 and plain.genus() <= solid.genus():
+            return plain
+    except Exception:
+        return plain
+
+    try:
+        out = solid
+        swept = False
+        for piece in pieces:
+            box = piece.bounding_box()
+            if box[5] < top - 1e-6:            # column above it: an opening
+                prism = _manifold.Manifold.extrude(
+                    piece.project(), float(top - box[2]) + 0.02)
+                out = _manifold.difference(
+                    out, prism.translate((0.0, 0.0, float(box[2]))))
+                swept = True
+            else:
+                out = _manifold.difference(out, piece)
+        if not swept or out.is_empty():
+            return plain
+        if len(out.decompose()) > 1:
+            return plain                        # would leave the column in bits
+        if out.volume() < 0.5 * plain.volume():
+            return plain                        # took more than it saved
+        return out
+    except Exception:
+        return plain
+
+
 def _column_solid(x: float, y: float, z0: float, z1: float,
                   top_half: float, foot_half: float, stand: StandParams):
     """One column in the requested style, from the plate at ``z0`` to ``z1``.
@@ -1486,11 +1559,13 @@ def solve_layout(built, params: PrintParams,
     natural_half = max(abs(float(model_min[0])), abs(float(model_max[0]))) + margin
     natural_usable = max(12.0, 2.0 * natural_half - spare)
 
-    # What the legend needs is what its longest name is. Only an absolute
-    # backstop, against a pathological header.
+    # What the legend needs is what its longest name is, in full. Capped at 90
+    # before, which is where names started being truncated on any model with a
+    # long chain name — the plate stopped growing and the lettering gave way
+    # instead. The plate gives way now; see _MAX_PLATE_MM.
     legend_need = 0.0
     if stand.plaque:
-        legend_need = min(_legend_natural_width(stand, chain_rows), 90.0)
+        legend_need = _legend_natural_width(stand, chain_rows)
 
     # Bounded at both ends by something real. Below the floor the control would
     # be shrinking the headline rather than narrowing the block; above the
@@ -1505,6 +1580,10 @@ def solve_layout(built, params: PrintParams,
     info_width = max(info_width, _info_floor_width(stand, meta))
 
     half = max(natural_half, 0.5 * (info_width + legend_need + spare))
+    # Grow to fit the names, but not past what will go on a bed. natural_half
+    # stays a floor either way: the plate has to hold the model whatever the
+    # lettering wants.
+    half = max(natural_half, min(half, 0.5 * _MAX_PLATE_MM))
     plate_x0, plate_x1 = -half, half
     plate_width = plate_x1 - plate_x0
     usable = plate_width - spare
@@ -1515,6 +1594,15 @@ def solve_layout(built, params: PrintParams,
     if stand.plaque:
         info_rows = _info_rows(stand, params, meta, info_width)
         legend_rows = _legend_rows(stand, chain_rows, legend_width)
+        # Only reachable now when the plate is already at its ceiling, so it is
+        # worth saying which of the two gave way.
+        cut = {str(r["label"]) for r in chain_rows} - {r.text for r in legend_rows}
+        if cut:
+            notes.append(
+                f"{len(cut)} chain name(s) were too long for a plate that will "
+                f"still fit a {_MAX_PLATE_MM:.0f} mm bed, so they are shortened. "
+                f"Rename them in the legend boxes, or use a smaller plaque text "
+                f"size.")
 
     if stand.plaque:
         # Said once, here, so it reaches the build report *and* the live sketch:
@@ -1930,8 +2018,8 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 if not local.is_empty():
                     tool = interference.dilate(
                         local, float(stand.cradle_clearance_mm))
-                    carved = _manifold.difference(solid, tool)
-                    if not carved.is_empty():
+                    carved = _carve_column(solid, tool, top)
+                    if carved is not None and not carved.is_empty():
                         solid = carved
             except Exception:
                 notes.append("One column could not be carved to fit the model; "
