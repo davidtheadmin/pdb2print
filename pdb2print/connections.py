@@ -254,6 +254,10 @@ _MIN_SEAT_FILL = 0.35
 #: genuinely small contact patch there may be nowhere better to put it.
 _MIN_SEAT_EMBEDDING = 0.5
 
+#: Blocked-to-seated ratio past which a lobe axis is sent to the ordinary search
+#: anyway. Coarse on purpose — see the call site.
+_OVERLAP_BLOCKED_MAX = 0.5
+
 #: Burial above which an exposed back cap means the collar came out the *far*
 #: side of a thin part, rather than out of a surface that fell away under it.
 #:
@@ -1051,7 +1055,8 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
             emb_a = _local_solid(man_a, seat.center, collar_reach)
             emb_b = _local_solid(man_b, seat.center, collar_reach)
 
-        if seat.axis_source == "overlap":
+        lobe_ok = seat.axis_source == "overlap"
+        if lobe_ok:
             # The lobe's thin axis is measured over the whole interference patch
             # and is already the interface normal, so it is not put through the
             # candidate search — and above all it is not judged against the
@@ -1061,7 +1066,17 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
                 pa, pb, seat.center, seat.axis,
                 socket_r + cp.path_clearance_mm, need_depth)
             seat.agreement = 1.0
-        else:
+            # ...with one check it cannot skip. A well-founded normal is not the
+            # same as an assemblable one: on a cup wrapping 200 degrees around a
+            # rod every estimator returns the true interface normal to 0.000
+            # degrees, and the parts still cannot come apart along it, because
+            # the cup grips past the equator. No shape measure sees that — only
+            # the census does. Deliberately a coarse guard, not a tuning knob:
+            # it fires when the approach is grossly obstructed and otherwise
+            # leaves the lobe axis exactly as it was.
+            if _seated <= 0 or seat.blocked > _OVERLAP_BLOCKED_MAX * _seated:
+                lobe_ok = False
+        if not lobe_ok:
             axis, source, agreement, blocked = _choose_axis(
                 seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
                 need_depth, emb_a, emb_b, socket_r)
