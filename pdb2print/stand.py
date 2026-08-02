@@ -1570,11 +1570,23 @@ def solve_layout(built, params: PrintParams,
     # Bounded at both ends by something real. Below the floor the control would
     # be shrinking the headline rather than narrowing the block; above the
     # natural width it would be pushing the plate out to hold lettering that
-    # cannot get any wider, which is where the legend used to start paying for
-    # width nobody was using.
+    # cannot get any wider.
+    #
+    # Left to itself the block takes *what it needs*, not half of whatever the
+    # model happens to be wide. Half-the-model was the old rule and it is the
+    # reason a note came out as "Solved by X-ray diffraction at 1.9 A r…": the
+    # note wraps to two lines and then truncates, and nothing ever widened the
+    # plate on its behalf — info_max already knew the natural width and was
+    # only ever used as a ceiling. The plate sizing below takes both blocks'
+    # needs, so asking for the real one is what makes it grow.
     info_max = _info_natural_width(stand, params, meta)
     asked = float(getattr(stand, "plaque_info_mm", 0.0) or 0.0)
-    info_width = asked if asked > 0.0 else natural_usable * 0.5
+    if asked > 0.0:
+        info_width = asked                      # the slider wins outright
+    elif info_max > 0.0:
+        info_width = info_max
+    else:
+        info_width = natural_usable * 0.5
     if info_max > 0.0:
         info_width = min(info_width, info_max)
     info_width = max(info_width, _info_floor_width(stand, meta))
@@ -1594,15 +1606,25 @@ def solve_layout(built, params: PrintParams,
     if stand.plaque:
         info_rows = _info_rows(stand, params, meta, info_width)
         legend_rows = _legend_rows(stand, chain_rows, legend_width)
-        # Only reachable now when the plate is already at its ceiling, so it is
-        # worth saying which of the two gave way.
+        # Both blocks now drive the plate width, so anything still truncated
+        # here means the plate hit its ceiling — and the numbers say which block
+        # ran out of room, rather than leaving it to be guessed at.
         cut = {str(r["label"]) for r in chain_rows} - {r.text for r in legend_rows}
-        if cut:
+        clipped = [r for r in info_rows if str(r.text).endswith("...")]
+        if cut or clipped:
+            what = []
+            if cut:
+                what.append(f"{len(cut)} chain name(s)")
+            if clipped:
+                what.append("the note")
             notes.append(
-                f"{len(cut)} chain name(s) were too long for a plate that will "
-                f"still fit a {_MAX_PLATE_MM:.0f} mm bed, so they are shortened. "
-                f"Rename them in the legend boxes, or use a smaller plaque text "
-                f"size.")
+                f"Shortened to fit: {' and '.join(what)}. Legend needs "
+                f"{legend_need:.0f} mm and has {legend_width:.0f}; the left "
+                f"block has {info_width:.0f} mm of a natural {info_max:.0f}; "
+                f"the plate is {2.0 * half:.0f} mm wide against a "
+                f"{_MAX_PLATE_MM:.0f} mm ceiling and a {2.0 * natural_half:.0f} "
+                f"mm model. Raise the ceiling, shorten the text, or use a "
+                f"smaller plaque text size.")
 
     if stand.plaque:
         # Said once, here, so it reaches the build report *and* the live sketch:
