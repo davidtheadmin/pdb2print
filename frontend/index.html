@@ -4719,18 +4719,39 @@
   // `camera-controls` and unlocking puts it back, which rebuilds the controls
   // against a model that is now loaded. Doing it deliberately on every load
   // gives the same freedom from the first frame, without a stand.
+  // The one invariant: the viewer is draggable exactly when no stand view is
+  // locked. Anything that takes `camera-controls` away has to be a *transient*
+  // state that heals, because the attribute is the only thing standing between
+  // a working viewer and one that renders perfectly and ignores the mouse.
+  //
+  // It did not heal. The restore below used to be a bare requestAnimationFrame
+  // callback, and rAF does not run on a hidden tab — so switching away while a
+  // model loaded, or a second load landing mid-flight, left the attribute off
+  // for good. The page kept working in every other respect, which is why this
+  // read as a server freeze for so long: the server was idle and healthy the
+  // whole time and /api/debug says so.
+  function syncCameraControls() {
+    const v = $('#viewer');
+    if (!v) return;
+    if (standLocked) v.removeAttribute('camera-controls');
+    else if (!v.hasAttribute('camera-controls')) v.setAttribute('camera-controls', '');
+  }
+
   function refreshCameraLimits() {
     const v = $('#viewer');
     v.setAttribute('min-camera-orbit', '-Infinity 0deg auto');
     v.setAttribute('max-camera-orbit', 'Infinity 180deg auto');
     if (v.hasAttribute('camera-controls') && !standLocked) {
       v.removeAttribute('camera-controls');
-      requestAnimationFrame(() => {
-        if (!standLocked) v.setAttribute('camera-controls', '');
-      });
+      // Three ways back, because only the first is quick and none is certain:
+      // the frame, a timer that runs on a hidden tab, and the moment the tab
+      // becomes visible again.
+      requestAnimationFrame(syncCameraControls);
+      setTimeout(syncCameraControls, 250);
     }
   }
   $('#viewer').addEventListener('load', refreshCameraLimits);
+  document.addEventListener('visibilitychange', syncCameraControls);
 
   genBtn.addEventListener('click', () => (inflight ? cancelBuild() : generate()));
   $('#pdb-id').addEventListener('keydown', e => { if (e.key === 'Enter') generate(); });
