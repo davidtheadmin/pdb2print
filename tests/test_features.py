@@ -377,12 +377,15 @@ def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
     """
     report = build_all(COMPLEX, _params(
         connect=True, use_magnets=True, socket=False, contact_threshold_mm=4.0,
-        connector_diameter_mm=3.0, magnet_thickness_mm=0.1))  # 2T = 0.2 mm
+        connector_diameter_mm=3.0, magnet_thickness_mm=0.5,   # 2T = 1.0 mm
+        fit_clearance_mm=1.5))                                # carved gap 1.5 mm
     assert _all_watertight_single(report)
-    # The new probe-volume search seats joints much closer than the old
-    # nearest-point one did, so the thickness has to be genuinely tiny for
-    # no seat on this fixture to be spannable. The rule under test is
-    # unchanged: 2×thickness must reach across, or the magnet is skipped.
+    # The gap is *constructed* rather than relied upon. The probe-volume search
+    # seats joints wherever the two surfaces come closest, so pinning a
+    # thickness against one fixture contact's natural gap only tested where
+    # that search happened to land. fit_clearance_mm is what the interference
+    # pass leaves between the carved parts, so it sets the gap directly: 1.5 mm
+    # of it against 2×0.5 mm of magnet, and no seat anywhere can be spanned.
     skipped = [c for c in report.connections
                if c["method"] == "magnet" and not c["applied"]
                and "thickness" in c["note"]]
@@ -391,10 +394,11 @@ def test_magnet_skips_when_gap_exceeds_two_thickness_without_socket():
 
 def test_socket_bridges_a_gap_that_bare_magnets_cannot():
     """The collar spans the gap, so the same joint that was skipped now builds."""
-    # Thin enough that no seat the search can find is spannable bare — see
-    # the previous test. The point is the collar, not the number.
+    # Same constructed gap as the previous test: 1.5 mm carved, 1.0 mm of bare
+    # magnet to span it. The point is the collar, not the numbers.
     kw = dict(connect=True, use_magnets=True, contact_threshold_mm=4.0,
-              connector_diameter_mm=3.0, magnet_thickness_mm=0.1)
+              connector_diameter_mm=3.0, magnet_thickness_mm=0.5,
+              fit_clearance_mm=1.5)
     bare = build_all(COMPLEX, _params(socket=False, **kw))
     socketed = build_all(COMPLEX, _params(socket=True, **kw))
     assert _all_watertight_single(socketed)
@@ -1014,55 +1018,32 @@ def test_fit_runs_with_connections_switched_off():
         == pytest.approx(0.0, abs=1e-3)
 
 
-def test_magnets_seat_where_the_parts_were_interpenetrating():
-    """The natural joint position, which the old nearest-point search could not find.
+def test_magnets_seat_on_an_interface_that_was_interpenetrating():
+    """The hard case: two parts that overlapped, carved apart, then joined.
 
-    An unsigned vertex distance reads a deeply buried point as *far away*, so the
-    deepest contact scored worst and the seed axis flipped sign across the rim —
-    which is what tilted a magnet.  Seats taken from the interference lobe use
-    the lens's thin principal axis instead, and must win.
+    This used to asserted that such joints came from a dedicated
+    interference-lobe seat source and carried its axis. That source no longer
+    exists -- the probe-volume search finds the same places on their own merits,
+    because a former deep overlap is now a broad close contact with material on
+    both sides, which is exactly what it scores. So what is pinned here is the
+    outcome rather than the mechanism: joints are found, they are real geometry,
+    and the parts genuinely come apart afterwards.
     """
     report = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    assert _all_watertight_single(report)
     marks = report.connection_markers
     assert marks, "no magnets placed at all"
 
-    # Interfaces that were interpenetrating are seated from the lobe, and the
-    # lobe's axis is kept rather than being talked out of it by the veto.
-    from_lobe = [m for m in marks if m["overlap_mm3"] > 0.0]
-    assert from_lobe, "no magnet found the interference at all"
-    assert all(m["axis_source"] == "overlap" for m in from_lobe)
+    # Every joint sits where there is material on both sides -- the measure the
+    # search is built on, and the one that stops a magnet landing on a spike.
+    assert all(min(m["probe_a"], m["probe_b"]) > 0.0 for m in marks)
 
-    # And the raw nearest-point line — the noisy quantity that tilted a magnet
-    # whenever the surfaces crossed — is never what an *interpenetrating* joint
-    # falls back on.
-    #
-    # This used to forbid the contact-line axis outright, anywhere in the build,
-    # and that was stricter than the contract the code actually offers.
-    # ``_choose_axis`` documents the contact line as its fallback for an
-    # interface with no interference lobe to take an axis from, and
-    # ``overlap_complex`` has one such interface (A–U). So the blanket ban failed
-    # on a case the design intends, while the thing it was written to catch — a
-    # magnet tilted by the contact line *at a lobe* — is the assertion above.
-    #
-    # What is still worth pinning down is that the fallback stays a fallback: it
-    # may only appear where there was no lobe. Relaxing this to "the fallback is
-    # allowed" would let a real regression through, which is why the assertion is
-    # narrowed rather than deleted.
-    fallback = [m for m in marks if m["axis_source"] == "contact"]
-    assert all(m["overlap_mm3"] <= 0.0 for m in fallback), (
-        "a magnet seated on an interference lobe fell back to the contact line")
-
-    # Connectors are added after the fit pass, so a collar driven through a thin
-    # backbone can leave interference the closing sweep will not cut out (that
-    # would sever the part).  Whatever survives has to be *reported*, not
-    # silently shipped — a build that claims to fit and does not is the failure
-    # this whole feature exists to prevent.
+    # And the parts still fit together: carving plus connectors must not have
+    # reintroduced interference.
+    from pdb2print import interference
+    from pdb2print.representations import _manifold
     mans = [_manifold.from_trimesh(m) for _c, m in report.built]
-    left = _shared(mans)
-    if left > 1e-3:
-        assert any("still share" in w for w in report.warnings), (
-            f"{left:.1f} mm³ of interference shipped without a warning")
-
+    assert interference.residual_overlap(mans) < 1.0
 
 def test_basepair_rungs_meet_without_sharing_space():
     """Opposing rungs must read as one bar and still come apart.
