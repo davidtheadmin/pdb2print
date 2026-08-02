@@ -1262,13 +1262,39 @@ def _object_centre(mesh):
 #:
 #: A multiple of the collar means the same thing at every socket size, every
 #: ball size and every scale.
-_MIN_PROBE_COLLARS = 1.5
+#: 0.5, not 1.5. The collar's volume goes as socket_r squared, so switching the
+#: socket on multiplied this threshold by 3.75 while the material available
+#: stayed exactly the same -- and refused joints that build perfectly well. This
+#: is only meant to throw out a candidate that is mostly air; ``_build_seat``'s
+#: watertight commit is the real gate and always has been.
+_MIN_PROBE_COLLARS = 0.5
 
 #: Blocked-to-seated ratio past which the parts plainly cannot come apart along
 #: this axis. Deliberately generous -- a rough carved interface has plenty of
 #: points on the "wrong" side of any plane through it, and this is meant to
 #: catch interlocking, not roughness.
 _MAX_BLOCKED_RATIO = 3.0
+
+
+def _object_thickness(mesh) -> float:
+    """How thick this object is, in the "you could drill into it" sense.
+
+    Volume over surface area, scaled. Exact for the shapes that matter: a
+    cylinder of radius r gives 2r, a sphere of radius R gives 4R/3. Cheap --
+    both quantities are already cached on the mesh -- and it does not care about
+    the bounding box, which for a DNA duplex describes the helix rather than the
+    1.2 mm tube the joint would actually land on.
+    """
+    try:
+        area = float(mesh.area)
+        if area > 1e-9:
+            return max(0.0, 4.0 * abs(float(mesh.volume)) / area)
+    except Exception:
+        pass
+    try:
+        return float(np.min(mesh.bounds[1] - mesh.bounds[0]))
+    except Exception:
+        return 0.0
 
 
 def _probe_radius(mesh_a, mesh_b, socket_r: float) -> float:
@@ -1288,10 +1314,15 @@ def _probe_radius(mesh_a, mesh_b, socket_r: float) -> float:
     """
     lo = np.minimum(mesh_a.bounds[0], mesh_b.bounds[0])
     hi = np.maximum(mesh_a.bounds[1], mesh_b.bounds[1])
-    floor = 2.5 * socket_r
-    narrowest = min(float(np.min(mesh_a.bounds[1] - mesh_a.bounds[0])),
-                    float(np.min(mesh_b.bounds[1] - mesh_b.bounds[0])))
-    ceiling = max(floor, 0.25 * narrowest)
+    # The ceiling comes from how thick the *thinner object* actually is, not
+    # from its bounding box. A ball much wider than the material it is measuring
+    # is mostly air, and then both the score and the acceptance test read low for
+    # a reason that has nothing to do with the joint -- which is exactly what
+    # happens on a DNA backbone, where the box says "duplex" and the material
+    # says "1.2 mm tube".
+    thinnest = min(_object_thickness(mesh_a), _object_thickness(mesh_b))
+    floor = 1.5 * socket_r
+    ceiling = max(floor, 1.5 * thinnest) if thinnest > 0.0 else 1e9
     return float(min(max(floor, 0.08 * float(np.linalg.norm(hi - lo))), ceiling))
 
 
@@ -1319,7 +1350,8 @@ _LAST_REFUSALS: dict = {}
 
 
 def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
-                cp: ConnectionParams, need_depth: float, refused=None):
+                cp: ConnectionParams, need_depth: float, refused=None,
+                gap_falloff: float = None):
     """One candidate spot, measured. Returns a :class:`Seat` or ``None``.
 
     The whole placement rule, and it is deliberately one idea rather than
@@ -1405,7 +1437,11 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # close. Multiplied rather than subtracted, so a gap the collar cannot span
     # cannot be bought back with volume however much of it there is.
     reach = max(float(cp.contact_threshold_mm), 1e-6)
-    near = 1.0 - cp.seat_gap_falloff * min(1.0, gap / reach)
+    falloff = cp.seat_gap_falloff if gap_falloff is None else float(gap_falloff)
+    # Squared, so the penalty is gentle among genuinely close candidates and
+    # steep once a gap is real. Linear treated "touching" and "half a millimetre
+    # apart" as nearly the same, which is not how the joint behaves.
+    near = 1.0 - falloff * min(1.0, gap / reach) ** 2
     seat.fill = float(min(frac_a, frac_b))
     seat.score = float(min(frac_a, frac_b) * max(near, 0.0))
     seat.probe_a, seat.probe_b, seat.probe_r = float(frac_a), float(frac_b), probe_r
@@ -1414,7 +1450,7 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
 
 def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                 cp: ConnectionParams, socket_r: float,
-                need_depth: float) -> List[Seat]:
+                need_depth: float, gap_falloff: float = None) -> List[Seat]:
     """The ranked places to build a joint, best first.
 
     Candidates are simply *everywhere the two surfaces come close*, spread
@@ -1440,7 +1476,7 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
     seats, refused = [], []
     for k in picks:
         seat = _probe_seat(man_a, man_b, pa, pb, mids[k], probe_r,
-                           socket_r, cp, need_depth, refused)
+                           socket_r, cp, need_depth, refused, gap_falloff)
         if seat is not None:
             seats.append(seat)
     if not seats and refused:
@@ -1700,7 +1736,7 @@ def _socket_scale_note(built, cp: ConnectionParams) -> str:
 
 def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                   params: PrintParams, markers: list,
-                  overlap=None) -> Tuple[bool, str]:
+                  overlap=None, gap_falloff: float = None) -> Tuple[bool, str]:
     """Seat ``count`` press-fit magnet pockets on the best-scoring contacts.
 
     The pocket is cut oversize on purpose (see ``magnet_fit_clearance_mm`` /
@@ -1720,7 +1756,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     chamfer = min(cp.magnet_chamfer_mm, 0.3 * t)
 
     seats = _find_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
-                        socket_r, embed)
+                        socket_r, embed, gap_falloff)
     pocket = {"radius": pocket_r, "depth": depth,
               "chamfer": chamfer, "shape": shape}
 
@@ -2456,7 +2492,13 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     method = "magnet"
                     ok, note = _apply_magnet(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
-                        markers, overlap=overlap)
+                        markers, overlap=overlap,
+                        # Two proteins meet across a broad face, and the middle
+                        # of it is the right place — so distance counts for
+                        # everything there. On a mixed interface the geometry is
+                        # lumpier and material still has to have a say.
+                        gap_falloff=(cp.seat_gap_falloff_flat
+                                     if kind == "protein-protein" else None))
                 else:
                     method = "bridge"
                     ok, note = _apply_bridge(

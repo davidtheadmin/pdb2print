@@ -446,7 +446,11 @@ class ConnectionParams:
     #: fullest probe is the one furthest from a joint that would actually close.
     #: Applied as a multiplier on the score, so a gap the collar cannot span
     #: cannot be bought back with volume however much of it there is.
-    seat_gap_falloff: float = 0.6
+    seat_gap_falloff: float = 0.85
+    #: The same, for two proteins meeting across a broad flat face — where the
+    #: middle of the contact is simply the right answer, so distance decides it.
+    #: 1.0 means a candidate at the contact threshold scores nothing at all.
+    seat_gap_falloff_flat: float = 1.0
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:
