@@ -136,20 +136,6 @@ def dilate(man, amount: float):
     return _manifold.union([man.translate(tuple(v)) for v in offsets])
 
 
-#: Below this the lobe is a lens and its thin axis is the interface normal;
-#: above it, it is not, and the axis is meaningless.
-#:
-#: Measured as ``sqrt(thin / mid)`` on the **volume** covariance eigenvalues —
-#: not the vertex ones, which inherit the tessellation bias this whole function
-#: exists to escape. Every lens fixture scored 0.025-0.52 (flat, tilted, curved,
-#: irregular, and a 200-degree wrap); a rod passing clean through a plate and a
-#: sphere fully buried in a block both scored exactly 1.000, and an irregular
-#: buried blob scored 0.729. Hence 0.6 rather than something more generous: the
-#: cost of refusing is only that the seat falls through to the ordinary axis
-#: search, and the cost of accepting a blob is a magnet pointing nowhere.
-_LOBE_LENS_MAX = 0.6
-
-
 def _solid_moments(mesh):
     """``(volume, centroid, covariance)`` of the solid a closed mesh encloses.
 
@@ -199,12 +185,18 @@ def _centroid_and_extent(man) -> Tuple[Optional[np.ndarray], Optional[np.ndarray
     a seat derived from the overlap sits square.  The sign is arbitrary here;
     the caller orients it.
 
-    Two things it now refuses to do.  It does not read the axis off the mesh's
-    vertices (see :func:`_solid_moments`), and it does not return an axis at all
-    when the lobe is not a lens — a rod passing through a plate or a ligand
-    buried in its pocket shares a volume whose "thin axis" means nothing.  The
-    caller falls back to the ordinary axis search there, which is the right
-    answer for a shape this one cannot read.
+    What it no longer does is read the axis off the mesh's *vertices* — see
+    :func:`_solid_moments` for why that was worth 9.5 degrees of noise.
+
+    It does **not** try to detect a lobe that is not a lens, and that omission
+    is deliberate.  A gate on ``sqrt(thin/mid)`` was written and removed: the
+    threshold separated the synthetic fixtures cleanly but was never measured
+    against real lobes, whose ratios span 0.13 to 0.96 — so it refused a large
+    and unknown share of perfectly good interfaces.  Worse, refusing here does
+    not send the seat to the axis search as intended; ``_overlap_seats`` falls
+    back to a single nearest-vertex pair, which is the noisiest estimator in the
+    codebase.  A gate is still the right idea, but it needs a measured threshold
+    and a fallback that goes somewhere better than that.
     """
     try:
         mesh = _manifold.to_trimesh(man)
@@ -217,11 +209,8 @@ def _centroid_and_extent(man) -> Tuple[Optional[np.ndarray], Optional[np.ndarray
         evals, evecs = np.linalg.eigh(cov)          # ascending
     except Exception:
         return centre, None
-    thin, mid = float(evals[0]), float(evals[1])
-    if mid <= 1e-15:
-        return centre, None
-    if np.sqrt(max(thin, 0.0) / mid) > _LOBE_LENS_MAX:
-        return centre, None                          # not a lens; no normal here
+    if float(evals[1]) <= 1e-15:
+        return centre, None                # degenerate; nothing to read
     axis = np.asarray(evecs[:, 0], float)
     n = float(np.linalg.norm(axis))
     return centre, (axis / n if n > 1e-12 else None)
