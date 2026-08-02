@@ -451,8 +451,7 @@ class Seat:
     center: np.ndarray       # mid-plane point the two flat faces meet on
     axis: np.ndarray         # unit vector from part A into part B
     gap: float               # local surface-to-surface gap (mm)
-    footprint: int           # supporting contacts under the disc (stage 1)
-    patch: np.ndarray = None      # the local contact midpoints (stage 1)
+    footprint: int           # surface points seated under the disc
     fill: float = 0.0        # fraction of the needed seat volume that is solid
     embedding: float = 0.0   # fraction of the collar as built that is buried
     extend_a: float = 1.0    # length multiplier that closes A's back face
@@ -464,18 +463,8 @@ class Seat:
     emb_a: object = None
     emb_b: object = None
     back_done: bool = False
-    agreement: float = 1.0   # cos angle between chosen axis and nearest-point line
     blocked: int = 0         # surface points sitting in the assembly path
-    axis_source: str = "contact"   # "overlap" | "mass" | "mass-flat" | "contact"
-    edge_offset: float = 0.0 # lateral lopsidedness of the patch (mm); 0 = interior
-    #: Material found around the seat, as a multiple of the collar's own volume.
-    #: 1.0 means the probe ball found only as much plastic as the collar
-    #: displaces — a strut, not a body.  See ``seat_depth_weight``.
-    depth_ratio: float = 0.0
-    #: How well this joint agrees with the line between the two chains as whole
-    #: objects (1 = along it), and how far off that line it sits (mm).
-    global_axis: float = 0.0
-    global_offset: float = 0.0
+    axis_source: str = "probe"
     #: Fraction of the probe ball each part fills, and the ball's radius (mm).
     probe_a: float = 0.0
     probe_b: float = 0.0
@@ -486,75 +475,6 @@ class Seat:
     #: Fraction of the collar that ends up buried, on the worse side.
     hidden: float = 0.0
     score: float = 0.0
-    #: mm³ of interpenetration this seat was derived from (0 for point-cloud
-    #: seats).  A joint that sits where the two parts *were* fighting for the
-    #: same space is the natural one: there is guaranteed material on both sides
-    #: and the interface normal is well determined.
-    overlap_volume: float = 0.0
-
-
-def _patch_long_axis(points: np.ndarray):
-    """``(direction, elongation)`` of a contact patch, by PCA.
-
-    On a narrow contact *strip* — a protein lying along a DNA backbone, say —
-    the strip's long direction is the best-determined thing about it, far more
-    stable than its normal.  That matters because it is exactly the direction a
-    rod-shaped blob's centre of mass slides along, so knowing it lets us take it
-    back out of the axis.  ``elongation`` is λ1/λ2; ~1 means a round patch with
-    no meaningful long direction.
-    """
-    if points is None or len(points) < 4:
-        return None, 1.0
-    centred = points - points.mean(axis=0)
-    try:
-        _u, s, vh = np.linalg.svd(centred, full_matrices=False)
-    except Exception:
-        return None, 1.0
-    if len(s) < 2 or s[1] < 1e-9:
-        return (_unit(vh[0]), np.inf) if len(s) else (None, 1.0)
-    return _unit(vh[0]), float(s[0] / s[1])
-
-
-def _edge_offset(patch, center, axis) -> float:
-    """Lateral lopsidedness of a contact patch around a seat centre (mm).
-
-    Projects the patch into the plane perpendicular to ``axis`` and returns how
-    far the patch's centroid sits from the seat centre *in that plane*.  A seat
-    ringed by contact on every side returns ~0; a seat on the rim of an
-    interface, whose support is all to one side, returns a value approaching the
-    socket radius — the far side of its collar is overhanging open air.  This is
-    the cheap "is the socket on the edge" probe; the score turns it into a
-    preference for the interior spot that usually sits a little further in.
-    """
-    if patch is None or len(patch) < 3:
-        return 0.0
-    n = _unit(axis)
-    rel = np.asarray(patch, float) - center
-    perp = rel - np.outer(rel @ n, n)
-    return float(np.linalg.norm(perp.mean(axis=0)))
-
-
-def _recenter_into_patch(seat: "Seat", frac: float, max_shift: float) -> None:
-    """Slide a seat toward the interior of its contact patch, in the mating plane.
-
-    The physical companion to the edge penalty: where the whole shortlist sits on
-    the rim (a narrow interface, so there is no better candidate to prefer), walk
-    the socket inward instead.  The shift is ``frac`` of the measured rim offset,
-    taken purely in the plane perpendicular to the axis — never along it, so the
-    two flat faces still land on the shared mid-plane — and capped at
-    ``max_shift`` so a badly lopsided patch cannot fling the seat off the contact.
-    Mutates ``seat.center`` in place; a no-op when ``frac`` is zero.
-    """
-    if frac <= 0.0 or seat.patch is None or len(seat.patch) < 3:
-        return
-    n = _unit(seat.axis)
-    rel = np.asarray(seat.patch, float) - seat.center
-    perp = rel - np.outer(rel @ n, n)
-    shift = perp.mean(axis=0) * float(frac)
-    d = float(np.linalg.norm(shift))
-    if d > max_shift > 0.0:
-        shift = shift * (max_shift / d)
-    seat.center = seat.center + shift
 
 
 def _path_census(pa, pb, center, axis, radius, length):
@@ -585,95 +505,6 @@ def _path_census(pa, pb, center, axis, radius, length):
     return blocked, seated
 
 
-def _patch_normal(patch, center, radius: float, seed_axis):
-    """Interface normal from a plane fit to the *local* contact patch, or ``None``.
-
-    The radius bound is the whole trick, and it is why this is not the
-    mating-plane refinement that was tried and reverted.  That one fitted the
-    whole contact cloud: on a protein wrapped around a duplex it came out **32
-    degrees** from the true local normal, because averaging around a curve is
-    not averaging along a face.  Restricted to the patch the socket actually
-    covers -- twice its radius, never more -- the same estimator measured
-    **1.2-3.0 degrees** on that identical wrapped interface, because a wrapped
-    surface *is* locally flat at that scale.  So the bound is not a tuning knob;
-    widening it reintroduces the failure it exists to avoid.
-
-    The planarity test here is only "is this a sheet at all", not
-    "is this flat rather than wrapped" -- that second question was measured to
-    be unanswerable (a rough flat patch and a 140-degree wrap both score ~0.67
-    on any thin/mid ratio), and this does not need to answer it.
-
-    Offered as a candidate and never snapped to: it still has to win the census
-    and the embedding contest like every other axis, so a normal that cannot
-    actually be assembled along loses.
-    """
-    if patch is None or len(patch) < 6:
-        return None
-    pts = np.asarray(patch, float)
-    local = pts[np.linalg.norm(pts - center, axis=1) <= radius]
-    if len(local) < 6:
-        return None
-    try:
-        _u, s, vh = np.linalg.svd(local - local.mean(axis=0), full_matrices=False)
-    except Exception:
-        return None
-    if s[1] <= 1e-9 or s[2] / s[1] > 0.55:
-        return None                    # a blob, not a sheet — no normal to read
-    normal = np.asarray(vh[2], float)
-    if float(normal @ seed_axis) < 0.0:
-        normal = -normal
-    return _unit(normal)
-
-
-def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams,
-                  socket_r: float = None, global_dir=None):
-    """Candidate joint axes for one seat, as ``(label, unit vector)``.
-
-    Three hypotheses, because no single construction survives every interface:
-
-    * ``contact`` — the plain nearest-point line.  Noisy, but never absurd.
-    * ``mass`` — the line between the two local centres of mass.  Points along
-      the material, which is what we want, *except* when one side's local blob is
-      a rod (a DNA backbone tube): then the centroid slides along the rod as the
-      probe ball clips it asymmetrically, and the axis swings toward the helix.
-    * ``mass-flat`` — the mass line with the contact strip's long direction
-      projected out.  This is the rod fix: it removes the one component the
-      centroid is unreliable in, and keeps the component across the interface.
-    * ``normal`` — the normal of a plane fitted to the contact patch within
-      twice the socket radius.  The only one of the four that reads the
-      *interface* rather than inferring it from where mass or vertices happen to
-      be, and the most accurate where it applies (see :func:`_patch_normal`).
-      Absent when the local patch is not a sheet.
-
-    They are not ranked here — the caller measures each against the actual
-    geometry and picks whichever can really be assembled.
-    """
-    opts = [("contact", seat.axis)]
-    if global_dir is not None:
-        # The line between the two chains as wholes. The coarsest hypothesis
-        # available and the only one that knows what is being connected to what.
-        opts.append(("global", global_dir))
-    if socket_r is not None and socket_r > 0.0:
-        normal = _patch_normal(seat.patch, seat.center, 2.0 * socket_r, seat.axis)
-        if normal is not None:
-            opts.append(("normal", normal))
-    if cen_a is None or cen_b is None:
-        return opts
-
-    delta = cen_b - cen_a
-    if float(np.linalg.norm(delta)) <= 1e-6:
-        return opts
-    mass = _unit(delta)
-    opts.append(("mass", mass))
-
-    long_dir, elongation = _patch_long_axis(seat.patch)
-    if long_dir is not None and elongation >= cp.patch_elongation_min:
-        flat = mass - long_dir * float(mass @ long_dir)
-        if float(np.linalg.norm(flat)) > 0.35:
-            opts.append(("mass-flat", _unit(flat)))
-    return opts
-
-
 #: Nudge toward the axes that know where the material is, on the same 0-100
 #: scale as the normalised census below.
 #:
@@ -700,74 +531,6 @@ _AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "global": 3.5,
 #: for one property.
 _AXIS_QUALITY = {"probe": 1.0, "overlap": 1.0, "normal": 0.9, "mass": 0.9,
                  "global": 0.85, "mass-flat": 0.7, "contact": 0.3}
-
-
-def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
-                 radius: float, length: float,
-                 blob_a=None, blob_b=None, socket_r: float = None,
-                 global_dir=None):
-    """Pick the axis the joint can actually be assembled along.
-
-    Every candidate is put through the same physical test: how much material
-    would have to be cut out of the approach path, and how much body is left to
-    seat the collar in.  An axis running *along* a DNA backbone rather than
-    across the interface drives the socket lengthwise into the tube, so it is
-    heavily blocked and loses — which is what makes this robust to the centroid
-    sliding.  Candidates more than ``axis_agreement_min`` away from the plain
-    contact line are rejected outright as wrap artefacts.
-
-    The census alone cannot see the thing that actually looks wrong, though.  It
-    counts *surface points* that are in the way or behind the face, which answers
-    "can these come apart" but says nothing about how deeply the collar ends up
-    buried — so an axis that leaves half the socket standing in open air scores
-    just as well as one that sinks it into the body, as long as few points
-    obstruct it.  Each candidate is therefore also measured for embedding
-    (:func:`_embedding`) against the local solids, and the tilt that buries the
-    joint wins.  With ``blob_a``/``blob_b`` omitted this term is simply absent and
-    the behaviour is the older census-only one.
-    """
-    # Census first, for every candidate, so they can share one denominator.
-    #
-    # The division alone reorders nothing — a positive scalar shared by every
-    # candidate cannot — and it is not meant to. What it does is put the census
-    # in fixed units so the *other* two terms can be given weights that mean
-    # something. Before, the census was a raw count whose spread between
-    # candidates grew with the sample (measured on one fixture at 300 / 3,000 /
-    # 10,000 probe points: 66 / 529 / 2,141) while the embedding term was
-    # bounded by ``axis_embedding_weight`` however fine the mesh — so the term
-    # added specifically to stop magnets tilting was worth 1-5% of the decision
-    # and got less relevant the better the model. On a 0-100 census it is worth
-    # a stated fraction of it, at any mesh density. The behaviour change comes
-    # from that, and from _AXIS_PREFERENCE being rescaled to match.
-    surveyed = []
-    for label, axis in _axis_options(seat, cen_a, cen_b, cp, socket_r, global_dir):
-
-        agreement = float(np.dot(axis, seat.axis))
-        if label != "contact" and agreement < cp.axis_agreement_min:
-            continue
-        blocked, seated = _path_census(pa, pb, seat.center, axis, radius, length)
-        surveyed.append((label, axis, agreement, blocked, seated))
-    # Denominator from ``seated`` alone. Including ``blocked`` would let one
-    # hopeless candidate — heavily obstructed, so a large blocked count — inflate
-    # ref and compress every good candidate's census term against the fixed
-    # preference and embedding terms.
-    ref = max((s for _l, _a, _g, _b, s in surveyed), default=0) or 1
-
-    best = None
-    for label, axis, agreement, blocked, seated in surveyed:
-        score = ((seated - cp.axis_blocked_weight * blocked) * 100.0 / ref
-                 + _AXIS_PREFERENCE[label])
-        if socket_r is not None and cp.axis_embedding_weight > 0.0:
-            buried = min(_embedding(blob_a, seat.center, -axis, socket_r, length),
-                         _embedding(blob_b, seat.center, axis, socket_r, length))
-            score += cp.axis_embedding_weight * buried
-        if best is None or score > best[0]:
-            best = (score, label, axis, agreement, blocked)
-    if best is None:                       # every candidate rejected
-        blocked, _ = _path_census(pa, pb, seat.center, seat.axis, radius, length)
-        return seat.axis, "contact", 1.0, blocked
-    _score, label, axis, agreement, blocked = best
-    return axis, label, agreement, blocked
 
 
 def _local_solid(man, center, radius):
@@ -815,416 +578,19 @@ def _embedding(blob, center, into, radius, length) -> float:
     return float(max(0.0, min(1.0, have / want)))
 
 
-def _local_mass(blob, center):
-    """``(volume, centroid)`` of the lobe of ``blob`` the contact sits on.
-
-    This is the "how much meat is there" probe.  Only the component the contact
-    actually sits on is used: a ball straddling an interface can also clip an
-    unrelated lobe of the same chain, and averaging that in would drag the
-    centroid sideways.  Returns ``(0.0, None)`` if the part has nothing here.
-    """
-    if blob is None:
-        return 0.0, None
-    try:
-        pieces = blob.decompose() or [blob]
-        best, best_d = None, np.inf
-        for piece in pieces:
-            if piece.is_empty():
-                continue
-            mesh = _manifold.to_trimesh(piece)
-            d = float(np.linalg.norm(np.asarray(mesh.center_mass, float) - center))
-            if d < best_d:
-                best, best_d = mesh, d
-        if best is None:
-            return 0.0, None
-        return float(abs(best.volume)), np.asarray(best.center_mass, float)
-    except Exception:
-        return 0.0, None
-
-
-def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
-                     want: int):
-    """Stage 1 — cheap point-cloud shortlist of well-supported contact patches.
-
-    "Just take the closest points" picks a surface spike: smallest gap, no
-    material to seat anything in.  So each contact candidate is scored by how
-    much *consistent* contact surrounds it (neighbours within a socket-sized
-    radius whose contact direction agrees), which is high on a broad interface
-    and low on an isolated whisker.  Returns the best well-separated candidates,
-    more than are wanted, so stage 2 can rank them on real geometry.
-    """
-    pa = _probe_points(mesh_a)
-    pb = _probe_points(mesh_b)
-    d, idx = cKDTree(pb).query(pa, k=1)
-    # The band that counts as "in contact", measured out from the closest
-    # approach.  Proportional to the socket rather than a fixed 1.5 mm: at
-    # scale 0.6 that constant is two and a half Ångström, so relief shorter than
-    # a side chain was pooled into the contact patch with the flat background
-    # around it.
-    #
-    # Widened from 0.4 to 1.2 socket radii, because the narrow band was the
-    # first of three separate reasons this search wanted two *parallel* faces.
-    # Where two surfaces meet at an angle, the region within a millimetre of
-    # closest approach is a thin strip at the apex of the wedge — the thinnest
-    # and worst place to put a joint — and everywhere with real material behind
-    # it was excluded before it could be considered. A magnet does not need
-    # parallel faces: the socket cuts its own flat mating disc into each side,
-    # so what matters is depth along the axis, not how the surfaces happen to
-    # lie.
-    band = min(float(d.min()) + 1.2 * socket_r, contact_thresh)
-    mask = d <= band
-    if not mask.any():
-        mask = np.zeros(len(d), bool)
-        mask[int(np.argmin(d))] = True
-    A, B, dd = pa[mask], pb[idx[mask]], d[mask]
-    mids = 0.5 * (A + B)
-    dirs = B - A
-    dirs = dirs / np.clip(np.linalg.norm(dirs, axis=1, keepdims=True), 1e-9, None)
-
-    reach = socket_r + 1.5                      # area a socket needs around it
-    neigh = cKDTree(mids).query_ball_point(mids, reach)
-    consistent, support = [], np.zeros(len(mids), int)
-    for k in range(len(mids)):
-        nb = np.asarray(neigh[k], dtype=int)
-        cons = nb[dirs[nb] @ dirs[k] > 0.6]     # same-facing contact = real interface
-        consistent.append(cons if len(cons) else np.array([k]))
-        # Rank on how much contact is nearby, not on how much of it is
-        # *parallel*. The direction-agreement filter is still what defines the
-        # patch a seat is measured on and where its seed axis comes from — it is
-        # a good answer to "which surface am I on" — but it was also the ranking
-        # key, and as a ranking key it is a bias: a broad flat interface scores
-        # every neighbour, while a curved or angled one scores a fraction of
-        # them and loses, however much material it has. That is the second of
-        # the three reasons this search preferred parallel faces.
-        support[k] = len(nb)
-
-    # Rank on the *smoothed* support, not the raw count.
-    #
-    # ``support`` is a neighbour count over a random 3000-point subsample, so
-    # every value is a noisy estimate, and taking the best of a thousand noisy
-    # estimates lands wherever the sampling happened to be kindest rather than
-    # where the geometry is best.  Measured on a fixed fixture: changing only
-    # the subsample seed moved the chosen seat over an 18 mm range.  Averaging
-    # each value over its neighbourhood — the same lists already built above, so
-    # this costs about 2 ms — halved the error against a known optimum (5.55 mm
-    # to 2.75 mm mean, 12.9 mm to 5.7 mm worst).
-    #
-    # Note the seed is fixed, so this was never run-to-run randomness. It is
-    # worse than that: the draw depends on the vertex count, so *any* change —
-    # a nudged scale, one more atom — reshuffles it and can move a joint 18 mm.
-    smoothed = np.array([support[np.asarray(neigh[k], dtype=int)].mean()
-                         for k in range(len(mids))])
-    order = sorted(range(len(mids)), key=lambda k: (-smoothed[k], dd[k]))
-    picked, seats = [], []
-    for k in order:
-        if len(picked) >= max(1, want):
-            break
-        # Separated by a full socket diameter so two sockets never intersect.
-        if any(np.linalg.norm(mids[k] - mids[c]) < 2.0 * socket_r + 1.0 for c in picked):
-            continue
-        picked.append(k)
-        near = mids[consistent[k]]
-        foot = int((np.linalg.norm(near - mids[k], axis=1) <= socket_r).sum())
-        # Seed axis averaged over the consistent neighbourhood rather than read
-        # off the single nearest vertex pair.  That pair is quantised by vertex
-        # spacing across the gap, and on two *flat* facing blocks it measured
-        # 7-50 degrees off true depending on mesh density.  It matters out of
-        # proportion to its job: every other candidate axis is vetoed for
-        # disagreeing with this one, so a 50-degree seed vetoed the correct
-        # answer and the recovery was to keep the bad seed.  Averaging is free —
-        # the neighbourhood is already computed — and measured 27.5 to 9.5
-        # degrees on the flat case, 5.9 to 0.6 on a ball resting on a plate.
-        seats.append(Seat(center=mids[k],
-                          axis=_unit(dirs[consistent[k]].mean(axis=0)),
-                          gap=float(dd[k]), footprint=foot, patch=near))
-    return seats, pa, pb
-
-
-def _overlap_seats(overlap, mesh_a, mesh_b, socket_r: float) -> List[Seat]:
-    """Seats derived from where the two parts *were* interpenetrating.
-
-    These are the joint positions the old point-cloud search could never find,
-    and the reason is worth stating: it ranked candidates on an **unsigned**
-    nearest-vertex distance.  For a vertex of A buried deep inside B the nearest
-    vertex *of B* is out on B's surface, so that distance equals the penetration
-    depth — a millimetre or two — and the search read the deepest, meatiest part
-    of the interface as "far away".  The smallest distance instead landed on the
-    rim where the two surfaces cross, which is the thinnest part of the joint.
-    Worse, the contact direction ``B - A`` reverses across that rim, so the seed
-    axis could come out tilted or inverted — and since every other candidate
-    axis is vetoed for disagreeing with it, one bad seed forced the fallback and
-    produced exactly the tilted magnet.
-
-    The interference pass has already carved these regions apart, so here we
-    take the two things each source is actually good for:
-
-    * **position** from the local contact between the *carved* solids, which now
-      genuinely touch, so the seat lands on the real mating face;
-    * **direction** from the overlap lobe's thin principal axis.  An
-      interference lobe is a lens — broad across the interface, thin through it
-      — so its smallest principal direction *is* the interface normal, averaged
-      over the whole patch instead of read off one vertex pair.
-    """
-    if overlap is None or not overlap.pieces:
-        return []
-    pa = _probe_points(mesh_a)
-    pb = _probe_points(mesh_b)
-    tree_a, tree_b = cKDTree(pa), cKDTree(pb)
-    reach = socket_r + 2.5
-
-    seats: List[Seat] = []
-    for piece in overlap.pieces:
-        ia = np.asarray(tree_a.query_ball_point(piece.center, reach), dtype=int)
-        ib = np.asarray(tree_b.query_ball_point(piece.center, reach), dtype=int)
-        if len(ia) == 0 or len(ib) == 0:
-            continue
-        local_a, local_b = pa[ia], pb[ib]
-
-        # Position: closest approach of the two carved surfaces near this lobe.
-        dist, near = cKDTree(local_b).query(local_a, k=1)
-        k = int(np.argmin(dist))
-        point_a, point_b = local_a[k], local_b[near[k]]
-        center = 0.5 * (point_a + point_b)
-        gap = float(dist[k])
-
-        # Direction: the lobe's thin axis, signed from A's material into B's.
-        axis = piece.normal
-        if axis is None:
-            axis = _unit(point_b - point_a)
-        else:
-            lead = local_b.mean(axis=0) - local_a.mean(axis=0)
-            sign = float(np.dot(axis, lead))
-            if abs(sign) < 1e-9:
-                sign = float(np.dot(axis, point_b - point_a))
-            axis = _unit(axis * (1.0 if sign >= 0.0 else -1.0))
-
-        patch = np.vstack([local_a, local_b])
-        foot = int((np.linalg.norm(local_a - center, axis=1) <= socket_r).sum())
-        seats.append(Seat(center=center, axis=axis, gap=gap, footprint=foot,
-                          patch=patch, axis_source="overlap",
-                          overlap_volume=float(piece.volume)))
-
-    # Two sockets must not intersect, so thin the list to well-separated lobes,
-    # biggest first — lobe volume is a direct measure of how much material the
-    # joint has to work with.
-    seats.sort(key=lambda s: -s.overlap_volume)
-    kept: List[Seat] = []
-    for seat in seats:
-        if any(np.linalg.norm(seat.center - k.center) < 2.0 * socket_r + 1.0
-               for k in kept):
-            continue
-        kept.append(seat)
-    return kept
-
-
-def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
-                 socket_r: float, need_depth: float, com_a=None, com_b=None) -> List[Seat]:
-    """Stage 2 — re-orient and rank each candidate against the real solids.
-
-    For every candidate we intersect both parts with a ball at the contact.  That
-    one operation yields both things we need:
-
-    * **the axis** — the line joining the two local centres of mass.  This is the
-      direction in which each part actually *has* material, so a magnet laid
-      along it sits square in the meat instead of following whatever tilt the
-      single nearest-point pair happened to have.
-    * **the score** — how much material is there at all, per side.
-
-    The centroid line is not trusted blindly.  Where a protein wraps *around*
-    curved DNA the probe ball reaches right around the duplex and the protein's
-    local centre of mass lands on the far side, which would flip the magnet.  So
-    the mass axis is accepted only when it agrees with the plain nearest-point
-    line to within ``axis_agreement_min``; otherwise the nearest-point line is
-    kept and the seat records ``axis_source="contact"``.
-
-    Finally each seat is checked for *fill*: the fraction of the socket cylinder
-    it needs that is already solid.  A seat on a spike scores near zero here and
-    is dropped, because the collar would otherwise be built out of thin air.
-    """
-    probe_r = max(socket_r * cp.mass_probe_scale, socket_r + 1.0)
-    # The embedding test intersects the collar with the local solid, so that
-    # solid has to *contain* the collar — anything outside the ball would read as
-    # missing material and score a perfectly buried socket as proud.  With the
-    # stock proportions the mass probe is already wide enough and the same solid
-    # serves both; a deep magnet in a thin wall is the case where it is not, and
-    # then a second, wider cut is taken for the embedding only.  The mass probe
-    # itself is deliberately *not* widened: it is kept modest so that a protein
-    # wrapping a duplex cannot drag the local centre of mass around it.
-    # Sized for the *longest* socket the back-face search may ask for, so a
-    # lengthened socket is still measured against material rather than against
-    # the edge of the ball it is being tested in.
-    # A divisor since the score terms became scale-relative, and it arrives
-    # from a form field: connector_diameter 0 with no clearance and no socket
-    # wall lands here as 0.0. Clamped rather than validated because a zero-width
-    # connector is not a request worth honouring either way.
-    socket_r = max(float(socket_r), 1e-3)
-    # The two chains as whole objects: the direction one has to travel to leave
-    # the other, and the line joining them. Everything else here is measured
-    # within a few millimetres of a contact point and cannot see either.
-    global_dir, com_mid, com_span = None, None, 0.0
-    if com_a is not None and com_b is not None:
-        delta = np.asarray(com_b, float) - np.asarray(com_a, float)
-        span = float(np.linalg.norm(delta))
-        if span > 1e-6:
-            global_dir = delta / span
-            com_mid = 0.5 * (np.asarray(com_a, float) + np.asarray(com_b, float))
-            com_span = span
-    collar_reach = float(np.hypot(need_depth * (1.0 + cp.socket_extend_max),
-                                  socket_r)) + 0.25
-    scored: List[Seat] = []
-    for seat in seats:
-        # Optionally walk the seat off the rim and into the interior of its
-        # contact patch *before* it is measured, so the axis, fill and edge
-        # offset are all read at the position the joint will actually be built
-        # at.  Off (frac 0) unless the user turns it on.
-        _recenter_into_patch(seat, cp.seat_recenter_frac, socket_r)
-
-        blob_a = _local_solid(man_a, seat.center, probe_r)
-        blob_b = _local_solid(man_b, seat.center, probe_r)
-        vol_a, cen_a = _local_mass(blob_a, seat.center)
-        vol_b, cen_b = _local_mass(blob_b, seat.center)
-        if vol_a <= 0.0 or vol_b <= 0.0:
-            continue
-        # How much plastic is actually here, on the thinner side, as a multiple
-        # of what the collar displaces.  These two volumes were already being
-        # measured and then used only for the "> 0" test above.
-        collar_volume = float(np.pi * socket_r * socket_r * need_depth)
-        seat.depth_ratio = (float(min(vol_a, vol_b) / collar_volume)
-                            if collar_volume > 1e-9 else 0.0)
-        if collar_reach <= probe_r:
-            emb_a, emb_b = blob_a, blob_b
-        else:
-            emb_a = _local_solid(man_a, seat.center, collar_reach)
-            emb_b = _local_solid(man_b, seat.center, collar_reach)
-
-        if seat.axis_source == "overlap":
-            # The lobe's thin axis is measured over the whole interference patch
-            # and is already the interface normal, so it is not put through the
-            # candidate search — and above all it is not judged against the
-            # nearest-point line, which is the noisy quantity the search exists
-            # to escape.  Only the path census is still wanted, for the score.
-            seat.blocked, _seated = _path_census(
-                pa, pb, seat.center, seat.axis,
-                socket_r + cp.path_clearance_mm, need_depth)
-            seat.agreement = 1.0
-        else:
-            axis, source, agreement, blocked = _choose_axis(
-                seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
-                need_depth, emb_a, emb_b, socket_r, global_dir)
-            seat.axis, seat.axis_source = axis, source
-            seat.agreement, seat.blocked = agreement, blocked
-
-        # How buried the collar ends up on its worse side, on the axis finally
-        # chosen — a joint is only as hidden as its more exposed half.
-        seat.embedding = min(
-            _embedding(emb_a, seat.center, -seat.axis, socket_r, need_depth),
-            _embedding(emb_b, seat.center, seat.axis, socket_r, need_depth))
-
-        # Whether each side's flat back face is left hanging is decided from
-        # these small local solids -- ``_build_seat`` only has the full chains,
-        # where the same probes would each be a full-size boolean -- so they are
-        # kept on the seat.  The measurement itself is deferred: see
-        # ``_resolve_back_faces``.
-        seat.emb_a, seat.emb_b = emb_a, emb_b
-
-        # Fill: how much of the plastic each side must supply is already there.
-        # Measured from that side's own surface inward, not from the mid-plane —
-        # the half-gap in between is air on every interface and would otherwise
-        # make the score depend on the gap rather than on the material.
-        # Measured against the local blob where the blob provably contains the
-        # cylinder, and against the full chain otherwise.  ``_local_solid``'s
-        # whole reason for existing is that every question about a seat is
-        # answerable from a small solid; this was the one question still asking
-        # the whole chain, at 5.4 ms a call against 1.7.  The guard is not
-        # optional: outside the ball, material simply beyond it would read as
-        # material that is not there, and the seat would rank low for the wrong
-        # reason.
-        emb_r = probe_r if collar_reach <= probe_r else collar_reach
-        far = float(np.hypot(seat.gap / 2.0 + need_depth, socket_r))
-        fills = []
-        for man, blob, sign in ((man_a, emb_a, -1.0), (man_b, emb_b, +1.0)):
-            into = seat.axis * sign
-            start = seat.center + into * (seat.gap / 2.0)
-            need = _seat_solid(start, into, need_depth, socket_r)
-            want = _manifold.volume(need)
-            against = blob if (blob is not None and far <= emb_r) else man
-            try:
-                have = _manifold.volume(_manifold.intersection(against, need))
-            except Exception:
-                have = 0.0
-            fills.append(have / want if want > 1e-9 else 0.0)
-        seat.fill = float(min(fills))
-
-        # How far off the interface's rim this seat sits, measured against the
-        # axis just chosen.  Interior seats score ~0; a seat whose support is all
-        # to one side (collar overhanging open air) scores up to the socket
-        # radius and is penalised for it below.
-        seat.edge_offset = _edge_offset(seat.patch, seat.center, seat.axis)
-
-        # Rank on the weakest side's fill first — a joint is only as good as its
-        # thinner half — then on contact footprint, then prefer a tight gap, and
-        # shy away from seats that need a lot cut out of the path.  A seat
-        # recovered from an interference lobe gets a bounded bonus: the two parts
-        # were competing for that volume, so material on both sides is guaranteed
-        # and the normal is well determined (bounded, so a huge lobe cannot
-        # outrank a seat that is simply better).  Two cosmetic-but-real terms sit
-        # under those: reward a well-founded joint axis (a cleaner-looking disc),
-        # and penalise a seat that sits on the edge of the interface (a socket
-        # that sticks out) so a tidier interior spot wins when one exists.
-        # Three of these terms used to be absolute millimetres or cubic
-        # millimetres inside a score whose leading term spans a hundred, which
-        # meant they quietly changed weight with the model's size.  The worst
-        # was the overlap bonus: measured in mm3, it decays as scale cubed, so a
-        # lobe worth 30 points at scale 1.5 is worth 1.1 at 0.5 and 0.14 at
-        # 0.25.  Overlap seats are the *good* ones — they carry a real interface
-        # normal and skip the axis search entirely — and small scale is exactly
-        # where they stopped being preferred.  All three are ratios now, tuned
-        # so the stock socket reproduces roughly what it did before.
-        edge_span = 0.6 * socket_r
-        seat.score = (seat.fill * 100.0
-                      + min(seat.footprint, 40) * 0.5
-                      - (seat.gap / socket_r) * 8.0
-                      - min(seat.blocked, 60) * 0.5
-                      + min(1.0, seat.overlap_volume / collar_volume) * 30.0
-                      + cp.axis_quality_weight * _AXIS_QUALITY.get(seat.axis_source, 0.3)
-                      # Clamped at 0.6 x the radius, not the full radius: past
-                      # that the far side of the collar is entirely over air and
-                      # further offset is not meaningfully worse.  Divided back
-                      # out so the maximum penalty is what it always was.
-                      - cp.edge_center_weight * min(seat.edge_offset, edge_span) / 0.6
-                      + cp.seat_embedding_weight * seat.embedding
-                      + cp.seat_depth_weight * min(1.0, seat.depth_ratio / 3.0))
-        if global_dir is not None:
-            # Does this joint pull the two objects apart, and does it sit where
-            # they actually meet? Both bounded to 0..1 so they refine a choice
-            # between comparable seats rather than overriding "is there material
-            # here", which is still what the leading term measures.
-            seat.global_axis = abs(float(np.dot(seat.axis, global_dir)))
-            off = seat.center - com_mid
-            lateral = float(np.linalg.norm(off - global_dir * float(off @ global_dir)))
-            seat.global_offset = lateral
-            near = max(0.0, 1.0 - lateral / max(0.25 * com_span, socket_r))
-            seat.score += (cp.global_axis_weight * seat.global_axis
-                           + cp.global_line_weight * near)
-        scored.append(seat)
-
-    scored.sort(key=lambda s: -s.score)
-    return scored
-
-
 def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
                         cp: ConnectionParams, min_mult: float = 1.0) -> None:
     """Work out ``extend_*`` / ``taper_*`` for a seat that is about to be built.
 
-    Deferred out of :func:`_score_seats` on purpose.  None of these four values
-    appears anywhere in ``seat.score`` -- only :func:`_build_seat` reads them --
-    and the shortlist scores about eight seats to build one, so seven sets of
-    them were measured and thrown away.  Each set is up to ten
-    ``_manifold.volume`` calls on an intersection, which is where the ~440
-    volume calls per build were coming from.
+    Deferred out of the search on purpose.  None of these four values appears
+    anywhere in ``seat.score`` -- only :func:`_build_seat` reads them -- and the
+    shortlist scores several seats to build one, so most sets of them were
+    measured and thrown away.  Each set is up to ten ``_manifold.volume`` calls
+    on an intersection, which is where the ~440 volume calls per build were
+    coming from.
 
     Must be called with the same ``need_depth`` and ``socket_r`` that were
-    passed to :func:`_joint_seats`, not the ones :func:`_build_seat` is given:
+    passed to :func:`_find_seats`, not the ones :func:`_build_seat` is given:
     the result is a *multiple* of the depth it was measured at, which is how it
     carries over to the bridge, which sizes its socket differently.
     """
@@ -1239,19 +605,6 @@ def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
     seat.extend_b, seat.taper_b = _close_the_back(
         seat.emb_b, seat.center, seat.axis, need_depth, socket_r, cp, min_mult,
         seat.embedding)
-
-
-def _object_centre(mesh):
-    """The whole object's centre — volume if it is closed, vertices if not."""
-    try:
-        if mesh.is_watertight and abs(mesh.volume) > 1e-9:
-            return np.asarray(mesh.center_mass, float)
-    except Exception:
-        pass
-    try:
-        return np.asarray(mesh.vertices, float).mean(axis=0)
-    except Exception:
-        return None
 
 
 #: How much material each side needs around a candidate before the joint is
@@ -1463,7 +816,7 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     over_a = float(max(0.0, ta.max() - (0.5 * (a_face + b_face))))
     over_b = float(max(0.0, (0.5 * (a_face + b_face)) - tb.min()))
     seat = Seat(center=seat_centre, axis=axis, gap=gap,
-                footprint=int(seated), patch=None, axis_source="probe")
+                footprint=int(seated), axis_source="probe")
     seat.overhang_a, seat.overhang_b = over_a, over_b
     # The back-face search reads these. The probe ball is at least 2.5x the
     # socket radius, so it comfortably contains the collar it will be asked
@@ -1495,7 +848,7 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # ``_resolve_back_faces`` uses it to decide whether to try *shortening* the
     # collar before lengthening it, and ``_build_seat`` uses it to fit the back
     # cone inside the collar instead of stacking it past the back face. Left
-    # unassigned when the probe search replaced ``_score_seats``, so it held its
+    # unassigned when the probe search replaced the old scoring pass, so it held
     # 0.0 default: every collar was lengthened first and every cone was stacked,
     # which is the spike poking out of the back of a thin part.
     seat.embedding = float(seat_hidden)
@@ -1567,39 +920,6 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
         for seat in kept:
             _clear_depths(seat, va, vb, socket_r + cp.path_clearance_mm)
     return kept
-
-
-def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
-                 cp: ConnectionParams, socket_r: float,
-                 need_depth: float, overlap=None) -> List[Seat]:
-    """The ranked seats to actually build, best first (shared by magnet+bridge).
-
-    Candidates come from two sources and are scored together on the same
-    footing: the interference lobes this pair had before they were carved apart
-    (``overlap``), and the plain contact patches of the point-cloud search.  The
-    lobes are the natural joint positions and normally win, but they are not
-    forced through — a pair that merely touches has no lobes at all, and a lobe
-    on a spike still has to survive the fill test like anything else.
-    """
-    count = max(1, count)
-    shortlist, pa, pb = _candidate_seats(mesh_a, mesh_b, cp.contact_threshold_mm,
-                                         socket_r, count + cp.seat_shortlist_extra)
-    from_overlap = _overlap_seats(overlap, mesh_a, mesh_b, socket_r)
-    if from_overlap:
-        # Drop point-cloud candidates that would collide with a lobe seat; the
-        # lobe is the better-founded of the two in the same place.
-        shortlist = [s for s in shortlist
-                     if all(np.linalg.norm(s.center - o.center) >= 2.0 * socket_r + 1.0
-                            for o in from_overlap)]
-        shortlist = from_overlap[:count + cp.seat_shortlist_extra] + shortlist
-    ranked = _score_seats(shortlist, man_a, man_b, pa, pb, cp, socket_r, need_depth,
-                          _object_centre(mesh_a), _object_centre(mesh_b))
-    # Prefer seats with real material behind them, but if none clears the bar
-    # keep the ranked list anyway: ``_build_seat``'s watertight gate is the hard
-    # limit, and refusing everything here would silently drop a joint the user
-    # asked for on a genuinely thin (but printable) interface.
-    good = [s for s in ranked if s.fill >= _MIN_SEAT_FILL]
-    return (good or ranked)[:count]
 
 
 def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
@@ -1868,10 +1188,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "socket_diameter": float(2.0 * socket_r) if cp.socket else None,
             "fill": round(seat.fill, 3), "axis_source": seat.axis_source,
             "blocked": int(seat.blocked),
-            "overlap_mm3": round(seat.overlap_volume, 2),
-            "edge_offset": round(seat.edge_offset, 2),
             "embedding": round(seat.embedding, 3),
-            "depth_ratio": round(seat.depth_ratio, 2),
             "probe_a": round(seat.probe_a, 3),
             "probe_b": round(seat.probe_b, 3),
             "probe_r": round(seat.probe_r, 2),
@@ -1901,7 +1218,7 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     for seat in seats:
         # The peg must span the gap as well as bite into both bodies.
         # Measured at the depth _build_seat will actually use, not the one
-        # _joint_seats scored at: the multiplier is applied to this, so
+        # _find_seats scored at: the multiplier is applied to this, so
         # verifying it against anything else under-delivers the correction.
         # A pin has no bore to protect, so it may pull back further.
         _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
@@ -1916,21 +1233,10 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     return _joint_note(placed, len(seats), reasons, "bridge", seats)
 
 
-#: Axis labels worth surfacing in the UI.  "mass" is the expected case and
-#: "normal" is the best-founded one there is, so both are left unsaid; the other
-#: two mean a fallback fired and are worth knowing about if a magnet still looks
-#: wrong.
-_AXIS_NOTE = {
-    "contact": "axis from contact line",
-    "mass-flat": "axis flattened along contact strip",
-}
-
-
 def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     """The (ok, human note) pair reported back to the UI for one interface."""
     seated = seats[:max(placed, 1)]
-    used = {s.axis_source for s in seated}
-    extra = [_AXIS_NOTE[a] for a in sorted(used) if a in _AXIS_NOTE]
+    extra: list = []
     # One measure now, because the search takes one: how much of the probe ball
     # each part filled, on the weaker side. A broad flat interface fills both
     # halves; a spike or a thin arm fills very little. It is printable either
@@ -2405,7 +1711,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     detected or any joint is seated, for two reasons:
 
     * a joint seated against still-overlapping geometry is measured against
-      distances that do not mean what they appear to (see ``_overlap_seats``);
+      distances that do not mean what they appear to;
     * contact detection itself would miss the worst cases — for two chains that
       interpenetrate deeply, the unsigned nearest-vertex distance is the
       penetration depth, which can exceed ``contact_threshold_mm`` and make the

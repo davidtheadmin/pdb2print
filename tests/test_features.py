@@ -503,10 +503,10 @@ def test_mass_axis_beats_the_contact_line_on_a_tilted_interface():
     mb = cx._manifold.from_trimesh(b)
 
     center = np.array([5.25, 2.0, 0.0])
-    # The local solid is cut once and then reused for mass, centroid and the
-    # embedding tests, so the probe radius is applied here rather than inside.
-    _va, ca = cx._local_mass(cx._local_solid(ma, center, 6.0), center)
-    _vb, cb = cx._local_mass(cx._local_solid(mb, center, 6.0), center)
+    # The local solid is cut once and then reused, so the probe radius is
+    # applied here rather than inside.
+    ca = cx._blob_centre(cx._local_solid(ma, center, 6.0))
+    cb = cx._blob_centre(cx._local_solid(mb, center, 6.0))
     assert ca is not None and cb is not None
     mass_axis = cx._unit(cb - ca)
     assert mass_axis[0] > 0.7, mass_axis        # dominated by +x, the real normal
@@ -606,112 +606,6 @@ def _rod_and_slab():
     strip = np.stack([rng.uniform(-8, 8, 200), rng.uniform(-0.6, 0.6, 200),
                       np.zeros(200)], 1)
     return rod, slab, strip
-
-
-def _axis_error_deg(axis):
-    import numpy as np
-    return float(np.degrees(np.arccos(min(1.0, abs(axis[1])))))
-
-
-def test_patch_pca_tells_a_strip_from_a_disc():
-    import numpy as np
-    from pdb2print import connections as cx
-    _rod, _slab, strip = _rod_and_slab()
-    direction, elongation = cx._patch_long_axis(strip)
-    assert elongation > 5.0
-    assert abs(direction[0]) > 0.99            # the strip runs along x
-    rng = np.random.default_rng(1)
-    disc = np.column_stack([rng.uniform(-4, 4, 200), rng.uniform(-4, 4, 200),
-                            np.zeros(200)])
-    assert cx._patch_long_axis(disc)[1] < 2.0  # round patch: no long direction
-
-
-def test_edge_offset_is_zero_for_a_centred_patch_and_large_on_the_rim():
-    """The anti-edge probe: lopsided support reads as a large lateral offset."""
-    import numpy as np
-    from pdb2print import connections as cx
-
-    axis = np.array([0.0, 0.0, 1.0])
-    center = np.zeros(3)
-    rng = np.random.default_rng(2)
-    # A disc of contact centred on the seat, in the plane perpendicular to axis.
-    ring = np.column_stack([rng.uniform(-3, 3, 400), rng.uniform(-3, 3, 400),
-                            np.zeros(400)])
-    assert cx._edge_offset(ring, center, axis) < 0.4      # interior: ~centred
-
-    # The same disc but the seat sits at its edge — all support to one side.
-    off_center = np.array([3.0, 0.0, 0.0])
-    assert cx._edge_offset(ring, off_center, axis) > 2.0  # rim: lopsided
-
-    # The offset ignores the along-axis component: sliding the patch up the axis
-    # must not change it (the joint faces still meet on the mid-plane).
-    lifted = ring + np.array([0.0, 0.0, 5.0])
-    assert cx._edge_offset(lifted, center, axis) < 0.4
-
-
-def test_recenter_walks_a_rim_seat_inward_without_moving_along_the_axis():
-    """The optional pull-inward: motion is in the mating plane only, and bounded."""
-    import numpy as np
-    from pdb2print import connections as cx
-
-    axis = np.array([0.0, 0.0, 1.0])
-    rng = np.random.default_rng(3)
-    patch = np.column_stack([rng.uniform(-3, 3, 400), rng.uniform(-3, 3, 400),
-                             np.zeros(400)])
-    seat = cx.Seat(center=np.array([3.0, 0.0, 0.0]), axis=axis, gap=1.0,
-                   footprint=20, patch=patch)
-
-    before = cx._edge_offset(seat.patch, seat.center, seat.axis)
-    cx._recenter_into_patch(seat, frac=0.5, max_shift=3.6)
-    after = cx._edge_offset(seat.patch, seat.center, seat.axis)
-
-    assert after < before                      # walked toward the interior
-    assert abs(seat.center[2]) < 1e-9          # never moved along the axis
-    # frac=0 is a no-op.
-    held = cx.Seat(center=np.array([3.0, 0.0, 0.0]), axis=axis, gap=1.0,
-                   footprint=20, patch=patch)
-    cx._recenter_into_patch(held, frac=0.0, max_shift=3.6)
-    assert np.allclose(held.center, [3.0, 0.0, 0.0])
-
-
-def test_rod_shaped_blob_does_not_swing_the_axis_90_degrees():
-    """The DNA case: a thick backbone tube must not drag the magnet off-normal.
-
-    The raw centroid line is ~40° off here because the probe ball clips an
-    asymmetric length of rod.  Whatever axis is chosen must still be close to the
-    true interface normal (+y).
-    """
-    import numpy as np
-    from pdb2print.config import ConnectionParams
-    from pdb2print import connections as cx
-
-    rod, slab, strip = _rod_and_slab()
-    center = np.array([0.0, 1.0, 0.0])
-    cen_a, cen_b = slab.mean(0), rod.mean(0)
-    raw = cx._unit(cen_b - cen_a)
-    assert _axis_error_deg(raw) > 30           # the failure this test guards
-
-    seat = cx.Seat(center=center, axis=cx._unit(np.array([0.0, 1.0, 0.0])),
-                   gap=2.0, footprint=20, patch=strip)
-    axis, _label, _agree, _blocked = cx._choose_axis(
-        seat, cen_a, cen_b, slab, rod, ConnectionParams(), 3.0, 5.0)
-    assert _axis_error_deg(axis) < 5.0, _axis_error_deg(axis)
-
-
-def test_strip_projection_rescues_a_noisy_contact_line():
-    """When the contact line is itself tilted, the de-elongated mass axis wins."""
-    import numpy as np
-    from pdb2print.config import ConnectionParams
-    from pdb2print import connections as cx
-
-    rod, slab, strip = _rod_and_slab()
-    seat = cx.Seat(center=np.array([0.0, 1.0, 0.0]),
-                   axis=cx._unit(np.array([0.34, 0.94, 0.0])),   # 20° off
-                   gap=2.0, footprint=20, patch=strip)
-    axis, label, _agree, _blocked = cx._choose_axis(
-        seat, slab.mean(0), rod.mean(0), slab, rod, ConnectionParams(), 3.0, 5.0)
-    assert label == "mass-flat", label
-    assert _axis_error_deg(axis) < 5.0
 
 
 def test_path_census_counts_material_in_the_way():
