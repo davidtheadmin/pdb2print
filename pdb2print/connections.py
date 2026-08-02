@@ -254,6 +254,11 @@ _MIN_SEAT_FILL = 0.35
 #: genuinely small contact patch there may be nowhere better to put it.
 _MIN_SEAT_EMBEDDING = 0.5
 
+#: Above this much burial, an exposed back cap means the collar punched *through*
+#: a thin part rather than out of a surface that fell away — so the cone that
+#: would close the second case is precisely wrong for the first.
+_TAPER_MAX_EMBEDDING = 0.5
+
 
 def _seat_solid(face, into, length, radius):
     """A flat-ended cylinder from the mating face ``length`` deep into a part.
@@ -423,6 +428,10 @@ class Seat:
     blocked: int = 0         # surface points sitting in the assembly path
     axis_source: str = "contact"   # "overlap" | "mass" | "mass-flat" | "contact"
     edge_offset: float = 0.0 # lateral lopsidedness of the patch (mm); 0 = interior
+    #: Material found around the seat, as a multiple of the collar's own volume.
+    #: 1.0 means the probe ball found only as much plastic as the collar
+    #: displaces — a strut, not a body.  See ``seat_depth_weight``.
+    depth_ratio: float = 0.0
     score: float = 0.0
     #: mm³ of interpenetration this seat was derived from (0 for point-cloud
     #: seats).  A joint that sits where the two parts *were* fighting for the
@@ -703,7 +712,14 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
     pa = _probe_points(mesh_a)
     pb = _probe_points(mesh_b)
     d, idx = cKDTree(pb).query(pa, k=1)
-    band = min(float(d.min()) + 1.5, contact_thresh)
+    # The band that counts as "in contact", measured out from the closest
+    # approach.  Proportional to the socket rather than a fixed 1.5 mm: at
+    # scale 0.6 that constant is two and a half Ångström, so any relief shorter
+    # than a side chain was pooled into the contact patch together with the flat
+    # background around it, and every patch-derived quantity — the seed axis,
+    # the edge offset, the footprint — was measured on the wrong surface.
+    # 0.4 x the stock socket radius is 1.44 mm, so nothing moves at the default.
+    band = min(float(d.min()) + 0.4 * socket_r, contact_thresh)
     mask = d <= band
     if not mask.any():
         mask = np.zeros(len(d), bool)
@@ -722,8 +738,23 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
         consistent.append(cons if len(cons) else np.array([k]))
         support[k] = len(cons)
 
-    # Prefer meaty patches (high support); break ties toward the smaller gap.
-    order = sorted(range(len(mids)), key=lambda k: (-support[k], dd[k]))
+    # Rank on the *smoothed* support, not the raw count.
+    #
+    # ``support`` is a neighbour count over a random 3000-point subsample, so
+    # every value is a noisy estimate, and taking the best of a thousand noisy
+    # estimates lands wherever the sampling happened to be kindest rather than
+    # where the geometry is best.  Measured on a fixed fixture: changing only
+    # the subsample seed moved the chosen seat over an 18 mm range.  Averaging
+    # each value over its neighbourhood — the same lists already built above, so
+    # this costs about 2 ms — halved the error against a known optimum (5.55 mm
+    # to 2.75 mm mean, 12.9 mm to 5.7 mm worst).
+    #
+    # Note the seed is fixed, so this was never run-to-run randomness. It is
+    # worse than that: the draw depends on the vertex count, so *any* change —
+    # a nudged scale, one more atom — reshuffles it and can move a joint 18 mm.
+    smoothed = np.array([support[np.asarray(neigh[k], dtype=int)].mean()
+                         for k in range(len(mids))])
+    order = sorted(range(len(mids)), key=lambda k: (-smoothed[k], dd[k]))
     picked, seats = [], []
     for k in order:
         if len(picked) >= max(1, want):
@@ -734,8 +765,18 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
         picked.append(k)
         near = mids[consistent[k]]
         foot = int((np.linalg.norm(near - mids[k], axis=1) <= socket_r).sum())
-        seats.append(Seat(center=mids[k], axis=_unit(dirs[k]), gap=float(dd[k]),
-                          footprint=foot, patch=near))
+        # Seed axis averaged over the consistent neighbourhood rather than read
+        # off the single nearest vertex pair.  That pair is quantised by vertex
+        # spacing across the gap, and on two *flat* facing blocks it measured
+        # 7-50 degrees off true depending on mesh density.  It matters out of
+        # proportion to its job: every other candidate axis is vetoed for
+        # disagreeing with this one, so a 50-degree seed vetoed the correct
+        # answer and the recovery was to keep the bad seed.  Averaging is free —
+        # the neighbourhood is already computed — and measured 27.5 to 9.5
+        # degrees on the flat case, 5.9 to 0.6 on a ball resting on a plate.
+        seats.append(Seat(center=mids[k],
+                          axis=_unit(dirs[consistent[k]].mean(axis=0)),
+                          gap=float(dd[k]), footprint=foot, patch=near))
     return seats, pa, pb
 
 
@@ -868,6 +909,12 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
         vol_b, cen_b = _local_mass(blob_b, seat.center)
         if vol_a <= 0.0 or vol_b <= 0.0:
             continue
+        # How much plastic is actually here, on the thinner side, as a multiple
+        # of what the collar displaces.  These two volumes were already being
+        # measured and then used only for the "> 0" test above.
+        collar_volume = float(np.pi * socket_r * socket_r * need_depth)
+        seat.depth_ratio = (float(min(vol_a, vol_b) / collar_volume)
+                            if collar_volume > 1e-9 else 0.0)
         if collar_reach <= probe_r:
             emb_a, emb_b = blob_a, blob_b
         else:
@@ -908,14 +955,25 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
         # Measured from that side's own surface inward, not from the mid-plane —
         # the half-gap in between is air on every interface and would otherwise
         # make the score depend on the gap rather than on the material.
+        # Measured against the local blob where the blob provably contains the
+        # cylinder, and against the full chain otherwise.  ``_local_solid``'s
+        # whole reason for existing is that every question about a seat is
+        # answerable from a small solid; this was the one question still asking
+        # the whole chain, at 5.4 ms a call against 1.7.  The guard is not
+        # optional: outside the ball, material simply beyond it would read as
+        # material that is not there, and the seat would rank low for the wrong
+        # reason.
+        emb_r = probe_r if collar_reach <= probe_r else collar_reach
+        far = float(np.hypot(seat.gap / 2.0 + need_depth, socket_r))
         fills = []
-        for man, sign in ((man_a, -1.0), (man_b, +1.0)):
+        for man, blob, sign in ((man_a, emb_a, -1.0), (man_b, emb_b, +1.0)):
             into = seat.axis * sign
             start = seat.center + into * (seat.gap / 2.0)
             need = _seat_solid(start, into, need_depth, socket_r)
             want = _manifold.volume(need)
+            against = blob if (blob is not None and far <= emb_r) else man
             try:
-                have = _manifold.volume(_manifold.intersection(man, need))
+                have = _manifold.volume(_manifold.intersection(against, need))
             except Exception:
                 have = 0.0
             fills.append(have / want if want > 1e-9 else 0.0)
@@ -937,14 +995,29 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
         # under those: reward a well-founded joint axis (a cleaner-looking disc),
         # and penalise a seat that sits on the edge of the interface (a socket
         # that sticks out) so a tidier interior spot wins when one exists.
+        # Three of these terms used to be absolute millimetres or cubic
+        # millimetres inside a score whose leading term spans a hundred, which
+        # meant they quietly changed weight with the model's size.  The worst
+        # was the overlap bonus: measured in mm3, it decays as scale cubed, so a
+        # lobe worth 30 points at scale 1.5 is worth 1.1 at 0.5 and 0.14 at
+        # 0.25.  Overlap seats are the *good* ones — they carry a real interface
+        # normal and skip the axis search entirely — and small scale is exactly
+        # where they stopped being preferred.  All three are ratios now, tuned
+        # so the stock socket reproduces roughly what it did before.
+        edge_span = 0.6 * socket_r
         seat.score = (seat.fill * 100.0
                       + min(seat.footprint, 40) * 0.5
-                      - seat.gap * 2.0
+                      - (seat.gap / socket_r) * 8.0
                       - min(seat.blocked, 60) * 0.5
-                      + min(seat.overlap_volume, 200.0) * 0.15
+                      + min(1.0, seat.overlap_volume / collar_volume) * 30.0
                       + cp.axis_quality_weight * _AXIS_QUALITY.get(seat.axis_source, 0.3)
-                      - cp.edge_center_weight * min(seat.edge_offset, socket_r)
-                      + cp.seat_embedding_weight * seat.embedding)
+                      # Clamped at 0.6 x the radius, not the full radius: past
+                      # that the far side of the collar is entirely over air and
+                      # further offset is not meaningfully worse.  Divided back
+                      # out so the maximum penalty is what it always was.
+                      - cp.edge_center_weight * min(seat.edge_offset, edge_span) / 0.6
+                      + cp.seat_embedding_weight * seat.embedding
+                      + cp.seat_depth_weight * min(1.0, seat.depth_ratio / 3.0))
         scored.append(seat)
 
     scored.sort(key=lambda s: -s.score)
@@ -1080,7 +1153,17 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 # never at the cost of the joint: if the coned socket will not
                 # commit, the plain one is tried before the seat is abandoned, so
                 # the worst case is exactly the old geometry.
-                nose = top_ratio if cone[idx] else 0.0
+                # Never cone a collar that is already buried.  Full cap
+                # exposure has two quite different causes: the surface fell away
+                # under the socket (cone it), or the socket went clean through a
+                # part thinner than itself (coning makes it worse).  Measured on
+                # a 3 mm part with a 3.7 mm collar: 28 mm3 of material already
+                # stood past the back face, and the taper took that to 76 mm3 —
+                # 2.8 mm of extra nose out the back — while embedding read 0.81,
+                # so nothing warned.
+                nose = (top_ratio if (cone[idx]
+                                      and seat.embedding < _TAPER_MAX_EMBEDDING)
+                        else 0.0)
                 grown = None
                 if nose > 0.0:
                     grown = _commit(man, _collar_solid(seat.center, into, length,
@@ -1106,6 +1189,66 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
             mans[i], mans[j] = halves[i], halves[j]
             return True, ""
     return False, "would break watertightness or sever an overhang"
+
+#: Stock neodymium disc diameters, largest first. Used only to suggest a size
+#: that would fit; nothing here changes a setting on the user's behalf.
+_STOCK_MAGNET_MM = (8.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.5)
+
+#: A socket wider than this fraction of a part's *narrowest* dimension is
+#: reported. A quarter is generous — at that point the joint is a visible
+#: feature of the model rather than a detail on it.
+_SOCKET_SPAN_WARN = 0.25
+
+
+def _socket_scale_note(built, cp: ConnectionParams) -> str:
+    """One line when the magnet is simply too big for the model at this scale.
+
+    Nothing anywhere related the connector diameter to
+    ``scale_mm_per_angstrom``: the scale slider spans 0.2 to 6.0, a thirty-fold
+    range, while the socket stays a fixed 7.2 mm across by 3.7 mm deep at stock
+    settings.  At scale 0.4 a 60 Angstrom domain prints 24 mm wide and the
+    socket is thirty percent of it; at 0.25 it is nearly half.  Every symptom of
+    a badly placed joint gets worse together at small scale, and this is the
+    reason they do — so it is worth saying plainly rather than leaving the user
+    to infer it from a joint that looks wrong.
+
+    Measured against each part's *narrowest* bounding-box dimension, because
+    that is the one the socket has to fit inside, and against the smallest part,
+    because the joint is only as good as its thinner half.
+
+    Advisory only. The joint search may well still find somewhere good, and
+    refusing to build would be worse than building something the user can look
+    at and judge.
+    """
+    if not cp.use_magnets or not cp.connect:
+        return ""
+    socket_d = cp.connector_diameter_mm + cp.magnet_fit_clearance_mm + \
+        (2.0 * cp.socket_wall_mm if cp.socket else 0.0)
+    narrowest, where = None, ""
+    for chain, mesh in built:
+        try:
+            span = float(np.min(mesh.bounds[1] - mesh.bounds[0]))
+        except Exception:
+            continue
+        if span <= 0.0:
+            continue
+        if narrowest is None or span < narrowest:
+            narrowest, where = span, chain.display_name()
+    if narrowest is None or socket_d <= _SOCKET_SPAN_WARN * narrowest:
+        return ""
+
+    budget = _SOCKET_SPAN_WARN * narrowest
+    fits = [d for d in _STOCK_MAGNET_MM
+            if d + cp.magnet_fit_clearance_mm
+            + (2.0 * cp.socket_wall_mm if cp.socket else 0.0) <= budget]
+    advice = (f"a {fits[0]:g} mm magnet would fit" if fits
+              else "no stock magnet is small enough — raise the scale, or use "
+                   "printed pins instead")
+    return (f"The magnet is large for this model: its socket is {socket_d:.1f} mm "
+            f"across and the narrowest part ({where}) is only {narrowest:.1f} mm "
+            f"thick, so the joint is a feature of the model rather than a detail "
+            f"on it — {advice}.")
+
 
 def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                   params: PrintParams, markers: list,
@@ -1161,6 +1304,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "overlap_mm3": round(seat.overlap_volume, 2),
             "edge_offset": round(seat.edge_offset, 2),
             "embedding": round(seat.embedding, 3),
+            "depth_ratio": round(seat.depth_ratio, 2),
         })
 
     return _joint_note(placed, len(seats), reasons, "magnet", seats)
@@ -1226,6 +1370,16 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
             extra.append(f"joint stands proud ({proud * 100:.0f}% of the collar "
                          f"is buried) — the parts only meet over a small area "
                          f"here; a smaller connector Ø sinks it further in")
+        # And separately again from both of those: there may be plenty of
+        # material *around* the collar and still very little of it. Burial and
+        # fill are both fractions of the collar, so both read high on a strut
+        # barely wider than the socket — which is the "magnet on a thin little
+        # arm" nobody was told about.
+        strut = min((s.depth_ratio for s in seated), default=99.0)
+        if strut < 1.5:
+            extra.append(f"joint sits on a thin feature — only {strut:.1f}× the "
+                         f"collar's own volume of material around it; it will "
+                         f"print, but a smaller connector Ø would sit better")
     if placed and not reasons:
         parts = ([f"{placed} {what}s"] if placed > 1 else []) + extra
         return True, "; ".join(parts)
@@ -1713,6 +1867,11 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     applied: List[Connection] = []
     markers: list = []   # magnet positions for the preview highlight
     fit_notes: List[str] = []
+    # Said once for the whole build rather than per interface: it is a fact
+    # about the settings, not about any one pair.
+    _scale_note = _socket_scale_note(built, cp)
+    if _scale_note:
+        fit_notes.append(_scale_note)
     inflate = cp.connect and not cp.use_magnets \
         and cp.no_magnet_method == NoMagnetMethod.INFLATE
 
@@ -1795,11 +1954,19 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         found = interference.pair_overlaps(mans)
         if found:
             step(0.15, f"Carving {len(found)} overlapping interface(s) apart…")
+        before = list(mans)
         mans, found, fit_notes = interference.resolve(mans, chains, params, found)
         overlaps = {(o.i, o.j): o for o in found}
-        if fit_notes:
+        if len(before) != len(mans) or any(a is not b
+                                           for a, b in zip(before, mans)):
             # Geometry changed, so the probe clouds the joint search runs on
             # have to be re-taken from the carved solids.
+            #
+            # Keyed on "did anything move", not on "was there a note".  A note
+            # is only emitted above _REPORT_MIN_MM3 (0.5 mm3), so a smaller
+            # carve changed the solids and said nothing — and the entire joint
+            # search then ran on pre-carve surfaces, which presents as an
+            # occasional inexplicably placed magnet.
             meshes = [_manifold.to_trimesh(m) for m in mans]
 
     # 1d) Detect contacts on the *resolved* geometry, and always include any

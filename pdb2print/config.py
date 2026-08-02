@@ -397,6 +397,20 @@ class ConnectionParams:
     #: counts.  Kept well below ``fill``'s weight of 100 so it refines the choice
     #: between comparable seats rather than overriding "is there material here".
     seat_embedding_weight: float = 40.0
+    #: How much a seat is rewarded for there being *material depth* here, as
+    #: opposed to the collar merely being surrounded.
+    #:
+    #: ``fill`` and ``embedding`` are both fractions **of the collar**, so both
+    #: saturate as soon as the material is about one socket thick and stop
+    #: telling the two cases apart.  Measured with the stock 7.2 mm socket: an
+    #: arm 7.2 mm across reads 0.86 embedded and a 60 mm block reads 0.98 — a
+    #: difference worth five points in a score whose main term spans a hundred.
+    #: That is why joints landed on thin protruding arms and nothing objected.
+    #:
+    #: This reads the material itself: the volume the local probe ball actually
+    #: found, against the volume the collar needs.  Saturates at three times the
+    #: collar, which is roughly where an arm stops being an arm.
+    seat_depth_weight: float = 25.0
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:

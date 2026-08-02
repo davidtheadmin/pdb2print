@@ -2209,7 +2209,7 @@
     };
     input.addEventListener('input', e => {
       if (e.isTrusted) input.dataset.touched = '1';
-      fmt(); updateMagnetDiagram(); updateScaleSize();
+      fmt(); updateMagnetDiagram(); updateScaleSize();   // socket Ø tracks these too
     });
     fmt();
   });
@@ -2219,13 +2219,38 @@
   // last build (size_mm / scale_used); the readout recomputes live as the
   // Scale slider moves.
   let extentAng = null;
+  // How wide the socket a magnet needs actually is, in the same millimetres
+  // the size estimate is in. Mirrors connections._apply_magnet's arithmetic:
+  // pocket = diameter + fit clearance, socket = pocket + two walls.
+  function socketWidthMm() {
+    if (groups.use_magnets && groups.use_magnets() !== 'true') return 0;
+    const dia = parseFloat(sliders.connector_diameter.value);
+    const fit = parseFloat(sliders.magnet_fit_clearance.value);
+    const wall = parseFloat(sliders.socket_wall.value);
+    if (!isFinite(dia)) return 0;
+    return dia + (isFinite(fit) ? fit : 0) + 2 * (isFinite(wall) ? wall : 0);
+  }
+
   function updateScaleSize() {
     const el = $('#size-est');
     if (!el) return;
     if (!extentAng) { el.textContent = 'Printed size shown after you generate'; return; }
     const s = parseFloat(sliders.scale.value);
     const d = extentAng.map(a => Math.round(a * s));
-    el.textContent = `≈ ${d[0]} × ${d[1]} × ${d[2]} mm (W×H×D)`;
+    let text = `≈ ${d[0]} × ${d[1]} × ${d[2]} mm (W×H×D)`;
+    // Nothing anywhere related the magnet to the scale, and the scale slider
+    // covers a thirty-fold range while the socket stays a fixed width — which
+    // is why joints look worst on small models. Shown here, against the size,
+    // because this is the moment the user is deciding how big to print it.
+    const sock = socketWidthMm();
+    if (sock > 0) {
+      const narrow = Math.min(...d);
+      text += ` · socket Ø ${sock.toFixed(1)} mm`;
+      if (narrow > 0 && sock > 0.25 * narrow) {
+        text += ` — large for a part ${narrow} mm thick`;
+      }
+    }
+    el.textContent = text;
   }
 
   // ---- segmented toggles ----
@@ -2241,6 +2266,7 @@
       if (name === 'base_style' || name === 'backbone_style') updateDnaDims();
       if (name === 'protein_rep' || name === 'nucleic_rep') updateReps();
       if (name === 'magnet_shape' || name === 'magnet_count') updateMagnetDiagram();
+      if (name === 'use_magnets') updateScaleSize();   // the socket appears/vanishes
     });
   });
 
