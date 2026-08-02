@@ -839,12 +839,20 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
     d, idx = cKDTree(pb).query(pa, k=1)
     # The band that counts as "in contact", measured out from the closest
     # approach.  Proportional to the socket rather than a fixed 1.5 mm: at
-    # scale 0.6 that constant is two and a half Ångström, so any relief shorter
-    # than a side chain was pooled into the contact patch together with the flat
-    # background around it, and every patch-derived quantity — the seed axis,
-    # the edge offset, the footprint — was measured on the wrong surface.
-    # 0.4 x the stock socket radius is 1.44 mm, so nothing moves at the default.
-    band = min(float(d.min()) + 0.4 * socket_r, contact_thresh)
+    # scale 0.6 that constant is two and a half Ångström, so relief shorter than
+    # a side chain was pooled into the contact patch with the flat background
+    # around it.
+    #
+    # Widened from 0.4 to 1.2 socket radii, because the narrow band was the
+    # first of three separate reasons this search wanted two *parallel* faces.
+    # Where two surfaces meet at an angle, the region within a millimetre of
+    # closest approach is a thin strip at the apex of the wedge — the thinnest
+    # and worst place to put a joint — and everywhere with real material behind
+    # it was excluded before it could be considered. A magnet does not need
+    # parallel faces: the socket cuts its own flat mating disc into each side,
+    # so what matters is depth along the axis, not how the surfaces happen to
+    # lie.
+    band = min(float(d.min()) + 1.2 * socket_r, contact_thresh)
     mask = d <= band
     if not mask.any():
         mask = np.zeros(len(d), bool)
@@ -861,7 +869,15 @@ def _candidate_seats(mesh_a, mesh_b, contact_thresh: float, socket_r: float,
         nb = np.asarray(neigh[k], dtype=int)
         cons = nb[dirs[nb] @ dirs[k] > 0.6]     # same-facing contact = real interface
         consistent.append(cons if len(cons) else np.array([k]))
-        support[k] = len(cons)
+        # Rank on how much contact is nearby, not on how much of it is
+        # *parallel*. The direction-agreement filter is still what defines the
+        # patch a seat is measured on and where its seed axis comes from — it is
+        # a good answer to "which surface am I on" — but it was also the ranking
+        # key, and as a ranking key it is a bias: a broad flat interface scores
+        # every neighbour, while a curved or angled one scores a fraction of
+        # them and loses, however much material it has. That is the second of
+        # the three reasons this search preferred parallel faces.
+        support[k] = len(nb)
 
     # Rank on the *smoothed* support, not the raw count.
     #
