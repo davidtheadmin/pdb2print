@@ -3266,23 +3266,28 @@
   // values behind a name: the point of picking "Museum" is partly to find out
   // what museum means here, and a preset you cannot read is a preset you
   // cannot adjust from.
+  //
+  // No preset picks the line font or a capital, and none should. Both remain
+  // available to choose; neither is anybody's idea of a starting point. A
+  // preset is the answer to "what should this look like" and these two are
+  // answers you arrive at on purpose or not at all.
   const STAND_PRESETS = {
     museum: {
-      shape: 'square', flared: true, capital: true, relief: 'raised', font: 'sans',
+      shape: 'square', flared: true, capital: false, relief: 'raised', font: 'sans',
       column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
       plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
       plaque_text: 7.5, apron_rake: 10,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
     },
     classical: {
-      shape: 'fluted', flared: true, capital: true, relief: 'raised', font: 'serif',
+      shape: 'fluted', flared: true, capital: false, relief: 'raised', font: 'serif',
       column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
       plate_thickness: 6, plate_margin: 11, plate_corner: 3,
       plaque_text: 7.5, apron_rake: 8,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
     },
     lab: {
-      shape: 'round', flared: false, capital: false, relief: 'flush', font: 'line',
+      shape: 'round', flared: false, capital: false, relief: 'flush', font: 'sans',
       column_diameter: 6, stand_off: 5, cradle_depth: 3.5,
       plate_thickness: 3, plate_margin: 5, plate_corner: 2,
       plaque_text: 5.5, apron_rake: 0,

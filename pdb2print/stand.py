@@ -844,66 +844,6 @@ def _tapered_prism(profile: np.ndarray, x: float, y: float,
     return _manifold.from_trimesh(mesh)
 
 
-def _carve_column(solid, tool, top: float):
-    """Cut the model out of a column without leaving a window in its side.
-
-    The plain difference is right at the *top* — that is the cradle, and its
-    saucer shape is exactly what the model drops into.  Lower down it is not:
-    where the model dips past the column's flank it bites an opening out of the
-    side with column both above and below it.  That prints only with support
-    inside it, and on a part whose whole job is to look deliberate it reads as
-    a defect.
-
-    So each region the cut would remove is judged on where it sits.  The region
-    reaching the top is the cradle and is subtracted as it is.  A region with
-    column still above it is swept straight up to the top instead, at its own
-    widest cross-section — which turns the window into a slot that is open at
-    the top, exactly as wide as the opening was at its widest point.
-
-    Falls back to the plain difference whenever the sweep would be worse than
-    the problem: a column left in more than one piece, or one that has given up
-    more than half of what the plain cut would have left.
-    """
-    plain = _manifold.difference(solid, tool)
-    try:
-        removed = _manifold.intersection(solid, tool)
-        if removed.is_empty():
-            return plain
-        pieces = [p for p in (removed.decompose() or [removed]) if not p.is_empty()]
-    except Exception:
-        return plain
-    # genus is O(1) and a window through a wall is exactly a handle, so this
-    # skips the sweep entirely on the ordinary column that only has a cradle.
-    try:
-        if len(pieces) < 2 and plain.genus() <= solid.genus():
-            return plain
-    except Exception:
-        return plain
-
-    try:
-        out = solid
-        swept = False
-        for piece in pieces:
-            box = piece.bounding_box()
-            if box[5] < top - 1e-6:            # column above it: an opening
-                prism = _manifold.Manifold.extrude(
-                    piece.project(), float(top - box[2]) + 0.02)
-                out = _manifold.difference(
-                    out, prism.translate((0.0, 0.0, float(box[2]))))
-                swept = True
-            else:
-                out = _manifold.difference(out, piece)
-        if not swept or out.is_empty():
-            return plain
-        if len(out.decompose()) > 1:
-            return plain                        # would leave the column in bits
-        if out.volume() < 0.5 * plain.volume():
-            return plain                        # took more than it saved
-        return out
-    except Exception:
-        return plain
-
-
 def _column_solid(x: float, y: float, z0: float, z1: float,
                   top_half: float, foot_half: float, stand: StandParams):
     """One column in the requested style, from the plate at ``z0`` to ``z1``.
@@ -1055,23 +995,44 @@ def _filled_solid(outer, holes, origin: np.ndarray, axis_u: np.ndarray,
     vertices = np.vstack([plane + normal * float(depth),
                           plane - normal * float(sink)])
 
-    faces = [tri, tri[:, ::-1] + count]
-    start = 0
-    for ring in rings:
-        n = len(ring)
-        idx = np.arange(n)
-        i = start + idx
-        j = start + (idx + 1) % n
-        faces.append(np.column_stack([i + count, j + count, j]))
-        faces.append(np.column_stack([i + count, j, i]))
-        start += n
+    # The walls follow the *triangulation's own* boundary, not the rings it was
+    # handed. Ear clipping joins a hole to its outer contour by running a bridge
+    # edge between them, and on some glyphs that bridge swallows a ring edge --
+    # serif 'B' and 'D' both come back two triangles short, with four ring edges
+    # the surface never uses. Walls built from the rings then do not close it:
+    # the mesh is not watertight, manifold3d turns it into an empty solid, and
+    # the letter vanishes from the word with nothing said anywhere. Taking the
+    # boundary from the triangles themselves is watertight whatever ear clipping
+    # decides to do, and on a glyph where the two agree it is the same wall.
+    #
+    # An unpaired directed edge is a boundary edge: interior edges appear once
+    # each way. Read after the winding fix above, so every triangle is already
+    # turned the same way and the pairing means what it says.
+    open_edges: dict = {}
+    for ta, tb, tc in tri:
+        for x, y in ((ta, tb), (tb, tc), (tc, ta)):
+            if open_edges.pop((y, x), None) is None:
+                open_edges[(x, y)] = True
+    if not open_edges:
+        return None
+    rim = np.asarray(list(open_edges), np.int64)
+    i, j = rim[:, 0], rim[:, 1]
+
+    faces = [tri, tri[:, ::-1] + count,
+             np.column_stack([i + count, j + count, j]),
+             np.column_stack([i + count, j, i])]
 
     mesh = trimesh.Trimesh(vertices=vertices, faces=np.vstack(faces),
                            process=False)
     try:
-        return _manifold.from_trimesh(mesh)
+        solid = _manifold.from_trimesh(mesh)
     except Exception:
         return None
+    # An *empty* manifold is the dangerous return here, not an exception: it
+    # unions away to nothing, so the letter simply is not there and every check
+    # downstream still passes. Say None and let the caller draw the outline
+    # instead.
+    return None if solid.is_empty() else solid
 
 
 def _text_solids(face, text: str, cap_mm: float, origin: np.ndarray,
@@ -1095,6 +1056,16 @@ def _text_solids(face, text: str, cap_mm: float, origin: np.ndarray,
                                depth, sink)
         if filled is not None:
             solids.append(filled)
+        else:
+            # A glyph that will not fill is drawn as its own outline rather than
+            # left out. A letter missing from the middle of a name reads as a
+            # typo nobody made; a slightly lighter one reads as a letter.
+            outline = [[(float(p[0]), float(p[1])) for p in ring]
+                       + [(float(ring[0][0]), float(ring[0][1]))]
+                       for ring in [outer, *holes] if len(ring) >= 3]
+            solids.extend(_stroke_solids(outline, origin, axis_u, axis_v,
+                                         normal, max(stroke_mm, 0.4),
+                                         depth, sink))
         rings.append(outer)
         rings.extend(holes)
     if grow > 1e-4 and rings:
@@ -2040,8 +2011,8 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 if not local.is_empty():
                     tool = interference.dilate(
                         local, float(stand.cradle_clearance_mm))
-                    carved = _carve_column(solid, tool, top)
-                    if carved is not None and not carved.is_empty():
+                    carved = _manifold.difference(solid, tool)
+                    if not carved.is_empty():
                         solid = carved
             except Exception:
                 notes.append("One column could not be carved to fit the model; "

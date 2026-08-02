@@ -1797,7 +1797,7 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None,
 
 
 def _run_stand(source: str, params: PrintParams, token: str, progress,
-               should_cancel=None) -> dict:
+               should_cancel=None, on_model=None) -> dict:
     """Generate a display stand and export the model standing on it.
 
     Uses the in-memory meshes for ``token`` when they are still there, and falls
@@ -1854,12 +1854,57 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
     os.makedirs(out_dir, exist_ok=True)
     stem = _download_stem(source, effective) + "_stand"
 
+    # The viewer legend names the *molecule*. A base plate and a lettering tile
+    # are not chains and listing them there turns a legend into an inventory —
+    # the point of the pills is to say which colour is which subunit, and a
+    # "stand_plaque_tile" pill answers a question nobody asked.
+    #
+    # Worked out before the exports rather than after, because the early preview
+    # below needs it: the viewer wants the GLB and the pills beside it, and
+    # neither has anything to do with a zip.
+    chains = [
+        {"id": getattr(chain, "chain_id", "-"),
+         "name": chain.display_name(),
+         "color": _rgb_to_hex(color)}
+        for (chain, _mesh), color in zip(combined, export.object_colors(combined))
+        if getattr(chain, "mtype", None) != MoleculeType.STAND
+    ]
+
+    mins = [min(m.bounds[0][k] for _, m in combined) for k in range(3)]
+    maxs = [max(m.bounds[1][k] for _, m in combined) for k in range(3)]
+    size_mm = [float(maxs[k] - mins[k]) for k in range(3)]
+
     try:
         # The preview is written Y-up so it stands the right way in the viewer
         # and the orbit's poles agree with the model's own up; the print files
         # stay Z-up, which is what a slicer means by up.
         export.write_glb(stand_mod.to_view_frame(combined),
                          os.path.join(out_dir, f"{stem}.glb"))
+    except OSError as exc:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return _error_payload(
+            "The server ran out of disk space while writing the export files. "
+            f"({exc.strerror or exc})")
+
+    # Show the stand now, the same way the model itself is shown now: the viewer
+    # needs the GLB and nothing else, and the stand's zip and 3MF are written
+    # from the model *plus* a plate, columns and a few hundred letter solids, so
+    # they are slower here than they are for the model alone. Holding the
+    # finished stand off screen until a 3MF exists is the same wait that was
+    # taken off /api/generate, for the same reason.
+    #
+    # Not the whole result: the download links point at files that are still
+    # being written, and offering them here would be offering a 404.
+    if on_model is not None:
+        try:
+            on_model({"glb_url": f"/files/{out_token}/{stem}.glb",
+                      "chains": chains, "size_mm": size_mm,
+                      "scale_used": effective.scale_mm_per_angstrom})
+        except Exception:
+            pass                  # a preview must never be able to fail a build
+        progress(0.94, "Stand ready — writing the download files…")
+
+    try:
         export.write_stl_zip(combined, os.path.join(out_dir, f"{stem}_stl.zip"))
     except OSError as exc:
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -1874,21 +1919,6 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
         threemf_url = f"/files/{out_token}/{stem}.3mf"
     except (RuntimeError, OSError) as exc:
         warning = str(exc)
-
-    # The viewer legend names the *molecule*. A base plate and a lettering tile
-    # are not chains and listing them there turns a legend into an inventory —
-    # the point of the pills is to say which colour is which subunit, and a
-    # "stand_plaque_tile" pill answers a question nobody asked.
-    chains = [
-        {"id": getattr(chain, "chain_id", "-"),
-         "name": chain.display_name(),
-         "color": _rgb_to_hex(color)}
-        for (chain, _mesh), color in zip(combined, export.object_colors(combined))
-        if getattr(chain, "mtype", None) != MoleculeType.STAND
-    ]
-
-    mins = [min(m.bounds[0][k] for _, m in combined) for k in range(3)]
-    maxs = [max(m.bounds[1][k] for _, m in combined) for k in range(3)]
 
     progress(1.0, "Done.")
     # Say what was actually produced, and from which switches. A plaque element
@@ -1924,7 +1954,7 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
         "stl_url": f"/files/{out_token}/{stem}_stl.zip",
         "chains": chains,
         "connections": [],
-        "size_mm": [float(maxs[k] - mins[k]) for k in range(3)],
+        "size_mm": size_mm,
         "scale_used": effective.scale_mm_per_angstrom,
         "stand_notes": notes,
         # The stand build is not remembered: standing it again would start from
@@ -2064,6 +2094,10 @@ async def stand(request: Request):
             loop.call_soon_threadsafe(
                 queue.put_nowait, ("progress", {"frac": frac, "msg": msg}))
 
+        def model_ready(payload):
+            """The GLB exists; put the stand on screen without waiting for the rest."""
+            loop.call_soon_threadsafe(queue.put_nowait, ("model", payload))
+
         def work():
             started.set()
             # Same guarantee as /api/generate: the terminator is queued from an
@@ -2071,7 +2105,8 @@ async def stand(request: Request):
             try:
                 try:
                     result = _run_stand(source, params, token, progress,
-                                        should_cancel=cancelled.is_set)
+                                        should_cancel=cancelled.is_set,
+                                        on_model=model_ready)
                 except Exception as exc:
                     result = _error_payload(str(exc))
                 loop.call_soon_threadsafe(queue.put_nowait, ("result", result))
