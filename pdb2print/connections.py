@@ -248,12 +248,6 @@ _MIN_MAGNET_FOOTPRINT = 3
 #: magnet on a spike that the collar would have to build out of thin air.
 _MIN_SEAT_FILL = 0.35
 
-#: Below this fraction of the collar being buried, the joint will visibly stand
-#: off the surface and the user is told so.  Not a rejection: a proud joint still
-#: prints and still holds, it just looks stuck on rather than built in, and on a
-#: genuinely small contact patch there may be nowhere better to put it.
-_MIN_SEAT_EMBEDDING = 0.5
-
 #: Burial above which an exposed back cap means the collar came out the *far*
 #: side of a thin part, rather than out of a surface that fell away under it.
 #:
@@ -463,6 +457,10 @@ class Seat:
     emb_a: object = None
     emb_b: object = None
     back_done: bool = False
+    #: Where the search put this seat before ``_balance_walls`` moved it, and
+    #: the local solids that went with it.  Restored if the moved seat turns out
+    #: not to be buildable.
+    home: object = None
     blocked: int = 0         # surface points sitting in the assembly path
     axis_source: str = "probe"
     #: Fraction of the probe ball each part fills, and the ball's radius (mm).
@@ -553,13 +551,18 @@ def _local_solid(man, center, radius):
 def _embedding(blob, center, into, radius, length) -> float:
     """How much of the collar this side would build is already inside the part.
 
-    1.0 means the socket is entirely buried in existing material and only the
-    mating disc shows; 0.0 means it would be built out of thin air and stand
-    proud of the surface.  This is the direct measure of the thing that looks
-    wrong on a finished model — a magnet or its collar sticking out — and unlike
-    ``fill`` it is taken on the collar *as built*: from the shared mid-plane,
-    so the stub spanning the half-gap counts against it, because that stub is
-    exactly the part with nothing behind it.
+    1.0 means the socket is entirely buried in existing material; 0.0 means it
+    would be built out of thin air.  Unlike ``fill`` it is taken on the collar
+    *as built*: from the shared mid-plane, so the stub spanning the half-gap
+    counts against it, because that stub is exactly the part with nothing behind
+    it.
+
+    This is a question about **bulk**, and it is asked for exactly one purpose:
+    telling a collar that came out the far side of a thin part from one standing
+    on a surface that fell away (see ``_PUNCH_THROUGH_EMBEDDING``, whose
+    threshold is calibrated against this measure).  For *how visible* a joint is,
+    see :func:`_wall_hidden` — that is a question about surface, and the two
+    diverge.
 
     ``blob`` must contain the collar; the caller sizes it to guarantee that, so
     intersecting against the blob gives the same answer as against the whole
@@ -573,6 +576,45 @@ def _embedding(blob, center, into, radius, length) -> float:
         return 0.0
     try:
         have = _manifold.volume(_manifold.intersection(blob, collar))
+    except Exception:
+        return 0.0
+    return float(max(0.0, min(1.0, have / want)))
+
+
+def _wall_hidden(blob, center, into, radius: float, length: float,
+                 skin: float = 0.2) -> float:
+    """Fraction of the socket's **side wall** that ends up inside the part.
+
+    1.0 means the wall is covered everywhere and only the mating disc shows;
+    0.0 means the whole cylinder stands in open air.  This is the direct measure
+    of the thing that looks wrong on a finished model — a magnet or its collar
+    you can see from across the room.
+
+    Taken on a thin shell rather than on the solid collar, because the solid
+    answers a different question.  It counts plastic in the *middle* of the
+    cylinder, which nobody can see, and it badly under-reads a collar lying
+    tangentially against a surface: a chord at 0.8R buries 4% of the volume and
+    20% of the wall, and the wall is what you look at.  Over a shell this thin
+    the volume fraction and the lateral-area fraction are the same number, which
+    is the same trick :func:`_cap_exposure` uses on the back face.
+
+    The back face is deliberately not included.  It is measured separately and
+    it is a different offence: a socket emerging from a bumpy surface always
+    shows some wall and reads as a socket, where a flat disc hanging in space
+    reads as a mistake.
+    """
+    if blob is None:
+        return 0.0
+    inner = radius - min(skin, 0.4 * radius)
+    if inner <= 0.0 or length <= 1e-9:
+        return 0.0
+    try:
+        shell = _manifold.difference(_seat_solid(center, into, length, radius),
+                                     _seat_solid(center, into, length, inner))
+        want = _manifold.volume(shell)
+        if want <= 1e-9:
+            return 0.0
+        have = _manifold.volume(_manifold.intersection(blob, shell))
     except Exception:
         return 0.0
     return float(max(0.0, min(1.0, have / want)))
@@ -599,6 +641,14 @@ def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
     seat.back_done = True
     if seat.emb_a is None or seat.emb_b is None:
         return                        # nothing to measure; keep the defaults
+    # How buried the collar ends up in bulk, on its worse side.  Measured here
+    # rather than while the seat was scored, because this is the only place that
+    # reads it and it costs a boolean per side: the shortlist scores several
+    # seats to build one.  Measured at the depth the joint will actually use,
+    # which the bridge sizes differently.
+    seat.embedding = min(
+        _embedding(seat.emb_a, seat.center, -seat.axis, socket_r, need_depth),
+        _embedding(seat.emb_b, seat.center, seat.axis, socket_r, need_depth))
     seat.extend_a, seat.taper_a = _close_the_back(
         seat.emb_a, seat.center, -seat.axis, need_depth, socket_r, cp, min_mult,
         seat.embedding)
@@ -701,6 +751,130 @@ def _surface_along(points, origin, axis, radius: float):
     radial = np.linalg.norm(rel - np.outer(t, axis), axis=1)
     near = radial <= radius
     return t[near] if np.any(near) else None
+
+
+#: How far the mating plane may slide along the axis to even the two sides out,
+#: as a fraction of the collar's own depth.
+#:
+#: Bounded because sliding the plane into a part means cutting a plug out of it.
+#: On a thin DNA backbone meeting a fat protein domain the search would happily
+#: drive deep into the protein while the backbone still cannot hide anything --
+#: a big hole cut for no gain. Half the collar is as far as it is worth going.
+_BALANCE_MAX_SHIFT = 0.5
+
+#: Wall-exposure difference below which the two sides are called even, and the
+#: search does not run at all. Finer than the surface is smooth.
+_BALANCE_TOL = 0.05
+
+#: How much the worse side must actually gain before the seat is moved at all.
+#:
+#: Without this the search takes whatever the bisection ended on, and on a badly
+#: lopsided interface -- where no shift can even the sides out, because one of
+#: them has nothing to bury into anywhere -- that is the far end of the travel
+#: for nothing. Measured on the mini_complex protein-DNA joint: 1.5 mm of shift
+#: bought 0.006 of burial and moved the mating plane so far into the chain that
+#: clearing the approach path severed it. A refinement that cannot pay for
+#: itself should not be taken.
+_BALANCE_MIN_GAIN = 0.05
+
+
+def _balance_walls(seat: Seat, man_a, man_b, socket_r: float,
+                   need_depth: float, probe_r: float) -> None:
+    """Slide the mating plane along the axis until both sides show equal wall.
+
+    The plane starts midway across the gap, which is a rule about the *gap* and
+    says nothing about how much of either collar you can see.  On two flat
+    facing surfaces the two happen to coincide; where one surface falls away
+    under the joint and the other is solid, they do not, and the result is one
+    collar standing proud while the other is invisible.
+
+    Moving the plane trades one against the other -- toward A buries A's collar
+    and exposes B's -- so evening them out **maximises the worse of the two**,
+    which is exactly the figure ``seat.score`` already ranks on and had no way
+    to improve.  It is not a new criterion; it is the missing optimiser for the
+    one that is there.  It also settles the standing complaint that
+    ``seat.hidden`` is the worse side and says nothing about the other: after
+    this the two sides are equal by construction.
+
+    Run only on the seats that will actually be built.  Each step is four small
+    booleans, and volume calls are what made builds slow before.
+
+    Note it runs *after* ranking, so a lopsided seat that would balance well is
+    still beaten by an already-even one.  That is the cheap direction of the
+    trade: balancing the whole shortlist costs an order of magnitude more.
+    """
+    room = _BALANCE_MAX_SHIFT * need_depth
+    # Cut a fresh pair of blobs for this. The probe ball is barely wider than
+    # the collar it contains -- its floor is 1.5x the socket radius, and at
+    # stock settings the collar's far corner sits at 96% of it -- so a shifted
+    # collar pokes straight out of it and reads as *unburied* because the blob
+    # simply stops. This ball reaches past the far end of the travel.
+    #
+    # Enlarging is safe here where it would not be elsewhere: the warning about
+    # a big ball is that its centre of mass reaches around a thin feature and
+    # flips the axis. Nothing here derives an axis. Wall coverage is a local
+    # question and a wider ball only answers it over more of the part.
+    reach = float(np.hypot(need_depth + room, socket_r)) + 0.5
+    blob_a = _local_solid(man_a, seat.center, reach)
+    blob_b = _local_solid(man_b, seat.center, reach)
+    if blob_a is None or blob_b is None:
+        return
+
+    def walls(shift):
+        c = seat.center + seat.axis * shift
+        return (_wall_hidden(blob_a, c, -seat.axis, socket_r, need_depth),
+                _wall_hidden(blob_b, c, seat.axis, socket_r, need_depth))
+
+    wa, wb = walls(0.0)
+    best, best0 = (0.0, wa, wb), (wa, wb)
+    if abs(wa - wb) > _BALANCE_TOL:
+        # A is buried more the further the plane moves toward A and less as it
+        # moves toward B; B does the opposite. The difference is therefore
+        # monotone in the shift, so bisection over the half-range the sign
+        # points at is enough. Four steps land within a sixteenth of it.
+        lo, hi = (0.0, room) if wa > wb else (-room, 0.0)
+        for _ in range(4):
+            mid = 0.5 * (lo + hi)
+            ma, mb = walls(mid)
+            if min(ma, mb) > min(best[1], best[2]):
+                best = (mid, ma, mb)
+            if abs(ma - mb) <= _BALANCE_TOL:
+                break
+            if ma > mb:
+                lo = mid          # A still the buried one: keep moving toward B
+            else:
+                hi = mid
+    shift, wa, wb = best
+    if min(wa, wb) < min(best0) + _BALANCE_MIN_GAIN:
+        shift, wa, wb = 0.0, best0[0], best0[1]
+    if abs(shift) > 1e-6:
+        seat.home = (np.array(seat.center, float), seat.emb_a, seat.emb_b)
+        seat.center = seat.center + seat.axis * shift
+        # The back-face search reads blobs cut at the probe radius around the
+        # seat, so recut them where the seat now is. Same radius as before, on
+        # purpose: that search is calibrated against this ball and this is not
+        # the place to change what it sees.
+        seat.emb_a = _local_solid(man_a, seat.center, probe_r) or seat.emb_a
+        seat.emb_b = _local_solid(man_b, seat.center, probe_r) or seat.emb_b
+    # The score keeps the figure it was ranked on; this is what the joint
+    # actually ends up being, and it is what the report should show.
+    seat.hidden = float(min(wa, wb))
+
+
+def _unbalance(seat: Seat) -> bool:
+    """Put a balanced seat back where the search found it; ``True`` if it moved.
+
+    Evening the two sides out is a refinement.  Being able to build the joint at
+    all is not, and moving the mating plane into a part means cutting a plug out
+    of it, which on a thin one severs it.  The callers try the tidier position
+    first and fall back to this.
+    """
+    if seat.home is None:
+        return False
+    seat.center, seat.emb_a, seat.emb_b = seat.home
+    seat.home = None
+    seat.back_done = False        # the back-face search has to be redone there
+    return True
 
 
 def _clear_depths(seat: Seat, va, vb, radius: float) -> None:
@@ -828,13 +1002,13 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     # the fullest probe is the one furthest from a joint that would actually
     # close. Multiplied rather than subtracted, so a gap the collar cannot span
     # cannot be bought back with volume however much of it there is.
-    # How much of the collar ends up inside existing material, on the worse of
-    # the two sides. 1.0 means only the mating disc shows; 0.0 means it stands
-    # in open air. This is the difference between a magnet you have to look for
-    # and one you can see from across the room, and it costs one small boolean
-    # per side against blobs that are already cut.
-    seat_hidden = min(_embedding(blob_a, seat_centre, -axis, socket_r, need_depth),
-                      _embedding(blob_b, seat_centre, axis, socket_r, need_depth))
+    # How much of the collar's side wall ends up inside existing material, on
+    # the worse of the two sides. 1.0 means only the mating disc shows; 0.0
+    # means it stands in open air. This is the difference between a magnet you
+    # have to look for and one you can see from across the room, and it costs
+    # one small boolean per side against blobs that are already cut.
+    seat_hidden = min(_wall_hidden(blob_a, seat_centre, -axis, socket_r, need_depth),
+                      _wall_hidden(blob_b, seat_centre, axis, socket_r, need_depth))
 
     reach = max(float(cp.contact_threshold_mm), 1e-6)
     falloff = cp.seat_gap_falloff if gap_falloff is None else float(gap_falloff)
@@ -844,14 +1018,6 @@ def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
     near = 1.0 - falloff * min(1.0, gap / reach) ** 2
     hide = cp.seat_hidden_weight if hidden_weight is None else float(hidden_weight)
     seat.hidden = float(seat_hidden)
-    # The same figure under the name the rest of the build reads it by.
-    # ``_resolve_back_faces`` uses it to decide whether to try *shortening* the
-    # collar before lengthening it, and ``_build_seat`` uses it to fit the back
-    # cone inside the collar instead of stacking it past the back face. Left
-    # unassigned when the probe search replaced the old scoring pass, so it held
-    # 0.0 default: every collar was lengthened first and every cone was stacked,
-    # which is the spike poking out of the back of a thin part.
-    seat.embedding = float(seat_hidden)
     seat.fill = float(min(frac_a, frac_b))
     # Multiplied, like the distance term, so a socket standing in open air
     # cannot be bought back with volume. At the default weight a fully exposed
@@ -918,6 +1084,9 @@ def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
         va = np.asarray(mesh_a.vertices, float)
         vb = np.asarray(mesh_b.vertices, float)
         for seat in kept:
+            # Order matters: balancing moves the mating plane, and the overhang
+            # is measured from it.
+            _balance_walls(seat, man_a, man_b, socket_r, need_depth, probe_r)
             _clear_depths(seat, va, vb, socket_r + cp.path_clearance_mm)
     return kept
 
@@ -1147,7 +1316,17 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     d, t, shape = cp.connector_diameter_mm, cp.magnet_thickness_mm, cp.magnet_shape
     pocket_r = d / 2.0 + cp.magnet_fit_clearance_mm / 2.0
     depth = t + cp.magnet_depth_clearance_mm
-    socket_r = pocket_r + (cp.socket_wall_mm if cp.socket else 0.0)
+    # Always the socketed radius, even with the socket off. This number is not
+    # only the collar's: it sets the probe ball's floor, the acceptance gate
+    # (which goes as its square), the spacing between candidates and the width
+    # of the approach cut. Letting it collapse to the bare pocket meant turning
+    # the socket off *moved the magnets* -- 3.6 mm down to 2.1 mm at stock
+    # settings, a probe ball from 5.4 to 3.2 mm and an acceptance gate 2.9x
+    # easier to pass. That was never a decision, just a side effect, and it is
+    # the same accident as the two thresholds that scaled with this radius
+    # before it. Score one geometry; let only the build ask whether to raise a
+    # collar.
+    socket_r = pocket_r + cp.socket_wall_mm
     # The collar must bury the pocket and still have wall behind it.
     embed = depth + max(cp.socket_wall_mm, 1.0)
 
@@ -1177,6 +1356,13 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                               cp.socket, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max,
                               cp.socket_nose_scale)
+        if not ok and _unbalance(seat):
+            _resolve_back_faces(seat, embed, socket_r, cp,
+                                min_mult=min(1.0, (depth + 0.6) / max(embed, 1e-6)))
+            ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
+                                  cp.socket, cp.path_clearance_mm,
+                                  cp.socket_cap_exposed_max, cp.socket_extend_max,
+                                  cp.socket_nose_scale)
         if not ok:
             reasons.append(why)
             continue
@@ -1226,6 +1412,12 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                               None, True, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max,
                               cp.socket_nose_scale)
+        if not ok and _unbalance(seat):
+            _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
+            ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
+                                  None, True, cp.path_clearance_mm,
+                                  cp.socket_cap_exposed_max, cp.socket_extend_max,
+                                  cp.socket_nose_scale)
         if ok:
             placed += 1
         else:

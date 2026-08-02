@@ -439,6 +439,98 @@ def test_socket_bridges_a_gap_that_bare_magnets_cannot():
     assert all(p.is_watertight and p.body_count == 1 for p in parts)
 
 
+def test_socket_off_places_the_magnet_in_the_same_spot_as_socket_on():
+    """Turning the collar off must not move the magnet.
+
+    The socket radius is not only the collar's: it sets the probe ball's floor,
+    the acceptance gate, the spacing between candidates and the approach cut.
+    While it collapsed to the bare pocket with the socket off, toggling the
+    control silently re-placed every joint.
+    """
+    import numpy as np
+    kw = dict(connect=True, use_magnets=True, contact_threshold_mm=3.5,
+              connector_diameter_mm=3.0, magnet_thickness_mm=1.5)
+    on = build_all(COMPLEX, _params(socket=True, **kw))
+    off = build_all(COMPLEX, _params(socket=False, **kw))
+    assert on.connection_markers and off.connection_markers
+    assert len(on.connection_markers) == len(off.connection_markers)
+    for a, b in zip(on.connection_markers, off.connection_markers):
+        assert (a["a"], a["b"]) == (b["a"], b["b"])
+        assert np.allclose(a["center"], b["center"]), (a["center"], b["center"])
+        assert np.allclose(a["axis"], b["axis"])
+
+
+def _stepped_block_pair(step: float = 2.8, size: float = 14.0, gap: float = 0.4):
+    """A block whose face falls away under half the joint, facing a flat one."""
+    import trimesh
+    from pdb2print.representations import _manifold
+
+    half = size / 2.0
+    a = trimesh.creation.box(extents=(size, size, size))
+    a.apply_translation([-(half + gap / 2.0), 0.0, 0.0])
+    # Cut the y > 0 half of A back by ``step``, so half the joint footprint has
+    # solid material right up to the face and half has nothing for ``step`` mm.
+    notch = trimesh.creation.box(extents=(2 * step, size, size))
+    notch.apply_translation([-gap / 2.0, half, 0.0])
+    man_a = _manifold.difference(_manifold.from_trimesh(a),
+                                 _manifold.from_trimesh(notch))
+    b = trimesh.creation.box(extents=(size, size, size))
+    b.apply_translation([half + gap / 2.0, 0.0, 0.0])
+    return man_a, _manifold.from_trimesh(b)
+
+
+def test_the_mating_plane_slides_to_even_out_the_two_sides():
+    """One collar buried and one standing proud is worth moving the plane for.
+
+    Midway across the gap is a rule about the *gap*; it says nothing about how
+    much of either collar you can see. Where one surface falls away under the
+    joint and the other is solid, the two sides end up wildly uneven, and
+    ``seat.hidden`` -- which the score ranks on -- is the worse of them.
+    """
+    import numpy as np
+    from pdb2print import connections as cx
+
+    man_a, man_b = _stepped_block_pair()
+    socket_r, depth, probe_r = 3.1, 3.2, 4.65
+    seat = cx.Seat(center=np.zeros(3), axis=np.array([1.0, 0.0, 0.0]),
+                   gap=0.4, footprint=50)
+    seat.probe_r = probe_r
+
+    def walls(where):
+        ba = cx._local_solid(man_a, where, 6.5)
+        bb = cx._local_solid(man_b, where, 6.5)
+        return (cx._wall_hidden(ba, where, -seat.axis, socket_r, depth),
+                cx._wall_hidden(bb, where, +seat.axis, socket_r, depth))
+
+    before = walls(seat.center)
+    assert abs(before[0] - before[1]) > 0.3, before      # the case under test
+
+    cx._balance_walls(seat, man_a, man_b, socket_r, depth, probe_r)
+
+    assert seat.center[0] < -1e-6, "the plane should move into the shy side"
+    after = walls(seat.center)
+    assert abs(after[0] - after[1]) < abs(before[0] - before[1])
+    assert min(after) > min(before) + 0.05, (before, after)
+    # It must be reversible: a plane that cannot be cut without severing the
+    # part has to be able to go back where the search found it.
+    assert cx._unbalance(seat)
+    assert np.allclose(seat.center, 0.0)
+
+
+def test_an_even_joint_is_left_where_the_search_put_it():
+    """No gain, no move. A shift that buys nothing still costs a cut."""
+    import numpy as np
+    from pdb2print import connections as cx
+
+    mans, _meshes = _facing_blocks(0.4)
+    seat = cx.Seat(center=np.zeros(3), axis=np.array([1.0, 0.0, 0.0]),
+                   gap=0.4, footprint=50)
+    seat.probe_r = 4.65
+    cx._balance_walls(seat, mans[0], mans[1], 3.1, 3.2, 4.65)
+    assert np.allclose(seat.center, 0.0)
+    assert seat.home is None
+
+
 def test_socket_adds_material_and_pocket_removes_it():
     """A socketed magnet joint nets out as a collar (added) minus a bore (cut)."""
     base = build_all(COMPLEX, _params())
