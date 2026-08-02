@@ -476,6 +476,10 @@ class Seat:
     #: objects (1 = along it), and how far off that line it sits (mm).
     global_axis: float = 0.0
     global_offset: float = 0.0
+    #: Fraction of the probe ball each part fills, and the ball's radius (mm).
+    probe_a: float = 0.0
+    probe_b: float = 0.0
+    probe_r: float = 0.0
     score: float = 0.0
     #: mm³ of interpenetration this seat was derived from (0 for point-cloud
     #: seats).  A joint that sits where the two parts *were* fighting for the
@@ -689,8 +693,8 @@ _AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "global": 3.5,
 #: axis contest through _AXIS_PREFERENCE, and stacking a seat-ranking bonus on
 #: top of that would systematically promote seats on flat interfaces twice over
 #: for one property.
-_AXIS_QUALITY = {"overlap": 1.0, "normal": 0.9, "mass": 0.9, "global": 0.85,
-                 "mass-flat": 0.7, "contact": 0.3}
+_AXIS_QUALITY = {"probe": 1.0, "overlap": 1.0, "normal": 0.9, "mass": 0.9,
+                 "global": 0.85, "mass-flat": 0.7, "contact": 0.3}
 
 
 def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
@@ -1245,6 +1249,175 @@ def _object_centre(mesh):
         return None
 
 
+#: How much of a candidate's probe ball each side must fill before the joint is
+#: worth building at all. A spike grazing a surface fills almost none of it.
+_MIN_PROBE_FRACTION = 0.06
+
+
+def _probe_radius(mesh_a, mesh_b, socket_r: float) -> float:
+    """How big a ball to judge a joint in.
+
+    Big enough to see well past the socket, small enough not to swallow the
+    part, and it **moves with the model** instead of being a fixed number of
+    millimetres. That last property is the point: every threshold in the old
+    search was absolute, so the same number meant something quite different at
+    scale 0.4 than at scale 3, and small models came off worst across the board.
+
+    The floor matters as much as the ceiling. Too small a ball reads the local
+    bumpiness of one atom instead of the shape of the interface; too large and
+    it reaches around a thin feature and the centre of mass ends up on the far
+    side of it — measured at 34 degrees of axis error once the ball is ~2.9x a
+    feature's own size, and 84 degrees at 4x.
+    """
+    lo = np.minimum(mesh_a.bounds[0], mesh_b.bounds[0])
+    hi = np.maximum(mesh_a.bounds[1], mesh_b.bounds[1])
+    floor = 2.5 * socket_r
+    narrowest = min(float(np.min(mesh_a.bounds[1] - mesh_a.bounds[0])),
+                    float(np.min(mesh_b.bounds[1] - mesh_b.bounds[0])))
+    ceiling = max(floor, 0.25 * narrowest)
+    return float(min(max(floor, 0.08 * float(np.linalg.norm(hi - lo))), ceiling))
+
+
+def _blob_centre(blob):
+    """Centre of mass of a small cut solid, or ``None``."""
+    if blob is None:
+        return None
+    try:
+        return np.asarray(_manifold.to_trimesh(blob).center_mass, float)
+    except Exception:
+        return None
+
+
+def _surface_along(points, origin, axis, radius: float):
+    """Where a cloud crosses a line: its extents along ``axis``, or ``None``."""
+    rel = np.asarray(points, float) - origin
+    t = rel @ axis
+    radial = np.linalg.norm(rel - np.outer(t, axis), axis=1)
+    near = radial <= radius
+    return t[near] if np.any(near) else None
+
+
+def _probe_seat(man_a, man_b, pa, pb, centre, probe_r: float, socket_r: float,
+                cp: ConnectionParams, need_depth: float):
+    """One candidate spot, measured. Returns a :class:`Seat` or ``None``.
+
+    The whole placement rule, and it is deliberately one idea rather than
+    twelve:
+
+    1. Cut a ball of each part's material around the spot.
+    2. **Score it on how much of that ball each part fills**, on the weaker of
+       the two. A broad flat interface fills both halves; a spike grazing a
+       surface fills almost none, and a thin arm not much more. That single
+       measure replaces fill, embedding, depth ratio and footprint, which were
+       four different answers to "is there material here".
+    3. **Take the axis from the two centres of mass** of what was found. Not
+       from a nearest-vertex pair (measured 7-50 degrees off on two *flat*
+       facing blocks), not from a plane fit, not from the shape of an
+       interference lobe.
+    4. **Put the joint on that line**, midway across the gap it crosses —
+       rather than at the closest-approach point with an axis fitted to it.
+
+    Steps 2 and 3 protect each other, which is what makes the big ball safe
+    here when it is not safe elsewhere: a centre of mass reaches around a thin
+    feature and flips only when that part barely fills the ball, and step 2 has
+    already thrown those candidates out.
+    """
+    blob_a = _local_solid(man_a, centre, probe_r)
+    blob_b = _local_solid(man_b, centre, probe_r)
+    if blob_a is None or blob_b is None:
+        return None
+    try:
+        ball = (4.0 / 3.0) * np.pi * probe_r ** 3
+        frac_a = float(_manifold.volume(blob_a)) / ball
+        frac_b = float(_manifold.volume(blob_b)) / ball
+    except Exception:
+        return None
+    if min(frac_a, frac_b) < _MIN_PROBE_FRACTION:
+        return None
+
+    com_a, com_b = _blob_centre(blob_a), _blob_centre(blob_b)
+    if com_a is None or com_b is None:
+        return None
+    delta = com_b - com_a
+    if float(np.linalg.norm(delta)) < 1e-6:
+        return None
+    axis = _unit(delta)
+
+    # Where that line actually crosses from one part to the other. The seat goes
+    # midway between the two surfaces, which is where both collars meet flush.
+    ta = _surface_along(pa, com_a, axis, socket_r)
+    tb = _surface_along(pb, com_a, axis, socket_r)
+    if ta is None or tb is None:
+        return None
+    a_face, b_face = float(ta.max()), float(tb.min())
+    if b_face < a_face - socket_r:
+        return None                     # the line leaves A after entering B
+    seat_centre = com_a + axis * (0.5 * (a_face + b_face))
+    gap = max(0.0, b_face - a_face)
+
+    # The one thing the volume score cannot see: whether the parts can come
+    # apart along this axis at all. Interlocked fingers and a cup gripping past
+    # an equator both give a beautiful flat interface. Kept as a refusal, not as
+    # another weighted term.
+    blocked, seated = _path_census(pa, pb, seat_centre, axis,
+                                   socket_r + cp.path_clearance_mm, need_depth)
+    if blocked > seated:
+        return None
+
+    seat = Seat(center=seat_centre, axis=axis, gap=gap,
+                footprint=int(seated), patch=None, axis_source="probe")
+    # The back-face search reads these. The probe ball is at least 2.5x the
+    # socket radius, so it comfortably contains the collar it will be asked
+    # about, which is the one thing that has to be true of it.
+    seat.emb_a, seat.emb_b = blob_a, blob_b
+    seat.blocked = int(blocked)
+    seat.fill = float(min(frac_a, frac_b))
+    seat.score = float(min(frac_a, frac_b))
+    seat.probe_a, seat.probe_b, seat.probe_r = float(frac_a), float(frac_b), probe_r
+    return seat
+
+
+def _find_seats(mesh_a, mesh_b, man_a, man_b, count: int,
+                cp: ConnectionParams, socket_r: float,
+                need_depth: float) -> List[Seat]:
+    """The ranked places to build a joint, best first.
+
+    Candidates are simply *everywhere the two surfaces come close*, spread
+    evenly over the contact by farthest-point sampling. No preference for
+    parallel faces, no direction-agreement filter, no separate source for
+    interference lobes — a place the parts used to overlap is now a broad close
+    contact and scores well on its own merits.
+    """
+    count = max(1, count)
+    pa = _probe_points(mesh_a)
+    pb = _probe_points(mesh_b)
+    d, idx = cKDTree(pb).query(pa, k=1)
+    close = d <= cp.contact_threshold_mm
+    if not np.any(close):
+        close = np.zeros(len(d), bool)
+        close[int(np.argmin(d))] = True
+    mids = 0.5 * (pa[close] + pb[idx[close]])
+
+    probe_r = _probe_radius(mesh_a, mesh_b, socket_r)
+    wanted = min(len(mids), max(10, 4 * count + 6))
+    picks = _farthest_seeds(mids, wanted)
+
+    seats = [s for s in (_probe_seat(man_a, man_b, pa, pb, mids[k], probe_r,
+                                     socket_r, cp, need_depth) for k in picks)
+             if s is not None]
+    seats.sort(key=lambda s: -s.score)
+
+    kept: List[Seat] = []
+    for seat in seats:
+        if any(float(np.linalg.norm(seat.center - k.center)) < 2.0 * socket_r + 1.0
+               for k in kept):
+            continue
+        kept.append(seat)
+        if len(kept) >= count:
+            break
+    return kept
+
+
 def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                  cp: ConnectionParams, socket_r: float,
                  need_depth: float, overlap=None) -> List[Seat]:
@@ -1499,8 +1672,8 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     # magnet an unclamped chamfer would leave almost nothing holding it.
     chamfer = min(cp.magnet_chamfer_mm, 0.3 * t)
 
-    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
-                         socket_r, embed, overlap=overlap)
+    seats = _find_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp,
+                        socket_r, embed)
     pocket = {"radius": pocket_r, "depth": depth,
               "chamfer": chamfer, "shape": shape}
 
@@ -1535,8 +1708,9 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "edge_offset": round(seat.edge_offset, 2),
             "embedding": round(seat.embedding, 3),
             "depth_ratio": round(seat.depth_ratio, 2),
-            "global_axis": round(seat.global_axis, 3),
-            "global_offset": round(seat.global_offset, 1),
+            "probe_a": round(seat.probe_a, 3),
+            "probe_b": round(seat.probe_b, 3),
+            "probe_r": round(seat.probe_r, 2),
         })
 
     return _joint_note(placed, len(seats), reasons, "magnet", seats)
@@ -1552,9 +1726,11 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     that this used to be (that one landed at whatever angle the closest two
     vertices implied, and its hemispherical cap left a bobble on the surface).
     """
-    r = _min_wall_radius(params, cp.connector_diameter_mm / 2.0)
-    seats = _joint_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp, r, r * 2.0,
-                         overlap=overlap)
+    # A bridge is the same joint without the magnet, so it is placed the same
+    # way -- and it is thinner on purpose: no pocket to bury means no socket
+    # wall, so the peg only has to be strong, not roomy.
+    r = _min_wall_radius(params, float(cp.bridge_diameter_mm) / 2.0)
+    seats = _find_seats(mesh_a, mesh_b, mans[i], mans[j], count, cp, r, r * 2.0)
     embed = max(2.0 * r, 2.0)
     placed, reasons = 0, []
     for seat in seats:
@@ -1589,37 +1765,18 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
     seated = seats[:max(placed, 1)]
     used = {s.axis_source for s in seated}
     extra = [_AXIS_NOTE[a] for a in sorted(used) if a in _AXIS_NOTE]
-    # A seat can clear the watertight gate and still be sunk into very little
-    # plastic — a socket wider than the backbone it lands on, typically.  It is
-    # printable, so it is not refused, but the user should hear about it before
-    # the magnet pulls out of the part.
+    # One measure now, because the search takes one: how much of the probe ball
+    # each part filled, on the weaker side. A broad flat interface fills both
+    # halves; a spike or a thin arm fills very little. It is printable either
+    # way, so this is reported rather than refused — but it is the number that
+    # says whether a joint has anything to hold on to.
     if placed:
-        thin = min((s.fill for s in seated), default=1.0)
-        if thin < _MIN_SEAT_FILL:
-            extra.append(f"thin seat ({thin * 100:.0f}% solid) — the joint is "
-                         f"wider than the material it lands on; use a smaller "
-                         f"connector Ø or a thicker backbone")
-        # Separately from "is there material here", say so when the collar will
-        # visibly stand off the surface — that is a look, not a failure, so it is
-        # reported rather than refused.
-        proud = min((s.embedding for s in seated), default=1.0)
-        if proud < _MIN_SEAT_EMBEDDING:
-            extra.append(f"joint stands proud ({proud * 100:.0f}% of the collar "
-                         f"is buried) — the parts only meet over a small area "
-                         f"here; a smaller connector Ø sinks it further in")
-        # And separately again from both of those: there may be plenty of
-        # material *around* the collar and still very little of it. Burial and
-        # fill are both fractions of the collar, so both read high on a strut
-        # barely wider than the socket — which is the "magnet on a thin little
-        # arm" nobody was told about.
-        # Magnets only: the threshold is calibrated against a magnet collar
-        # (measured across arm widths at the stock 7.2 mm socket), and a pin's
-        # collar is small enough that ordinary flat contacts sit near it.
-        strut = min((s.depth_ratio for s in seated), default=99.0)
-        if what == "magnet" and strut < 1.5:
-            extra.append(f"joint sits on a thin feature — only {strut:.1f}× the "
-                         f"collar's own volume of material around it; it will "
-                         f"print, but a smaller connector Ø would sit better")
+        weak = min((min(s.probe_a, s.probe_b) for s in seated), default=1.0)
+        if weak < 0.15:
+            extra.append(f"little material around this joint — the thinner side "
+                         f"fills {weak * 100:.0f}% of the space around it; it "
+                         f"will print, but a smaller connector Ø, a thicker "
+                         f"backbone or a larger scale would seat it better")
     if placed and not reasons:
         parts = ([f"{placed} {what}s"] if placed > 1 else []) + extra
         return True, "; ".join(parts)
@@ -2237,20 +2394,14 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 # minus the magnet pocket.
                 n_joints = (cp.magnet_count if kind == "protein-protein"
                             else cp.dna_magnet_count)
-                # DNA↔DNA never gets a magnet.  A pocket for even a small magnet
-                # is several times wider than a backbone tube (default radius
-                # 1.2 mm vs a 4 mm magnet), so the socket cannot sink into the
-                # strand: it is a boss standing proud of it, and the bore usually
-                # blows straight through — which ``_commit`` then rejects, so the
-                # joint is lost anyway.  Those pairs are bridged instead.
-                if cp.use_magnets and kind == "dna-dna":
-                    method = "bridge"
-                    ok, note = _apply_bridge(
-                        mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
-                        overlap=overlap)
-                    note = ("bridged, not magnetised: a magnet pocket is wider "
-                            "than the backbone tube" + (f" — {note}" if note else ""))
-                elif cp.use_magnets:
+                # Two DNA strands get nothing unless the base-pair control
+                # asked for it. They used to be silently bridged here, which is
+                # a joint nobody requested appearing between two strands -- and
+                # the base-pair pass is the feature that *is* meant to link
+                # them, so it should be the only thing that does.
+                if kind == "dna-dna":
+                    continue
+                if cp.use_magnets:
                     method = "magnet"
                     ok, note = _apply_magnet(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,

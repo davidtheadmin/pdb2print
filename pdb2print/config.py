@@ -430,6 +430,14 @@ class ConnectionParams:
     #: a flank.
     global_axis_weight: float = 20.0
     global_line_weight: float = 15.0
+    #: Diameter of a printed bridge peg (mm).
+    #:
+    #: Its own control, and thinner than a magnet, because it is a different
+    #: object: a magnet needs a pocket buried in a collar with a wall around it,
+    #: so a 4 mm magnet occupies 7.2 mm of surface. A peg needs none of that --
+    #: it only has to be strong enough not to snap -- so it fits where a magnet
+    #: cannot, which is the whole reason to reach for one.
+    bridge_diameter_mm: float = 3.0
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:
