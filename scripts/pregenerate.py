@@ -5,7 +5,7 @@ Run from the repo root::
 
     python scripts/pregenerate.py                 # everything missing
     python scripts/pregenerate.py --only 1ZAA     # one structure
-    python scripts/pregenerate.py --preset Sturdy # one preset across the spec
+    python scripts/pregenerate.py --preset "Molecular"   # one preset only
     python scripts/pregenerate.py --force         # rebuild even if cached
     python scripts/pregenerate.py --list          # show the plan, build nothing
 
@@ -35,7 +35,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from pdb2print import presets                      # noqa: E402
-from pdb2print.cache import Cache, key_for         # noqa: E402
+from pdb2print.cache import Cache, DEFAULT_CACHE_DIR, key_for   # noqa: E402
 from pdb2print.config import ConnectionParams      # noqa: E402
 
 DEFAULT_SPEC = os.path.join(HERE, "cache_spec.json")
@@ -109,7 +109,19 @@ def main() -> int:
         print("Nothing to do — no spec entry matched.")
         return 0
 
-    cache = Cache()
+    # The directory the *server* writes to, not the module default.  Those are
+    # the same thing only when PDB2PRINT_CACHE_DIR is unset -- which is not how
+    # the VPS runs, so the plan was read from one directory while the builds
+    # went to another: every entry reported "not cached", --force deleted
+    # nothing, and the index was written where the site never looks.
+    cache_dir = os.environ.get("PDB2PRINT_CACHE_DIR", DEFAULT_CACHE_DIR)
+    cache = Cache(cache_dir)
+    print(f"cache: {cache_dir}")
+    if os.environ.get("PDB2PRINT_CACHE_RO", "").strip().lower() in {
+            "1", "true", "on", "yes"}:
+        print("PDB2PRINT_CACHE_RO is set — every build would be discarded. "
+              "Unset it and run again.")
+        return 1
 
     # Resolve the plan before building anything, so --list is informative and a
     # bad preset name fails immediately rather than forty minutes in.

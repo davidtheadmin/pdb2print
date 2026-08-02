@@ -30,9 +30,14 @@ lib3mf>=2.3.0
 # GLB export helper for the preview
 pygltflib>=1.16
 
-# Web UI (not imported by the pdb2print package itself)
-gradio>=4.44
-
+# Gradio is only needed by app.py, the standalone local UI. Nothing on the
+# serving path imports it -- not server.py, not the pdb2print package --
+# but the Dockerfile installs this file wholesale, so it was pulling gradio
+# and its transitive tree into the production image for code that never runs
+# there. Moved to requirements-app.txt:
+#
+#     pip install -r requirements.txt -r requirements-app.txt
+#
 # Real plaque lettering: outline fonts read with fontTools and
 # triangulated with mapbox_earcut. Without them the plaque falls back to the
 # built-in stroke font, so neither is required for the pipeline to run.

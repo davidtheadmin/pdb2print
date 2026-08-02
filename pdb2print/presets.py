@@ -93,7 +93,7 @@ _UI_UNTOUCHED = dict(
     # fields that happen to reach the key today, turning ligands on would be the
     # moment the two sides silently diverged.
     ligand_atom_mm=2.2,             # the "Ligand atoms" slider's default
-    ligand_bond_mm=1.2,             # the "Ligand bonds" slider's default
+    ligand_bond_mm=1.4,             # the "Ligand bonds" slider's default
 )
 
 #: Joinery is off until the user asks for it, exactly as the form loads.

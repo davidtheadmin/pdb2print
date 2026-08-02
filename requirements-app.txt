@@ -1,0 +1,10 @@
+# Extras for app.py, the standalone local Gradio UI.
+#
+# Deliberately out of requirements.txt: the Dockerfile installs that file
+# wholesale, and nothing on the serving path imports gradio -- not server.py,
+# not the pdb2print package -- so it was several hundred megabytes of image
+# for code the container never runs.
+#
+#     pip install -r requirements.txt -r requirements-app.txt
+#
+gradio>=4.44

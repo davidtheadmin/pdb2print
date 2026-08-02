@@ -1,24 +1,175 @@
 {
   "_comment": [
-    "Optional pre-warming for the build cache.",
+    "Pre-warming for the build cache.",
     "",
-    "The cache normally fills itself: anything a user builds is stored and",
+    "The cache fills itself as people use the site: anything built is stored and",
     "served instantly the next time someone asks for the same structure at the",
-    "same settings. You do not need this file.",
+    "same settings. This file front-runs that for the structures we already know",
+    "will be asked for -- a lookup is 0.11 ms against tens of seconds of marching",
+    "cubes, so an entry here is the difference between a visitor waiting and a",
+    "visitor never learning there was anything to wait for.",
     "",
-    "It exists for the case where you want a specific structure warm before",
-    "anyone asks - a demo, a workshop, a link you are about to share. Add",
-    "entries and run:",
+    "This list used to be empty, which meant the script ran and did nothing.",
     "",
-    "    python scripts/pregenerate.py --list     show the plan, build nothing",
-    "    python scripts/pregenerate.py            build everything listed",
+    "The six example chips on the front page are built at three scales each,",
+    "because scale_mm_per_angstrom is part of the cache key and it is the one",
+    "control people actually move -- pinning a single scale only helps a visitor",
+    "who touches nothing. The rest are the default scale only; add more as the",
+    "logs justify them.",
     "",
-    "Be aware of the size. One large complex is 40-60 MB across its 3MF, GLB",
-    "and STL zip, so a long list adds up fast.",
+    "Deliberately absent: anything capsid-sized (6VXX and friends). Those are",
+    "tens of minutes each and nobody arrives expecting them to be instant.",
+    "",
+    "Mind the size. One large complex is 40-60 MB across its 3MF, GLB and STL",
+    "zip, so this list is roughly 1-1.5 GB. Check it against",
+    "PDB2PRINT_CACHE_MAX_GB before running.",
+    "",
+    "Every entry has to be rebuilt after CACHE_VERSION changes:",
+    "    python scripts/pregenerate.py --force",
     "",
     "Fields: pdb_id, preset (a name from pdb2print/presets.py), and optional",
     "overrides (PrintParams fields; 'connections' may be given as an object)."
   ],
-
-  "entries": []
+  "entries": [
+    {
+      "pdb_id": "1UBQ",
+      "name": "Ubiquitin",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "1UBQ",
+      "name": "Ubiquitin"
+    },
+    {
+      "pdb_id": "1UBQ",
+      "name": "Ubiquitin",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "1BNA",
+      "name": "B-DNA dodecamer",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "1BNA",
+      "name": "B-DNA dodecamer"
+    },
+    {
+      "pdb_id": "1BNA",
+      "name": "B-DNA dodecamer",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "1ZAA",
+      "name": "Zif268 zinc finger + DNA",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "1ZAA",
+      "name": "Zif268 zinc finger + DNA"
+    },
+    {
+      "pdb_id": "1ZAA",
+      "name": "Zif268 zinc finger + DNA",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "1TUP",
+      "name": "p53 core domain + DNA",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "1TUP",
+      "name": "p53 core domain + DNA"
+    },
+    {
+      "pdb_id": "1TUP",
+      "name": "p53 core domain + DNA",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "2HHB",
+      "name": "Deoxyhaemoglobin",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "2HHB",
+      "name": "Deoxyhaemoglobin"
+    },
+    {
+      "pdb_id": "2HHB",
+      "name": "Deoxyhaemoglobin",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "1AOI",
+      "name": "Nucleosome core particle",
+      "overrides": {
+        "scale_mm_per_angstrom": 1.0
+      }
+    },
+    {
+      "pdb_id": "1AOI",
+      "name": "Nucleosome core particle"
+    },
+    {
+      "pdb_id": "1AOI",
+      "name": "Nucleosome core particle",
+      "overrides": {
+        "scale_mm_per_angstrom": 2.5
+      }
+    },
+    {
+      "pdb_id": "1CRN",
+      "name": "Crambin"
+    },
+    {
+      "pdb_id": "1AKI",
+      "name": "Hen egg-white lysozyme"
+    },
+    {
+      "pdb_id": "1GFL",
+      "name": "Green fluorescent protein"
+    },
+    {
+      "pdb_id": "1MBN",
+      "name": "Sperm whale myoglobin"
+    },
+    {
+      "pdb_id": "3I40",
+      "name": "Human insulin"
+    },
+    {
+      "pdb_id": "1HHO",
+      "name": "Oxyhaemoglobin"
+    },
+    {
+      "pdb_id": "2GBP",
+      "name": "Glucose-binding protein"
+    },
+    {
+      "pdb_id": "1D66",
+      "name": "GAL4 + DNA"
+    }
+  ]
 }

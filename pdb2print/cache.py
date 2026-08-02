@@ -84,7 +84,12 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 #:     the mechanism — but the mechanism is a hash of a dataclass and the cost of
 #:     being wrong here is serving someone a model with no drug in it, so the
 #:     explicit invalidation is worth the one-line diff.
-CACHE_VERSION = 3
+#: 4: the joint search changed in every dimension this round -- seed axis,
+#: support smoothing, a depth term, three score terms made scale-relative, and
+#: the back-taper gate -- so a v3 entry is last round's magnets. Bumped in the
+#: same commit as the geometry, because /cache/* is now served immutable and a
+#: browser holding a stale entry has no way to find out otherwise.
+CACHE_VERSION = 4
 
 #: Artefact kinds an entry must hold to count as complete.  A half-written entry
 #: (a crash mid-export, a killed container) must never be served, so lookup

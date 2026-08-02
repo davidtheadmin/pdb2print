@@ -758,7 +758,14 @@ class PrintParams:
     #: ratio itself that decides whether the thing reads as atoms joined by bonds
     #: or as a smooth worm — and at print scale the right answer moves, because
     #: the bonds are what snap and the beads are what hold it together.
-    ligand_bond_mm: float = 1.2
+    #: 1.4 because that is what the front end's slider ships, and this is what
+    #: a request that omits the field gets.  They disagreed -- this said 1.2,
+    #: the slider said 1.4 -- and it was invisible because canonical_params drops
+    #: the field entirely when ligands are off.  Turn ligands on and the CLI, the
+    #: presets and pregenerate.py all built a different model from the website,
+    #: under a different cache key, so a pre-generated ligand entry could never
+    #: be served to a real request.
+    ligand_bond_mm: float = 1.4
     #: Multiplier on the van der Waals radii in the ``SPACEFILL`` style.  Below 1
     #: the atoms separate and the molecule reads as beads; at 1 they fuse into the
     #: solid lump that prints best.
