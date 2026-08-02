@@ -411,6 +411,25 @@ class ConnectionParams:
     #: found, against the volume the collar needs.  Saturates at three times the
     #: collar, which is roughly where an arm stops being an arm.
     seat_depth_weight: float = 25.0
+    #: How much a joint is rewarded for connecting the two parts *as wholes*.
+    #:
+    #: Everything else in this score is local — contact points, a probe ball a
+    #: few millimetres across, the material immediately around a seat. None of
+    #: it knows where the bulk of one chain sits relative to the other, so a
+    #: joint on a peripheral loop that happens to graze its neighbour scores as
+    #: well as one on the interface the two objects actually meet across. That
+    #: is the "the magnets do not connect the parts logically" complaint.
+    #:
+    #: Widening the local probe ball was the other candidate and it is the same
+    #: idea, but measured to fail: past about 2.5x a local feature the ball
+    #: reaches around it and the answer flips by 30-80 degrees. Taking the whole
+    #: chain's centroid is that idea at its limit, with none of the wrap.
+    #:
+    #: ``axis`` rewards a joint that pulls apart along the line between the two
+    #: chains; ``line`` rewards one that sits near that line rather than out on
+    #: a flank.
+    global_axis_weight: float = 20.0
+    global_line_weight: float = 15.0
     #: The same measure applied to *orientation*, in units of the surface-point
     #: counts the axis search scores in.
     #:

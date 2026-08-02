@@ -472,6 +472,10 @@ class Seat:
     #: 1.0 means the probe ball found only as much plastic as the collar
     #: displaces — a strut, not a body.  See ``seat_depth_weight``.
     depth_ratio: float = 0.0
+    #: How well this joint agrees with the line between the two chains as whole
+    #: objects (1 = along it), and how far off that line it sits (mm).
+    global_axis: float = 0.0
+    global_offset: float = 0.0
     score: float = 0.0
     #: mm³ of interpenetration this seat was derived from (0 for point-cloud
     #: seats).  A joint that sits where the two parts *were* fighting for the
@@ -613,7 +617,7 @@ def _patch_normal(patch, center, radius: float, seed_axis):
 
 
 def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams,
-                  socket_r: float = None):
+                  socket_r: float = None, global_dir=None):
     """Candidate joint axes for one seat, as ``(label, unit vector)``.
 
     Three hypotheses, because no single construction survives every interface:
@@ -636,6 +640,10 @@ def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams,
     geometry and picks whichever can really be assembled.
     """
     opts = [("contact", seat.axis)]
+    if global_dir is not None:
+        # The line between the two chains as wholes. The coarsest hypothesis
+        # available and the only one that knows what is being connected to what.
+        opts.append(("global", global_dir))
     if socket_r is not None and socket_r > 0.0:
         normal = _patch_normal(seat.patch, seat.center, 2.0 * socket_r, seat.axis)
         if normal is not None:
@@ -664,7 +672,8 @@ def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams,
 #: them three orders of magnitude too small to do anything but break exact ties
 #: — and exact ties between point counts do not occur.  The docstring said
 #: tie-break and meant it; the effect was zero.
-_AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "mass": 3.0, "contact": 0.0}
+_AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "global": 3.5,
+                    "mass": 3.0, "contact": 0.0}
 #: (The census term runs 0-100 for a clean candidate but has no floor — a fully
 #: obstructed one reaches -600 at the default blocked weight — so these are a
 #: nudge against the top of the range, not against its whole span.)
@@ -680,13 +689,14 @@ _AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "mass": 3.0, "contact": 0.0
 #: axis contest through _AXIS_PREFERENCE, and stacking a seat-ranking bonus on
 #: top of that would systematically promote seats on flat interfaces twice over
 #: for one property.
-_AXIS_QUALITY = {"overlap": 1.0, "normal": 0.9, "mass": 0.9, "mass-flat": 0.7,
-                 "contact": 0.3}
+_AXIS_QUALITY = {"overlap": 1.0, "normal": 0.9, "mass": 0.9, "global": 0.85,
+                 "mass-flat": 0.7, "contact": 0.3}
 
 
 def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
                  radius: float, length: float,
-                 blob_a=None, blob_b=None, socket_r: float = None):
+                 blob_a=None, blob_b=None, socket_r: float = None,
+                 global_dir=None):
     """Pick the axis the joint can actually be assembled along.
 
     Every candidate is put through the same physical test: how much material
@@ -721,7 +731,7 @@ def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
     # a stated fraction of it, at any mesh density. The behaviour change comes
     # from that, and from _AXIS_PREFERENCE being rescaled to match.
     surveyed = []
-    for label, axis in _axis_options(seat, cen_a, cen_b, cp, socket_r):
+    for label, axis in _axis_options(seat, cen_a, cen_b, cp, socket_r, global_dir):
 
         agreement = float(np.dot(axis, seat.axis))
         if label != "contact" and agreement < cp.axis_agreement_min:
@@ -999,7 +1009,7 @@ def _overlap_seats(overlap, mesh_a, mesh_b, socket_r: float) -> List[Seat]:
 
 
 def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
-                 socket_r: float, need_depth: float) -> List[Seat]:
+                 socket_r: float, need_depth: float, com_a=None, com_b=None) -> List[Seat]:
     """Stage 2 — re-orient and rank each candidate against the real solids.
 
     For every candidate we intersect both parts with a ball at the contact.  That
@@ -1039,6 +1049,17 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
     # wall lands here as 0.0. Clamped rather than validated because a zero-width
     # connector is not a request worth honouring either way.
     socket_r = max(float(socket_r), 1e-3)
+    # The two chains as whole objects: the direction one has to travel to leave
+    # the other, and the line joining them. Everything else here is measured
+    # within a few millimetres of a contact point and cannot see either.
+    global_dir, com_mid, com_span = None, None, 0.0
+    if com_a is not None and com_b is not None:
+        delta = np.asarray(com_b, float) - np.asarray(com_a, float)
+        span = float(np.linalg.norm(delta))
+        if span > 1e-6:
+            global_dir = delta / span
+            com_mid = 0.5 * (np.asarray(com_a, float) + np.asarray(com_b, float))
+            com_span = span
     collar_reach = float(np.hypot(need_depth * (1.0 + cp.socket_extend_max),
                                   socket_r)) + 0.25
     scored: List[Seat] = []
@@ -1080,7 +1101,7 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
         else:
             axis, source, agreement, blocked = _choose_axis(
                 seat, cen_a, cen_b, pa, pb, cp, socket_r + cp.path_clearance_mm,
-                need_depth, emb_a, emb_b, socket_r)
+                need_depth, emb_a, emb_b, socket_r, global_dir)
             seat.axis, seat.axis_source = axis, source
             seat.agreement, seat.blocked = agreement, blocked
 
@@ -1164,6 +1185,18 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
                       - cp.edge_center_weight * min(seat.edge_offset, edge_span) / 0.6
                       + cp.seat_embedding_weight * seat.embedding
                       + cp.seat_depth_weight * min(1.0, seat.depth_ratio / 3.0))
+        if global_dir is not None:
+            # Does this joint pull the two objects apart, and does it sit where
+            # they actually meet? Both bounded to 0..1 so they refine a choice
+            # between comparable seats rather than overriding "is there material
+            # here", which is still what the leading term measures.
+            seat.global_axis = abs(float(np.dot(seat.axis, global_dir)))
+            off = seat.center - com_mid
+            lateral = float(np.linalg.norm(off - global_dir * float(off @ global_dir)))
+            seat.global_offset = lateral
+            near = max(0.0, 1.0 - lateral / max(0.25 * com_span, socket_r))
+            seat.score += (cp.global_axis_weight * seat.global_axis
+                           + cp.global_line_weight * near)
         scored.append(seat)
 
     scored.sort(key=lambda s: -s.score)
@@ -1199,6 +1232,19 @@ def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
         seat.embedding)
 
 
+def _object_centre(mesh):
+    """The whole object's centre — volume if it is closed, vertices if not."""
+    try:
+        if mesh.is_watertight and abs(mesh.volume) > 1e-9:
+            return np.asarray(mesh.center_mass, float)
+    except Exception:
+        pass
+    try:
+        return np.asarray(mesh.vertices, float).mean(axis=0)
+    except Exception:
+        return None
+
+
 def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                  cp: ConnectionParams, socket_r: float,
                  need_depth: float, overlap=None) -> List[Seat]:
@@ -1222,7 +1268,8 @@ def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
                      if all(np.linalg.norm(s.center - o.center) >= 2.0 * socket_r + 1.0
                             for o in from_overlap)]
         shortlist = from_overlap[:count + cp.seat_shortlist_extra] + shortlist
-    ranked = _score_seats(shortlist, man_a, man_b, pa, pb, cp, socket_r, need_depth)
+    ranked = _score_seats(shortlist, man_a, man_b, pa, pb, cp, socket_r, need_depth,
+                          _object_centre(mesh_a), _object_centre(mesh_b))
     # Prefer seats with real material behind them, but if none clears the bar
     # keep the ranked list anyway: ``_build_seat``'s watertight gate is the hard
     # limit, and refusing everything here would silently drop a joint the user
@@ -1488,6 +1535,8 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             "edge_offset": round(seat.edge_offset, 2),
             "embedding": round(seat.embedding, 3),
             "depth_ratio": round(seat.depth_ratio, 2),
+            "global_axis": round(seat.global_axis, 3),
+            "global_offset": round(seat.global_offset, 1),
         })
 
     return _joint_note(placed, len(seats), reasons, "magnet", seats)
