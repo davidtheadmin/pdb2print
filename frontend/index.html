@@ -1769,7 +1769,6 @@
             <p class="sp-note" id="sp-col-hint"></p>
 
             <label class="sp-switch"><input type="checkbox" id="sp-flared" checked><span class="track"></span>Flared foot</label>
-            <label class="sp-switch"><input type="checkbox" id="sp-capital"><span class="track"></span>Capital where it meets the model</label>
 
             <div class="sp-slider" data-f="column_diameter">
               <div class="lab"><span class="name" title="How thick each column is at its waist.">Thickness</span><span class="val"></span></div>
@@ -1836,7 +1835,6 @@
                 <div class="sp-seg" id="sp-font">
                   <button type="button" data-v="sans" aria-pressed="true">Sans</button>
                   <button type="button" data-v="serif" aria-pressed="false">Serif</button>
-                  <button type="button" data-v="line" aria-pressed="false">Line</button>
                 </div>
               </div>
               <p class="sp-note" id="sp-font-hint"></p>
@@ -2108,7 +2106,7 @@
         <dt>Presets</dt>
         <dd><b>Museum</b>, <b>Classical</b> and <b>Lab</b> set every part at once. Touch any control and it becomes Custom.</dd>
         <dt>Columns</dt>
-        <dd>Square, round, fluted or tapered, with an optional flared foot and capital. Where they stand is worked out for you: a column can only go where nothing else is underneath it, and they are kept in from the silhouette edge.</dd>
+        <dd>Square, round, fluted or tapered, with an optional flared foot. Where they stand is worked out for you: a column can only go where nothing else is underneath it, and they are kept in from the silhouette edge.</dd>
         <dt>Plaque</dt>
         <dd>PDB ID, structure name, a scale bar with the &#8491;&rarr;mm ratio, a colour-matched chain legend, and a line of your own. Two bundled bold faces, or the stroke font when the lettering gets small.</dd>
         <dt>Cradle</dt>
@@ -3182,7 +3180,6 @@
       stand_columns: standColumns,
       column_shape: standShape,
       column_flared: $('#sp-flared').checked,
-      column_capital: $('#sp-capital').checked,
       column_pins: $('#sp-pins').checked,
       pin_diameter: spNum('pin_diameter'),
       pin_depth: spNum('pin_depth'),
@@ -3267,27 +3264,29 @@
   // what museum means here, and a preset you cannot read is a preset you
   // cannot adjust from.
   //
-  // No preset picks the line font or a capital, and none should. Both remain
-  // available to choose; neither is anybody's idea of a starting point. A
-  // preset is the answer to "what should this look like" and these two are
-  // answers you arrive at on purpose or not at all.
+  // Neither the line font nor a column capital is offered any more: no preset
+  // wanted them and neither was anybody's idea of a starting point. The stroke
+  // font itself stays -- it is what the plaque falls back to when fontTools or
+  // mapbox_earcut are missing, and FONT_HINT/CANVAS_FONT still describe it so a
+  // server-side substitution renders and explains itself. It is simply not a
+  // thing you can pick.
   const STAND_PRESETS = {
     museum: {
-      shape: 'square', flared: true, capital: false, relief: 'raised', font: 'sans',
+      shape: 'square', flared: true, relief: 'raised', font: 'sans',
       column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
       plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
       plaque_text: 7.5, apron_rake: 10,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
     },
     classical: {
-      shape: 'fluted', flared: true, capital: false, relief: 'raised', font: 'serif',
+      shape: 'fluted', flared: true, relief: 'raised', font: 'serif',
       column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
       plate_thickness: 6, plate_margin: 11, plate_corner: 3,
       plaque_text: 7.5, apron_rake: 8,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
     },
     lab: {
-      shape: 'round', flared: false, capital: false, relief: 'flush', font: 'sans',
+      shape: 'round', flared: false, relief: 'flush', font: 'sans',
       column_diameter: 6, stand_off: 5, cradle_depth: 3.5,
       plate_thickness: 3, plate_margin: 5, plate_corner: 2,
       plaque_text: 5.5, apron_rake: 0,
@@ -3302,7 +3301,6 @@
     if (!p) return;                           // "Custom" only moves the highlight
     setShape(p.shape);
     $('#sp-flared').checked = p.flared;
-    $('#sp-capital').checked = p.capital;
     setRelief(p.relief);
     setFont(p.font);
     ['column_diameter', 'stand_off', 'cradle_depth', 'plate_thickness',
@@ -3590,7 +3588,7 @@
       columns: cols,
       column: { shape: vals.column_shape, radius: vals.column_diameter / 2,
                 foot: vals.column_diameter / 2 * (vals.column_flared ? 1.45 : 1),
-                flared: vals.column_flared, capital: vals.column_capital,
+                flared: vals.column_flared,
                 wanted: at, placed: cols.length },
       plaque: { on: vals.plaque, relief: vals.plaque_relief, tile: vals.plaque_tile,
                 font: vals.plaque_font, info: rows, legend },
@@ -3716,12 +3714,6 @@
           const ph = Math.min(2.6, span * 0.45);
           skPrism(faces, prof, c.x, c.y, z0, z0 + ph, rFoot, rFoot, colRGB, 'columns', 1);
         }
-      }
-      if (lay.column.capital) {
-        const ch = Math.min(2.0, span * 0.3);
-        const cw = Math.min(rTop * 1.32, Math.max(rTop * 1.04, rFoot));
-        skPrism(faces, (shape === 'round' || shape === 'fluted') ? skProfile('round') : skProfile('square'),
-                c.x, c.y, z1 - ch, z1, rTop * 1.02, cw, colRGB, 'columns', 1);
       }
     });
 
@@ -4380,7 +4372,7 @@
     const btn = e.target.closest('.sp-chip');
     if (btn) setPreset(btn.dataset.preset);
   });
-  ['#sp-flared', '#sp-capital', '#sp-plaque', '#sp-pins'].forEach(sel =>
+  ['#sp-flared', '#sp-plaque', '#sp-pins'].forEach(sel =>
     $(sel).addEventListener('change', () => standChanged()));
   // Typing is a drag by another name: every keystroke re-typesets the plaque
   // server-side, which is one of the slower solves. Redraw locally as they

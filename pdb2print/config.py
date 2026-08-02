@@ -523,12 +523,6 @@ class StandParams:
     #: foot exists to stiffen a long column against bending, and a 20 mm one is
     #: not bending.  It is a look, and the look should be a switch.
     column_flared: bool = True
-    #: A short wider pad where the column meets the model.  Structurally it
-    #: spreads the cradle's contact over more of the shaft; visually it is what
-    #: stops a column looking like it was cut off where it happened to end.
-    #: Never wider than the foot, so it cannot reach past what the column search
-    #: already proved was clear.
-    column_capital: bool = False
     #: Clearance (mm) cut into the cradle so the model actually seats.  A plain
     #: boolean gives a geometrically perfect zero-clearance mate, which on an FDM
     #: part binds — the same lesson the magnet pockets already encode.

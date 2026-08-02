@@ -1433,7 +1433,6 @@ def _map_stand(fields: dict) -> StandParams:
         plate_corner_mm=float(fields.get("plate_corner", 4.0) or 4.0),
         column_diameter_mm=float(fields.get("column_diameter", 8.0) or 8.0),
         column_flared=_bool(fields.get("column_flared", True)),
-        column_capital=_bool(fields.get("column_capital", False)),
         column_edge_frac=float(fields.get("column_edge_frac", 0.45) or 0.45),
         cradle_clearance_mm=float(fields.get("cradle_clearance", 0.35) or 0.35),
         cradle_depth_mm=float(fields.get("cradle_depth", 4.0) or 4.0),
@@ -1932,7 +1931,6 @@ def _run_stand(source: str, params: PrintParams, token: str, progress,
         f"  from {where or 'a fresh build'}"
         f" · columns {sp.columns or 'auto'} {sp.column_shape.value}"
         f"{' flared' if sp.column_flared else ' straight'}"
-        f"{' + capital' if sp.column_capital else ''}"
         f" · orbit {sp.orbit_theta_deg:.0f}/{sp.orbit_phi_deg:.0f}"
         f" roll {sp.roll_deg:.0f}",
         f"  plaque={sp.plaque} id={sp.plaque_pdb_id} "

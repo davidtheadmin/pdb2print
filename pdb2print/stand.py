@@ -770,9 +770,8 @@ def _rounded_slab(x0: float, x1: float, y0: float, y1: float,
 #: look like a set. Clamped on a very short column, where a 2.6 mm foot would be
 #: most of it.
 _FOOT_HEIGHT_MM = 2.6
-#: Likewise the base disc under a fluted shaft, and the capital at the top.
+#: Likewise the base disc under a fluted shaft.
 _FLUTE_BASE_MM = 2.2
-_CAPITAL_MM = 2.0
 
 #: Flutes round a classical column, and how deep each one is cut as a fraction
 #: of the shaft radius.  Twenty-four would be Doric; at 8 mm across, twenty-four
@@ -892,15 +891,6 @@ def _column_solid(x: float, y: float, z0: float, z1: float,
             plinth_h = min(_FOOT_HEIGHT_MM, max(1e-3, height * 0.45))
             parts.append(_tapered_prism(square, x, y, z0, z0 + plinth_h,
                                         foot, foot))
-
-    if bool(getattr(stand, "column_capital", False)):
-        # Never wider than the foot: the reachability filter cleared a corridor
-        # the width of the foot and nothing about the capital was checked.
-        cap_h = min(_CAPITAL_MM, max(1e-3, height * 0.30))
-        cap_half = min(top_half * 1.32, max(top_half * 1.04, foot))
-        profile = round_ if shape in (ColumnShape.ROUND, ColumnShape.FLUTED) else square
-        parts.append(_tapered_prism(profile, x, y, z1 - cap_h, z1,
-                                    top_half * 1.02, cap_half))
 
     return _manifold.union(parts) if len(parts) > 1 else parts[0]
 
@@ -1791,7 +1781,6 @@ def layout_summary(layout: StandLayout, params: PrintParams) -> dict:
             "radius": round(layout.radius, 3),
             "foot": round(layout.foot, 3),
             "flared": bool(getattr(stand, "column_flared", True)),
-            "capital": bool(getattr(stand, "column_capital", False)),
             "pins": bool(getattr(stand, "column_pins", False)),
             "wanted": int(layout.wanted),
             "placed": len(layout.columns),
