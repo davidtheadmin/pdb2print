@@ -257,6 +257,17 @@ _MIN_SEAT_EMBEDDING = 0.5
 #: Above this much burial, an exposed back cap means the collar punched *through*
 #: a thin part rather than out of a surface that fell away — so the cone that
 #: would close the second case is precisely wrong for the first.
+#:
+#: Its own constant, deliberately, even though it currently equals
+#: ``_MIN_SEAT_EMBEDDING``. The two answer different questions — "is this joint
+#: worth warning about" and "is this cap exposed because the collar came out the
+#: back" — and letting one silently depend on the other's value is how a tuning
+#: change to one breaks the other.
+#:
+#: Known limitation: ``seat.embedding`` is the *worse* of the two sides, so a
+#: seat with one side fallen away and the other punched through reads low and
+#: gets coned on both. Fixing that needs a per-side figure, which
+#: ``_close_the_back`` does not currently return.
 _TAPER_MAX_EMBEDDING = 0.5
 
 
@@ -893,6 +904,11 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
     # Sized for the *longest* socket the back-face search may ask for, so a
     # lengthened socket is still measured against material rather than against
     # the edge of the ball it is being tested in.
+    # A divisor since the score terms became scale-relative, and it arrives
+    # from a form field: connector_diameter 0 with no clearance and no socket
+    # wall lands here as 0.0. Clamped rather than validated because a zero-width
+    # connector is not a request worth honouring either way.
+    socket_r = max(float(socket_r), 1e-3)
     collar_reach = float(np.hypot(need_depth * (1.0 + cp.socket_extend_max),
                                   socket_r)) + 0.25
     scored: List[Seat] = []
@@ -1375,8 +1391,11 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
         # fill are both fractions of the collar, so both read high on a strut
         # barely wider than the socket — which is the "magnet on a thin little
         # arm" nobody was told about.
+        # Magnets only: the threshold is calibrated against a magnet collar
+        # (measured across arm widths at the stock 7.2 mm socket), and a pin's
+        # collar is small enough that ordinary flat contacts sit near it.
         strut = min((s.depth_ratio for s in seated), default=99.0)
-        if strut < 1.5:
+        if what == "magnet" and strut < 1.5:
             extra.append(f"joint sits on a thin feature — only {strut:.1f}× the "
                          f"collar's own volume of material around it; it will "
                          f"print, but a smaller connector Ø would sit better")
@@ -1955,7 +1974,11 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         if found:
             step(0.15, f"Carving {len(found)} overlapping interface(s) apart…")
         before = list(mans)
-        mans, found, fit_notes = interference.resolve(mans, chains, params, found)
+        # extend, not rebind: fit_notes may already carry the socket-vs-scale
+        # note, and reassigning here dropped it on every path that could
+        # produce one.
+        mans, found, _resolved = interference.resolve(mans, chains, params, found)
+        fit_notes.extend(_resolved)
         overlaps = {(o.i, o.j): o for o in found}
         if len(before) != len(mans) or any(a is not b
                                            for a, b in zip(before, mans)):

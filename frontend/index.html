@@ -2223,11 +2223,19 @@
   // the size estimate is in. Mirrors connections._apply_magnet's arithmetic:
   // pocket = diameter + fit clearance, socket = pocket + two walls.
   function socketWidthMm() {
+    // Mirrors connections._apply_magnet: pocket = Ø + fit clearance, and the
+    // wall is added only when the socket is on. Both conditions matter — the
+    // use_magnets segment keeps its selection while hidden, so without the
+    // joinery check a user who turns connections off still saw a socket.
+    const connect = $('#connect');
+    if (connect && !connect.checked) return 0;
     if (groups.use_magnets && groups.use_magnets() !== 'true') return 0;
     const dia = parseFloat(sliders.connector_diameter.value);
-    const fit = parseFloat(sliders.magnet_fit_clearance.value);
-    const wall = parseFloat(sliders.socket_wall.value);
     if (!isFinite(dia)) return 0;
+    const fit = parseFloat(sliders.magnet_fit_clearance.value);
+    const socket = $('#socket');
+    const wall = (socket && socket.checked)
+      ? parseFloat(sliders.socket_wall.value) : 0;
     return dia + (isFinite(fit) ? fit : 0) + 2 * (isFinite(wall) ? wall : 0);
   }
 
@@ -2246,8 +2254,11 @@
     if (sock > 0) {
       const narrow = Math.min(...d);
       text += ` · socket Ø ${sock.toFixed(1)} mm`;
+      // The whole model's narrowest dimension, where the build report measures
+      // the narrowest *part* — so this is the optimistic version of the same
+      // check and the report may still object when this does not.
       if (narrow > 0 && sock > 0.25 * narrow) {
-        text += ` — large for a part ${narrow} mm thick`;
+        text += ` — large for a model ${narrow} mm thick`;
       }
     }
     el.textContent = text;

@@ -103,6 +103,7 @@ _PARAM_BOUNDS = {
     "grid_spacing": (0.2, 1.5),
     "min_wall": (0.0, 5.0),
     "probe_radius": (0.6, 5.0),
+    "connector_diameter": (1.5, 12.0),
     "surface_padding": (0.0, 2.0),
 }
 
@@ -613,7 +614,8 @@ def _map_connections(fields: dict) -> ConnectionParams:
         connect=_bool(fields.get("connect", False)),
         use_magnets=_bool(fields.get("use_magnets", False)),
         no_magnet_method=NoMagnetMethod(fields.get("no_magnet_method", "inflate")),
-        connector_diameter_mm=float(fields.get("connector_diameter", 4.0)),
+        connector_diameter_mm=(_bounded(fields, "connector_diameter")
+                               if "connector_diameter" in fields else 4.0),
         magnet_thickness_mm=float(fields.get("magnet_thickness", 2.0)),
         magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
         magnet_count=int(float(fields.get("magnet_count", 1))),
@@ -1432,8 +1434,8 @@ def _backfill_names(objects, source: str) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _meshes_from_3mf(hit: dict, count: int):
-    """The entry's 3MF reopened as ``count`` meshes in build order, or ``None``.
+def _meshes_from_3mf(hit: dict, names):
+    """The entry's 3MF reopened as one mesh per name in ``names``, or ``None``.
 
     Worth trying before the STL zip, and the reason is not float precision.
     An STL is a *triangle soup*: it carries no vertex indices at all, so a
@@ -1446,6 +1448,16 @@ def _meshes_from_3mf(hit: dict, count: int):
     A 3MF stores explicit triangle indices — ``export.write_3mf`` writes
     ``tri.Indices`` per face — so there is nothing to guess.  The coordinates
     are float32 either way; the topology is what was being lost.
+
+    Matched by **object name**, never by position.  ``graph.nodes_geometry``
+    is not build order: trimesh walks the scene graph with a LIFO queue, so
+    three build items come back as 1, 3, 2 and eight as 1, 8, 7, 6, 5, 4, 3, 2.
+    A count check cannot see that — the count is right and only the pairing is
+    wrong — and the result would be watertight, so it would sail through the
+    gate and attach every chain's name and colour to a different chain's
+    geometry.  ``write_3mf`` sets each object's name from
+    ``chain.object_name()`` and ``CachedObject.object_name()`` reproduces it, so
+    the join is exact.
 
     Deliberately strict: anything unexpected returns ``None`` and the caller
     falls back to the STL path, so the worst case is exactly what happened
@@ -1463,34 +1475,36 @@ def _meshes_from_3mf(hit: dict, count: int):
     except Exception:
         return None
 
-    meshes = []
     if isinstance(loaded, trimesh.Trimesh):
-        meshes = [loaded]
-    else:
-        graph = getattr(loaded, "graph", None)
-        geometry = getattr(loaded, "geometry", None)
-        if graph is None or not geometry:
-            return None
-        try:
-            # Through the scene graph rather than geometry.values(), so a build
-            # item placed with a transform is honoured instead of silently
-            # loading at the origin.
-            for node in graph.nodes_geometry:
-                transform, gname = graph[node]
-                mesh = geometry.get(gname)
-                if mesh is None:
-                    return None
-                mesh = mesh.copy()
-                mesh.apply_transform(transform)
-                meshes.append(mesh)
-        except Exception:
-            return None
+        # A single-object 3MF carries no ambiguity to resolve.
+        return [loaded] if len(names) == 1 else None
 
-    if len(meshes) != count:
-        # A stand entry, a components object, or a loader that flattened
-        # differently than expected. Not worth guessing at — take the old road.
+    graph = getattr(loaded, "graph", None)
+    geometry = getattr(loaded, "geometry", None)
+    if graph is None or not geometry:
         return None
-    return meshes
+    by_name = {}
+    try:
+        # Through the scene graph rather than geometry.values(), so a build item
+        # placed with a transform is honoured instead of silently loading at the
+        # origin.
+        for node in graph.nodes_geometry:
+            transform, gname = graph[node]
+            mesh = geometry.get(gname)
+            if mesh is None or gname in by_name:
+                return None              # missing, or a name used twice
+            mesh = mesh.copy()
+            mesh.apply_transform(transform)
+            by_name[gname] = mesh
+    except Exception:
+        return None
+
+    if set(by_name) != set(names) or len(by_name) != len(names):
+        # A stand entry, a components object, a name trimesh made unique behind
+        # our back, or anything else unexpected. Not worth guessing — take the
+        # old road.
+        return None
+    return [by_name[n] for n in names]
 
 
 def _built_from_cache(hit: dict, source: str = "", require_watertight: bool = True):
@@ -1520,7 +1534,8 @@ def _built_from_cache(hit: dict, source: str = "", require_watertight: bool = Tr
     # old enough to lack it go straight to the zip, which can name them.
     meta_objects = cache_mod.objects_from_meta(hit)
     if meta_objects:
-        indexed = _meshes_from_3mf(hit, len(meta_objects))
+        indexed = _meshes_from_3mf(
+            hit, [obj.object_name() for obj in meta_objects])
         if indexed is not None:
             out = []
             for obj, mesh in zip(meta_objects, indexed):
