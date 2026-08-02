@@ -254,21 +254,20 @@ _MIN_SEAT_FILL = 0.35
 #: genuinely small contact patch there may be nowhere better to put it.
 _MIN_SEAT_EMBEDDING = 0.5
 
-#: Above this much burial, an exposed back cap means the collar punched *through*
-#: a thin part rather than out of a surface that fell away — so the cone that
-#: would close the second case is precisely wrong for the first.
+#: Burial above which an exposed back cap means the collar came out the *far*
+#: side of a thin part, rather than out of a surface that fell away under it.
 #:
-#: Its own constant, deliberately, even though it currently equals
-#: ``_MIN_SEAT_EMBEDDING``. The two answer different questions — "is this joint
-#: worth warning about" and "is this cap exposed because the collar came out the
-#: back" — and letting one silently depend on the other's value is how a tuning
-#: change to one breaks the other.
+#: The two look identical to :func:`_cap_exposure` — the cap is in open air
+#: either way — and they want opposite remedies: lengthen into the material
+#: that is still there, or pull back out of the void beyond. This is the only
+#: signal that separates them, and it is measured: on a 3 mm slab with a 3.7 mm
+#: collar the burial reads 0.81 while the cap is fully exposed, where a
+#: fallen-away surface reads well under 0.5.
 #:
-#: Known limitation: ``seat.embedding`` is the *worse* of the two sides, so a
-#: seat with one side fallen away and the other punched through reads low and
-#: gets coned on both. Fixing that needs a per-side figure, which
-#: ``_close_the_back`` does not currently return.
-_TAPER_MAX_EMBEDDING = 0.5
+#: It decides *how* to close the back, never whether to. Suppressing the cone
+#: outright was tried and left a flat disc showing, which is the thing the cone
+#: exists to remove.
+_PUNCH_THROUGH_EMBEDDING = 0.5
 
 
 def _seat_solid(face, into, length, radius):
@@ -307,7 +306,8 @@ def _cap_exposure(blob, face, into, length, radius, skin: float = 0.2) -> float:
     return float(max(0.0, min(1.0, 1.0 - have / want)))
 
 
-def _close_the_back(blob, face, into, depth, radius, cp: ConnectionParams):
+def _close_the_back(blob, face, into, depth, radius, cp: ConnectionParams,
+                    min_mult: float = 1.0, buried: float = 0.0):
     """``(length multiplier, needs a cone)`` for one side of a joint.
 
     Two remedies in the order they should be tried, and only when the back is
@@ -319,10 +319,16 @@ def _close_the_back(blob, face, into, depth, radius, cp: ConnectionParams):
        a surface that falls away is often enough to reach material again.  The
        shortest length that closes is taken, so a joint never grows more than it
        must, and the search is bounded by ``socket_extend_max``.
-    2. **Cone the back.**  Where no length within that budget reaches anything,
-       there is nothing to close onto and a longer socket would only be a longer
-       floating cylinder.  The flat disc is replaced by a truncated cone instead
-       — see :func:`_collar_solid`.
+    2. **Pull the walls back in.**  An exposed cap on a collar that is otherwise
+       well buried is the opposite problem: the socket came out the *far* side of
+       a part thinner than itself, and lengthening drives it further out.  The
+       search only ever grew, which is why a socket on a thin part punched
+       through and then had a cone stacked on the spike.  Bounded by
+       ``min_mult`` — the caller knows how short the collar may be and still
+       hold its bore.
+    3. **Cone the back.**  Where no length in either direction reaches anything,
+       there is nothing to close onto.  The flat disc is replaced by a truncated
+       cone instead — see :func:`_collar_solid`.
 
     Each probe is one boolean against the small local solid, not the chain, so
     the whole search costs a handful of cheap intersections.
@@ -330,11 +336,34 @@ def _close_the_back(blob, face, into, depth, radius, cp: ConnectionParams):
     limit = max(0.0, float(cp.socket_cap_exposed_max))
     if _cap_exposure(blob, face, into, depth, radius) <= limit:
         return 1.0, False
-    for mult in (1.25, 1.5, 1.75, 2.0):
-        if mult - 1.0 > cp.socket_extend_max + 1e-9:
-            break
-        if _cap_exposure(blob, face, into, depth * mult, radius) <= limit:
-            return mult, False
+
+    def _longer():
+        for mult in (1.25, 1.5, 1.75, 2.0):
+            if mult - 1.0 > cp.socket_extend_max + 1e-9:
+                return None
+            if _cap_exposure(blob, face, into, depth * mult, radius) <= limit:
+                return mult
+        return None
+
+    def _shorter():
+        for mult in (0.9, 0.8, 0.7, 0.6, 0.5):
+            if mult < min_mult - 1e-9:
+                return None
+            if _cap_exposure(blob, face, into, depth * mult, radius) <= limit:
+                return mult
+        return None
+
+    # Order matters, and burial is what decides it. A well-buried collar with an
+    # exposed cap has come out the far side of something thin, and driving it
+    # further out is the opposite of a remedy — worse, a longer probe can find
+    # an unrelated piece of the same chain across the void and report the cap
+    # closed. Both are still tried; only the order changes.
+    first, second = ((_shorter, _longer) if buried >= _PUNCH_THROUGH_EMBEDDING
+                     else (_longer, _shorter))
+    for attempt in (first, second):
+        found = attempt()
+        if found is not None:
+            return found, False
     return 1.0, bool(cp.socket_back_taper)
 
 
@@ -543,7 +572,48 @@ def _path_census(pa, pb, center, axis, radius, length):
     return blocked, seated
 
 
-def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams):
+def _patch_normal(patch, center, radius: float, seed_axis):
+    """Interface normal from a plane fit to the *local* contact patch, or ``None``.
+
+    The radius bound is the whole trick, and it is why this is not the
+    mating-plane refinement that was tried and reverted.  That one fitted the
+    whole contact cloud: on a protein wrapped around a duplex it came out **32
+    degrees** from the true local normal, because averaging around a curve is
+    not averaging along a face.  Restricted to the patch the socket actually
+    covers -- twice its radius, never more -- the same estimator measured
+    **1.2-3.0 degrees** on that identical wrapped interface, because a wrapped
+    surface *is* locally flat at that scale.  So the bound is not a tuning knob;
+    widening it reintroduces the failure it exists to avoid.
+
+    The planarity test here is only "is this a sheet at all", not
+    "is this flat rather than wrapped" -- that second question was measured to
+    be unanswerable (a rough flat patch and a 140-degree wrap both score ~0.67
+    on any thin/mid ratio), and this does not need to answer it.
+
+    Offered as a candidate and never snapped to: it still has to win the census
+    and the embedding contest like every other axis, so a normal that cannot
+    actually be assembled along loses.
+    """
+    if patch is None or len(patch) < 6:
+        return None
+    pts = np.asarray(patch, float)
+    local = pts[np.linalg.norm(pts - center, axis=1) <= radius]
+    if len(local) < 6:
+        return None
+    try:
+        _u, s, vh = np.linalg.svd(local - local.mean(axis=0), full_matrices=False)
+    except Exception:
+        return None
+    if s[1] <= 1e-9 or s[2] / s[1] > 0.55:
+        return None                    # a blob, not a sheet — no normal to read
+    normal = np.asarray(vh[2], float)
+    if float(normal @ seed_axis) < 0.0:
+        normal = -normal
+    return _unit(normal)
+
+
+def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams,
+                  socket_r: float = None):
     """Candidate joint axes for one seat, as ``(label, unit vector)``.
 
     Three hypotheses, because no single construction survives every interface:
@@ -556,11 +626,20 @@ def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams):
     * ``mass-flat`` — the mass line with the contact strip's long direction
       projected out.  This is the rod fix: it removes the one component the
       centroid is unreliable in, and keeps the component across the interface.
+    * ``normal`` — the normal of a plane fitted to the contact patch within
+      twice the socket radius.  The only one of the four that reads the
+      *interface* rather than inferring it from where mass or vertices happen to
+      be, and the most accurate where it applies (see :func:`_patch_normal`).
+      Absent when the local patch is not a sheet.
 
     They are not ranked here — the caller measures each against the actual
     geometry and picks whichever can really be assembled.
     """
     opts = [("contact", seat.axis)]
+    if socket_r is not None and socket_r > 0.0:
+        normal = _patch_normal(seat.patch, seat.center, 2.0 * socket_r, seat.axis)
+        if normal is not None:
+            opts.append(("normal", normal))
     if cen_a is None or cen_b is None:
         return opts
 
@@ -578,11 +657,17 @@ def _axis_options(seat: Seat, cen_a, cen_b, cp: ConnectionParams):
     return opts
 
 
-#: Tie-break between candidate axes that the path test cannot separate.  Tiny
-#: next to the blocked/seated point counts, so it only decides genuine ties —
-#: but it decides them toward the axes that know where the material is, which is
-#: what fixes the merely *tilted* (as opposed to 90°-wrong) magnets.
-_AXIS_PREFERENCE = {"mass-flat": 0.6, "mass": 0.3, "contact": 0.0}
+#: Nudge toward the axes that know where the material is, on the same 0-100
+#: scale as the normalised census below.
+#:
+#: These used to be 0.0-0.6 against a census spanning *hundreds*, which made
+#: them three orders of magnitude too small to do anything but break exact ties
+#: — and exact ties between point counts do not occur.  The docstring said
+#: tie-break and meant it; the effect was zero.
+_AXIS_PREFERENCE = {"normal": 6.0, "mass-flat": 4.0, "mass": 3.0, "contact": 0.0}
+#: (The census term runs 0-100 for a clean candidate but has no floor — a fully
+#: obstructed one reaches -600 at the default blocked weight — so these are a
+#: nudge against the top of the range, not against its whole span.)
 
 #: How *clean* the joint axis from each source is, for seat ranking (not axis
 #: selection).  An overlap lobe's thin axis and the local mass line are true
@@ -591,7 +676,12 @@ _AXIS_PREFERENCE = {"mass-flat": 0.6, "mass": 0.3, "contact": 0.0}
 #: ``contact`` line is the noisy fallback and a seat that can only reach its axis
 #: that way is the one that ends up looking tilted.  Scaled by
 #: ``axis_quality_weight`` so a nearby seat with a better-founded normal can win.
-_AXIS_QUALITY = {"overlap": 1.0, "mass": 0.9, "mass-flat": 0.7, "contact": 0.3}
+#: Deliberately *not* above ``mass``: the normal already earns its keep in the
+#: axis contest through _AXIS_PREFERENCE, and stacking a seat-ranking bonus on
+#: top of that would systematically promote seats on flat interfaces twice over
+#: for one property.
+_AXIS_QUALITY = {"overlap": 1.0, "normal": 0.9, "mass": 0.9, "mass-flat": 0.7,
+                 "contact": 0.3}
 
 
 def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
@@ -617,13 +707,37 @@ def _choose_axis(seat: Seat, cen_a, cen_b, pa, pb, cp: ConnectionParams,
     joint wins.  With ``blob_a``/``blob_b`` omitted this term is simply absent and
     the behaviour is the older census-only one.
     """
-    best = None
-    for label, axis in _axis_options(seat, cen_a, cen_b, cp):
+    # Census first, for every candidate, so they can share one denominator.
+    #
+    # The division alone reorders nothing — a positive scalar shared by every
+    # candidate cannot — and it is not meant to. What it does is put the census
+    # in fixed units so the *other* two terms can be given weights that mean
+    # something. Before, the census was a raw count whose spread between
+    # candidates grew with the sample (measured on one fixture at 300 / 3,000 /
+    # 10,000 probe points: 66 / 529 / 2,141) while the embedding term was
+    # bounded by ``axis_embedding_weight`` however fine the mesh — so the term
+    # added specifically to stop magnets tilting was worth 1-5% of the decision
+    # and got less relevant the better the model. On a 0-100 census it is worth
+    # a stated fraction of it, at any mesh density. The behaviour change comes
+    # from that, and from _AXIS_PREFERENCE being rescaled to match.
+    surveyed = []
+    for label, axis in _axis_options(seat, cen_a, cen_b, cp, socket_r):
+
         agreement = float(np.dot(axis, seat.axis))
         if label != "contact" and agreement < cp.axis_agreement_min:
             continue
         blocked, seated = _path_census(pa, pb, seat.center, axis, radius, length)
-        score = seated - cp.axis_blocked_weight * blocked + _AXIS_PREFERENCE[label]
+        surveyed.append((label, axis, agreement, blocked, seated))
+    # Denominator from ``seated`` alone. Including ``blocked`` would let one
+    # hopeless candidate — heavily obstructed, so a large blocked count — inflate
+    # ref and compress every good candidate's census term against the fixed
+    # preference and embedding terms.
+    ref = max((s for _l, _a, _g, _b, s in surveyed), default=0) or 1
+
+    best = None
+    for label, axis, agreement, blocked, seated in surveyed:
+        score = ((seated - cp.axis_blocked_weight * blocked) * 100.0 / ref
+                 + _AXIS_PREFERENCE[label])
         if socket_r is not None and cp.axis_embedding_weight > 0.0:
             buried = min(_embedding(blob_a, seat.center, -axis, socket_r, length),
                          _embedding(blob_b, seat.center, axis, socket_r, length))
@@ -1041,7 +1155,7 @@ def _score_seats(seats: List[Seat], man_a, man_b, pa, pb, cp: ConnectionParams,
 
 
 def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
-                        cp: ConnectionParams) -> None:
+                        cp: ConnectionParams, min_mult: float = 1.0) -> None:
     """Work out ``extend_*`` / ``taper_*`` for a seat that is about to be built.
 
     Deferred out of :func:`_score_seats` on purpose.  None of these four values
@@ -1062,9 +1176,11 @@ def _resolve_back_faces(seat: Seat, need_depth: float, socket_r: float,
     if seat.emb_a is None or seat.emb_b is None:
         return                        # nothing to measure; keep the defaults
     seat.extend_a, seat.taper_a = _close_the_back(
-        seat.emb_a, seat.center, -seat.axis, need_depth, socket_r, cp)
+        seat.emb_a, seat.center, -seat.axis, need_depth, socket_r, cp, min_mult,
+        seat.embedding)
     seat.extend_b, seat.taper_b = _close_the_back(
-        seat.emb_b, seat.center, seat.axis, need_depth, socket_r, cp)
+        seat.emb_b, seat.center, seat.axis, need_depth, socket_r, cp, min_mult,
+        seat.embedding)
 
 
 def _joint_seats(mesh_a, mesh_b, man_a, man_b, count: int,
@@ -1135,17 +1251,25 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
     cone = {i: seat.taper_a, j: seat.taper_b}
     top_ratio = float(np.sqrt(cap_limit)) if cap_limit > 0.0 else 0.0
     # A 45° cone is the natural shape and needs no arbitrary constant — its
-    # height is just how far the radius has to come in.  Held inside the same
-    # extension budget the lengthening step was allowed, so the socket cannot
-    # reach further than it was ever permitted to.
+    # height is just how far the radius has to come in.
     nose_height = (min(socket_r * (1.0 - top_ratio), embed * extend_max)
                    if top_ratio > 0.0 else 0.0)
+    # How short the *cylindrical* part may be and still have a wall behind the
+    # magnet, for the containment case below.
+    min_body = (float(pocket["depth"]) + 0.6) if pocket else embed * 0.5
 
     for grow in (1.0, 1.6, 2.4):
         # -1 drives into part A (the axis points A→B), +1 into part B.
         halves, ok = {}, True
         for idx, sign in ((i, -1.0), (j, +1.0)):
-            length = embed * grow * reach[idx]
+            # ``grow`` escalates a collar that would not commit. A side whose
+            # reach was pulled *in* is not asking to be escalated -- it was
+            # shortened because there is nothing further out to reach -- and
+            # multiplying the two drove it back out past where it started: a
+            # side pulled to 0.8 came back at grow 1.6 as 1.28x, 28% longer than
+            # if the shortening had never happened.
+            length = embed * (grow * reach[idx] if reach[idx] >= 1.0
+                              else reach[idx])
             man = mans[idx]
             into = seat.axis * sign
             # 1. Clear this part's material out of the other's approach path.
@@ -1165,26 +1289,51 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 break
             man = cleared
             if socket_on:
-                # Cone the back only where the search could not close it, and
+                # Cone the back wherever the search could not close it, and
                 # never at the cost of the joint: if the coned socket will not
                 # commit, the plain one is tried before the seat is abandoned, so
                 # the worst case is exactly the old geometry.
-                # Never cone a collar that is already buried.  Full cap
-                # exposure has two quite different causes: the surface fell away
-                # under the socket (cone it), or the socket went clean through a
-                # part thinner than itself (coning makes it worse).  Measured on
-                # a 3 mm part with a 3.7 mm collar: 28 mm3 of material already
-                # stood past the back face, and the taper took that to 76 mm3 —
-                # 2.8 mm of extra nose out the back — while embedding read 0.81,
-                # so nothing warned.
-                nose = (top_ratio if (cone[idx]
-                                      and seat.embedding < _TAPER_MAX_EMBEDDING)
-                        else 0.0)
+                #
+                # The cone is fitted *within* ``length`` rather than stacked on
+                # the end of it, so the collar's overall reach is unchanged and
+                # a coned socket can never stick out further than a plain one.
+                # Stacking is what made a punched-through socket worse: measured
+                # on a 3 mm part with a 3.7 mm collar, 28 mm3 already stood past
+                # the back face and the taper took that to 76 mm3, 2.8 mm of
+                # extra nose. Contained, the tip lands exactly where the flat cap
+                # would have been — same envelope, no flat disc. The trade is a
+                # slightly shorter full-radius body, floored at ``min_body``.
+                nose = top_ratio if cone[idx] else 0.0
                 grown = None
                 if nose > 0.0:
-                    grown = _commit(man, _collar_solid(seat.center, into, length,
-                                                       socket_r, nose, nose_height),
-                                    add=True)
+                    # Two different situations produce an exposed back cap, and
+                    # they want opposite treatment.
+                    #
+                    # The surface fell away under the socket: there is nothing
+                    # behind the cap but air, so the cone is stacked on the end
+                    # exactly as it always was — full 45 degrees, full wall
+                    # behind the bore, and the taper simply replaces a flat disc
+                    # that was hanging in space anyway.
+                    #
+                    # The collar came out the far side of a part thinner than
+                    # itself: stacking then adds a visible spike on the back of
+                    # the model. Measured on a 3 mm part with a 3.7 mm collar,
+                    # 28 mm3 already stood past the back face and the taper took
+                    # it to 76 mm3. There the cone is fitted *inside* the
+                    # collar's own length instead, so the tip lands where the
+                    # flat cap would have been and the envelope is unchanged.
+                    # Blunter, because there is only so much room in front of
+                    # the bore — but a blunt taper beats a flat disc, and it
+                    # beats a spike.
+                    body, nose_h = length, nose_height
+                    if seat.embedding >= _PUNCH_THROUGH_EMBEDDING:
+                        nose_h = max(0.0, min(nose_height, length - min_body))
+                        body = length - nose_h
+                    if nose_h > 1e-6:
+                        grown = _commit(
+                            man, _collar_solid(seat.center, into, body,
+                                               socket_r, nose, nose_h),
+                            add=True)
                 if grown is None:
                     grown = _commit(man, _seat_solid(seat.center, into, length,
                                                      socket_r), add=True)
@@ -1302,7 +1451,9 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
             reasons.append(f"gap {seat.gap:.1f} mm ≥ 2×thickness {2*t:.1f} mm "
                            f"(turn the socket on to bridge it)")
             continue
-        _resolve_back_faces(seat, embed, socket_r, cp)
+        # How short the collar may go and still have a wall behind the bore.
+        _resolve_back_faces(seat, embed, socket_r, cp,
+                            min_mult=min(1.0, (depth + 0.6) / max(embed, 1e-6)))
         ok, why = _build_seat(mans, i, j, seat, socket_r, embed, pocket,
                               cp.socket, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max)
@@ -1343,7 +1494,11 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     placed, reasons = 0, []
     for seat in seats:
         # The peg must span the gap as well as bite into both bodies.
-        _resolve_back_faces(seat, r * 2.0, r, cp)
+        # Measured at the depth _build_seat will actually use, not the one
+        # _joint_seats scored at: the multiplier is applied to this, so
+        # verifying it against anything else under-delivers the correction.
+        # A pin has no bore to protect, so it may pull back further.
+        _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
         ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
                               None, True, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max)
@@ -1354,9 +1509,10 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
     return _joint_note(placed, len(seats), reasons, "bridge", seats)
 
 
-#: Axis labels worth surfacing in the UI.  "mass" is the expected case, so it is
-#: left unsaid; the other two mean a fallback fired and are worth knowing about
-#: if a magnet still looks wrong.
+#: Axis labels worth surfacing in the UI.  "mass" is the expected case and
+#: "normal" is the best-founded one there is, so both are left unsaid; the other
+#: two mean a fallback fired and are worth knowing about if a magnet still looks
+#: wrong.
 _AXIS_NOTE = {
     "contact": "axis from contact line",
     "mass-flat": "axis flattened along contact strip",

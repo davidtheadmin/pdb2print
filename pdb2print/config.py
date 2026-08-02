@@ -423,6 +423,13 @@ class ConnectionParams:
     #: to decide between two otherwise similar tilts, far too little to override
     #: the blocked penalty (6 per point), so an axis that cannot be assembled
     #: still loses.  Set to 0 to score orientation the old way.
+    #: Now read against a census normalised to 0-100 rather than a raw point
+    #: count, so 25 means a fully buried joint is worth a quarter of a clean
+    #: candidate's whole census — enough to decide between two assemblable
+    #: tilts, not enough to rescue an axis that is genuinely obstructed. The
+    #: point of the normalisation is that this ratio no longer depends on how
+    #: finely the model happens to be meshed; the same 25 used to be 1-5% of
+    #: the decision on a fine mesh and much more on a coarse one.
     axis_embedding_weight: float = 25.0
     #: How strongly a seat is penalised for sitting on the *rim* of an interface
     #: rather than in its interior.  Measured as the lateral lopsidedness of the
