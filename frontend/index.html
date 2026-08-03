@@ -725,7 +725,12 @@
     100% { box-shadow: 0 0 0 0 transparent; }
   }
 
-  .stand-group { position: absolute; top: 14px; right: 14px; z-index: 2; }
+  /* Stacked, so a second viewer button lands under the first rather than
+     beside it — the viewer is wide but its top-right corner is not. */
+  .stand-group {
+    position: absolute; top: 14px; right: 14px; z-index: 2;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  }
   .stand-btn {
     display: inline-flex; align-items: center; gap: 8px;
     background: var(--glass); backdrop-filter: blur(6px);
@@ -744,6 +749,24 @@
     transform: translateY(-1px);
   }
   .stand-btn[hidden] { display: none; }
+  /* Same button, lower voice. Both are on the model at once and only one of
+     them is what the page is for. */
+  .stand-btn.subtle {
+    border-color: var(--border-2); color: var(--text2);
+    padding: 8px 12px; font-size: 12px;
+  }
+  .stand-btn.subtle:hover { border-color: var(--accent); }
+  .stand-btn.on {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
+  }
+  .stand-badge {
+    min-width: 16px; padding: 0 4px; border-radius: 999px;
+    background: var(--sunken); color: var(--muted);
+    font: 600 10px/16px inherit; font-family: inherit; text-align: center;
+  }
+  .stand-btn.on .stand-badge,
+  .stand-btn.subtle:hover .stand-badge { background: rgba(255,255,255,.22); color: inherit; }
+  .stand-badge:empty { display: none; }
 
   .stand-sheet {
     position: absolute; z-index: 5; width: 292px; top: 62px; right: 14px;
@@ -781,9 +804,11 @@
     border-radius: var(--r3); overflow: hidden; box-shadow: var(--shadow-1);
   }
   .stand-panel[hidden] { display: none; }
-  body.stand-open .split { grid-template-columns: 400px 1fr 372px; }
+  body.stand-open .split,
+  body.joints-open .split { grid-template-columns: 400px 1fr 372px; }
   @media (max-width: 1400px) {
-    body.stand-open .split { grid-template-columns: 340px 1fr 360px; }
+    body.stand-open .split,
+    body.joints-open .split { grid-template-columns: 340px 1fr 360px; }
   }
   /* One stage is open at a time, so the column never needs to be tall.
      On a narrow window it gives up width before it gives up the viewer. */
@@ -1587,15 +1612,10 @@
               </div>
             </div>
 
-            <!-- The joints the last build made, one row each, with a veto.
-                 Appears after a build and not before, the way the stand panel
-                 does: there is nothing to list until something has been built.
-                 Rows are addressed by built index, never by chain id — a
-                 homodimer gives two rows sharing one id. -->
-            <div class="field" id="joints-panel" hidden>
-              <p class="field-label" title="Default is whatever the setting above does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. A change here applies on the next Generate.">Joints</p>
-              <div id="joint-list"></div>
-            </div>
+            <!-- The joints the last build made are not here: they are a list
+                 about the model on screen, not a setting you arrive at by
+                 reading down the form, so they live in their own panel beside
+                 the viewer. See #joints-panel. -->
 
             <!-- The legacy controls. Kept in the DOM because collectForm and
                  updateConnOpts read them by id and by data-group, and a rewrite
@@ -1679,6 +1699,15 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M7 21v-7"/><path d="M17 21v-7"/><path d="M5 14h14"/><circle cx="12" cy="7" r="4"/></svg>
             <span>Create display stand</span>
           </button>
+          <!-- Second, and quieter: a stand is the thing most people came for,
+               and this is a list you only open when something about the joints
+               is wrong. -->
+          <button id="joints-btn" class="stand-btn subtle" type="button" hidden
+                  title="The joints this build made, and a veto on any of them">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg>
+            <span>Joints</span>
+            <span class="stand-badge" id="joints-count"></span>
+          </button>
         </div>
         <div id="stand-sheet" class="stand-sheet" hidden>
           <h4>Display stand</h4>
@@ -1724,6 +1753,24 @@
       </div>
       <pre id="report" class="report">No model built yet.</pre>
     </section>
+
+    <!-- ============ JOINTS (right, shares the column with the stand) ========
+         The two panels take the same slot and only one is ever open: they are
+         both about the model on screen and side by side there would be no
+         viewer left to look at. -->
+    <aside id="joints-panel" class="stand-panel" hidden>
+      <div class="sp-head">
+        <div>
+          <h4 title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. A change applies on the next Generate.">Joints</h4>
+          <p class="sp-sub" id="joints-sub"></p>
+        </div>
+        <button id="joints-close" class="sp-close" type="button" title="Close" aria-label="Close">&times;</button>
+      </div>
+      <div class="sp-body">
+        <div id="joint-list"></div>
+        <p class="sp-note" id="joints-pending" hidden></p>
+      </div>
+    </aside>
 
     <!-- ============ DISPLAY STAND (right, only while one is being set up) ==== -->
     <aside id="stand-panel" class="stand-panel" hidden>
@@ -2705,16 +2752,67 @@
   const jointOverrides = new Map();       // "ai,bi" -> "none" | "join"
   let jointRowCount = 0;
 
-  // The panel is hidden until there is a build to list, and hidden again while
+  // The button appears once there is a build to list, and goes again while
   // Inflate is selected: that mode skips the fit pass for the whole model, so a
   // veto would do nothing at all. The vetoes themselves are kept, so switching
-  // back does not lose them.
-  function syncJointsPanel() {
-    const panel = $('#joints-panel');
-    if (!panel) return;
+  // away and back does not lose them — and the panel closes with the button, or
+  // it would be left open over a list that no longer applies.
+  function jointsAvailable() {
     const inflating = groups.assembly() === 'one_piece'
       && groups.no_magnet_method() === 'inflate';
-    panel.hidden = !jointRowCount || inflating;
+    return jointRowCount > 0 && !inflating;
+  }
+
+  function syncJointsPanel() {
+    const btn = $('#joints-btn');
+    if (!btn) return;
+    const can = jointsAvailable();
+    btn.hidden = !can;
+    if (!can && !$('#joints-panel').hidden) showJoints(false);
+    const pending = countPendingJoints();
+    $('#joints-count').textContent = pending ? String(pending) : '';
+    btn.classList.toggle('on', !$('#joints-panel').hidden);
+
+    const sub = $('#joints-sub');
+    if (sub) sub.textContent = jointRowCount
+      ? `${jointRowCount} in this build` : '';
+    // The Generate button is on the far side of the window from this panel, so
+    // the one thing worth saying here is where the change is applied.
+    const note = $('#joints-pending');
+    if (note) {
+      note.hidden = !pending;
+      note.textContent = pending === 1
+        ? '1 change applies on the next Generate.'
+        : `${pending} changes apply on the next Generate.`;
+    }
+  }
+
+  function countPendingJoints() {
+    return $$('#joint-list .joint-row.pending').length;
+  }
+
+  // Only one panel at a time: both are about the model on screen and side by
+  // side there would be no viewer left to look at. Opening this one closes the
+  // stand outright — camera handed back, roll to zero, nothing left aimed at a
+  // viewer that is about to show something else.
+  function showJoints(on) {
+    const panel = $('#joints-panel');
+    if (!panel) return;
+    if (on && !jointsAvailable()) return;
+    if (on) showStandSheet(false);
+    panel.hidden = !on;
+    document.body.classList.toggle('joints-open', on);
+    const btn = $('#joints-btn');
+    if (btn) btn.classList.toggle('on', on);
+  }
+
+  function closeJointsUI() {
+    const panel = $('#joints-panel');
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    document.body.classList.remove('joints-open');
+    const btn = $('#joints-btn');
+    if (btn) btn.classList.remove('on');
   }
 
   // What the last build actually gave this pair, in three words.  The full
@@ -2735,6 +2833,12 @@
   function renderJoints(conns) {
     const box = $('#joint-list');
     if (!box) return;
+    // A failed build sends no connections key at all, which is not the same as
+    // a build that made no joints. Rebuilding the list from it would drop every
+    // veto the user had set, and losing them to a mistyped PDB ID is a bad
+    // trade for a control whose whole point is to survive until the next
+    // Generate. An empty array is a real answer and is handled below.
+    if (!Array.isArray(conns)) return;
     // Base pairs are a whole-duplex feature with its own switch, and inflate is
     // a whole-build mode that skips the fit pass entirely — an override would
     // do nothing in either, and a control that does nothing is worse than no
@@ -2752,8 +2856,7 @@
 
     box.textContent = '';
     jointRowCount = rows.length;
-    syncJointsPanel();
-    if (!rows.length) return;
+    if (!rows.length) { syncJointsPanel(); return; }
 
     rows.forEach(c => {
       const key = c.ai + ',' + c.bi;
@@ -2795,6 +2898,8 @@
       box.appendChild(row);
       paintJoint(row);
     });
+    // After the rows, not before: the button's count is read off them.
+    syncJointsPanel();
   }
 
   // One row's control and its status line, from the veto currently held.
@@ -2819,7 +2924,13 @@
     if (v) jointOverrides.set(row.dataset.joint, v);
     else jointOverrides.delete(row.dataset.joint);
     paintJoint(row);
+    syncJointsPanel();          // the count on the button, and the note below
   });
+
+  $('#joints-btn').addEventListener('click', () => {
+    showJoints($('#joints-panel').hidden);
+  });
+  $('#joints-close').addEventListener('click', () => showJoints(false));
 
   // One line per vetoed pair, and nothing for the rest: absent means "follow
   // the global setting", which is what the server reads it as.
@@ -4763,6 +4874,7 @@
     standSheet.hidden = on;
     standPanel.hidden = !on;
     document.body.classList.toggle('stand-open', on);
+    if (on) closeJointsUI();
     if (on) {
       prefillTitle();
       // The sketch photographs the viewer's canvas, so the element has to be
@@ -4786,6 +4898,7 @@
       applyRoll(0);
       return;
     }
+    closeJointsUI();           // one panel at a time, in both directions
     setStandLocked(false);
     standSheet.hidden = false;
     restorePlainModel();
@@ -5151,7 +5264,7 @@
     // Harvest. A control that is itself a button becomes its own target;
     // anything else gets a small marker appended, so the affordance only
     // exists where there is something to say.
-    [$('.settings'), $('#stand-panel')].filter(Boolean).forEach(root => {
+    [$('.settings'), $('#stand-panel'), $('#joints-panel')].filter(Boolean).forEach(root => {
       $$('[title]', root).forEach(el => {
         if (el.id === 'upload-btn' || el.classList.contains('icon-btn')
             || el.classList.contains('support-btn')) return;

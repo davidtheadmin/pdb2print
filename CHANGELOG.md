@@ -14,12 +14,14 @@ the one exception — see below.
 
 ### Added
 
-- **Per-pair joint overrides.** After a build, the Assembly group lists the
-  joints it made and each one can be set to Default, None or Join. None leaves
-  that pair carved apart with nothing joining it. Join leaves the pair fused:
-  its overlap is kept out of the carve, so the two parts stay welded without any
-  new geometry. A pair with no override follows the global setting. Changing one
-  applies on the next Generate.
+- **Per-pair joint overrides.** After a build, a Joints button appears under
+  Create display stand and opens a panel listing the joints the build made. Each
+  one is set to Default, None or Join. None leaves that pair carved apart with
+  nothing joining it. Join leaves the pair fused: its overlap is kept out of the
+  carve, so the two parts stay welded without any new geometry. A pair with no
+  override follows the Assembly setting. Changing one applies on the next
+  Generate; nothing is rebuilt on a click. The joints panel and the stand panel
+  share the right-hand column, and opening one closes the other.
 - **Zero magnets per interface is a real answer.** Setting either count to zero
   now vetoes every interface of that kind instead of silently placing one.
 - **A joint reports how many connectors went in.** `count` was left at its
