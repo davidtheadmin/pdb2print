@@ -6,6 +6,63 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
+## [1.2.0] — 2026-08-03
+
+Mesh-affecting: cartoon arrowheads, column tops and the plaque layout all
+changed shape, so `CACHE_VERSION` goes 4 → 5 and every earlier entry is
+unreachable.
+
+### Fixed
+
+- **Columns no longer bore a tunnel through themselves.** The seat was a plain
+  boolean difference against the model, which left whatever the column had above
+  the cut still standing — a hole through the shaft with a lid on it, worst
+  against tube and cartoon models, and the lid is something the model cannot be
+  lowered past. The tool is now swept upward and that is cut too, so a column
+  stops where the model starts and never resumes above it. The exact difference
+  is still applied, so the seat is still the model's own surface.
+- **The tube leaving a sheet arrow is the same thickness as every other tube.**
+  The arrowhead override ran across the whole of a strand's last segment rather
+  than ending at the point, so the section sat frozen at the tip and then jumped
+  to the coil tube in one step. It tapers into it now, like every other
+  secondary-structure boundary.
+- **Emptying a chain-legend box removes that row.** It used to put the header's
+  own name back, which meant there was no way to leave a chain off. The rows
+  below move up; the box stays, so the name can be typed back in.
+- **Probe radius and Surface padding no longer appear under a cartoon.** They
+  showed whenever *either* molecule was set to Surface but lived permanently in
+  the protein's drawer. They now move to whichever card is asking for a surface.
+- **The white tile stays on the plate.** At a large corner radius the lettering
+  is moved inboard and the plate widened to pay for it, rather than the tile
+  being cut off at the round.
+- **Rounded corners are round.** The corner arcs took a fixed segment count, so
+  the larger the radius the coarser it looked; the count now follows the radius.
+
+### Added
+
+- **Columns are nudged off splinters.** After a column is sited, its top is
+  checked in plan for pieces too small to print and the column is walked up to
+  2.5 mm to a position without them, keeping at least 60% of its contact.
+
+### Changed
+
+- **The stand panel is three panels** — Style (columns and plate), Plaque, and
+  Advanced, which is a panel now rather than a drawer inside one. Margin round
+  the model moved into Advanced; the tilt and the chain-name boxes moved into
+  the Plaque body.
+- **The Obelisk column style was withdrawn.** An incoming `taper` is served a
+  square column rather than an error.
+- **Thinnest printable stroke is no longer a control**, fixed at 0.45 mm.
+- **Presets:** Museum is fluted with a flared foot, Classical a plain round
+  column, and neither tilts the plaque any more.
+- **Printability** puts Assembly before Size, with grid spacing behind Advanced.
+- **Magnets is a switch**, and everything it governs sits inside it. There is no
+  longer a segmented control whose off position is a button labelled Nothing.
+- **The panels say a great deal less.** Around twenty blocks of explanatory text
+  came out of the two panels; what was worth keeping is behind the help markers
+  that were already there, and the rest was describing controls that describe
+  themselves.
+
 ## [1.1.0] — 2026-07-30
 
 ### Added

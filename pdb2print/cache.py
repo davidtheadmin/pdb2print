@@ -89,7 +89,13 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 #: the back-taper gate -- so a v3 entry is last round's magnets. Bumped in the
 #: same commit as the geometry, because /cache/* is now served immutable and a
 #: browser holding a stale entry has no way to find out otherwise.
-CACHE_VERSION = 4
+#: 5: the cartoon's arrowheads and the stand's columns both changed shape. A
+#: strand's last segment used to hold the arrow's section and then jump to the
+#: coil tube; it tapers now. A column used to be a plain difference against the
+#: model, which left material standing above anything it cut; it is a
+#: downward-only cut now, and the column is nudged off any splinter the cut
+#: would leave on its top. Same parameters, different mesh, in both cases.
+CACHE_VERSION = 5
 
 #: Artefact kinds an entry must hold to count as complete.  A half-written entry
 #: (a crash mid-export, a killed container) must never be served, so lookup

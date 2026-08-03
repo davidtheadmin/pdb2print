@@ -27,4 +27,4 @@ __all__ = ["config", "io", "chains", "geometry", "meshops", "export"]
 #: The minor version is the one to watch: the exported mesh is only comparable
 #: within a release line, because the geometry depends on the pinned
 #: ``manifold3d``.  A version that changes the mesh invalidates the disk cache.
-__version__ = "1.1.0"
+__version__ = "1.2.0"
