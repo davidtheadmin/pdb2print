@@ -1420,6 +1420,20 @@ async def generate(
 # --------------------------------------------------------------------------
 # Display stand
 # --------------------------------------------------------------------------
+def _column_shape(raw) -> ColumnShape:
+    """The column style asked for, or ``square`` if it is one we no longer offer.
+
+    ``taper`` — the obelisk — was withdrawn as a style. Old links, cached form
+    state and a browser tab left open over the change can all still send it, and
+    none of those deserve a 500; they get the default instead.
+    """
+    try:
+        shape = ColumnShape(str(raw or "square"))
+    except ValueError:
+        return ColumnShape.SQUARE
+    return ColumnShape.SQUARE if shape == ColumnShape.TAPER else shape
+
+
 def _map_stand(fields: dict) -> StandParams:
     """Build a :class:`StandParams` from the stand form fields."""
     return StandParams(
@@ -1450,9 +1464,12 @@ def _map_stand(fields: dict) -> StandParams:
         plaque_font=PlaqueFont(fields.get("plaque_font", "sans")),
         plaque_info_mm=max(0.0, min(200.0,
                                     float(fields.get("plaque_info_mm", 0) or 0))),
-        plaque_min_stroke_mm=float(fields.get("plaque_min_stroke", 0.45) or 0.45),
+        # Not a control any more. One nozzle plus a little covers every printer
+        # this is aimed at, and a number nobody can check by looking at the
+        # sketch is a number that gets set wrong.
+        plaque_min_stroke_mm=0.45,
         apron_rake_deg=float(fields.get("apron_rake", 0.0) or 0.0),
-        column_shape=ColumnShape(fields.get("column_shape", "square")),
+        column_shape=_column_shape(fields.get("column_shape", "square")),
         column_pins=_bool(fields.get("column_pins", False)),
         pin_diameter_mm=float(fields.get("pin_diameter", 4.0) or 4.0),
         pin_depth_mm=float(fields.get("pin_depth", 3.0) or 3.0),

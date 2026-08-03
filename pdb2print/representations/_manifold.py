@@ -11,11 +11,14 @@ Everything is in print-millimetre space, matching the rest of the pipeline.
 
 from __future__ import annotations
 
+import math
+from typing import Optional
+
 import numpy as np
 import trimesh
 
 import manifold3d as m3d
-from manifold3d import Manifold
+from manifold3d import CrossSection, Manifold
 
 
 # Circular tessellation of tubes/spheres.  Modest on purpose: the union is
@@ -113,6 +116,126 @@ def frustum(a, b, r_a: float, r_b: float, segments: int = _SEGMENTS) -> Manifold
     cyl = Manifold.cylinder(length, r_a, r_b, segments, center=True)
     transform = np.column_stack([_rot_z_to(b - a), 0.5 * (a + b)])
     return cyl.transform(transform.tolist())
+
+
+#: Slab pitch and ceiling for :func:`sweep_up`.  0.25 mm is well under the
+#: thinnest thing a cradle clearance can leave, and 64 slabs cover 16 mm of
+#: sweep at that pitch -- more than a cradle is ever deep.
+_SWEEP_PITCH_MM = 0.25
+_SWEEP_MAX_SLABS = 64
+
+
+def sweep_up(manifold: Manifold, z_top: float,
+             pitch: float = _SWEEP_PITCH_MM) -> Optional[Manifold]:
+    """Everything from ``manifold`` upward, as a solid, capped at ``z_top``.
+
+    The vertical Minkowski sweep of a solid: a point is in the result when the
+    solid occupies anything at or below it in the same vertical line.  Subtract
+    that from a part and no material can survive *above* a place the solid
+    itself would have cut -- which is the difference between a seat and a
+    tunnel with a lid on it.
+
+    Built from horizontal slices rather than as a true sweep, because the
+    kernel has no Minkowski and a union of translated copies costs a boolean
+    per step.  Each slab takes the cross-section at its *floor* and extrudes it
+    to its ceiling, and the cross-sections accumulate going up, so the result
+    only ever grows with height.  Taking the floor's section is what makes this
+    safe to combine with an exact difference: a slab never reaches below the
+    height at which the solid actually starts, so the imprint the plain
+    difference cuts is left alone and only the material above it is removed.
+
+    Returns ``None`` when there is nothing to sweep.
+    """
+    if manifold is None or manifold.is_empty():
+        return None
+    box = manifold.bounding_box()
+    z_lo, z_hi = float(box[2]), min(float(box[5]), float(z_top))
+    if z_top <= z_lo:
+        return None
+    pitch = max(0.05, float(pitch))
+    span = max(0.0, z_hi - z_lo)
+    steps = int(math.ceil(span / pitch)) + 1
+    if steps > _SWEEP_MAX_SLABS:
+        steps = _SWEEP_MAX_SLABS
+        pitch = span / (steps - 1) if steps > 1 else pitch
+
+    acc = None
+    slabs = []
+    for k in range(steps):
+        z = z_lo + k * pitch
+        # The last slab carries the accumulated section the rest of the way to
+        # the cap, so material above the solid's own top still goes.
+        ceiling = float(z_top) if k == steps - 1 else min(z + pitch, float(z_top))
+        try:
+            section = manifold.slice(z)
+        except Exception:
+            section = None
+        if section is not None and not section.is_empty():
+            acc = section if acc is None else acc + section
+            # Contours would otherwise compound with every union; a hundredth of
+            # a millimetre is far below anything a printer resolves.
+            try:
+                acc = acc.simplify(0.01)
+            except Exception:
+                pass
+        if acc is None or acc.is_empty():
+            continue
+        height = ceiling - z
+        if height <= 1e-6:
+            continue
+        slabs.append(acc.extrude(height).translate((0.0, 0.0, z)))
+
+    if not slabs:
+        return None
+    return union(slabs)
+
+
+def cross_section(contour) -> CrossSection:
+    """A 2D region from one closed polygon, given as ``(N, 2)`` points."""
+    return CrossSection([np.asarray(contour, float)])
+
+
+def footprint_below(manifold: Manifold, z_top: float) -> CrossSection:
+    """The XY shadow of everything in ``manifold`` at or below ``z_top``.
+
+    Seen from above, this is exactly what a downward-only cut takes out of a
+    column that reaches ``z_top``: subtract it from the column's own outline and
+    what is left is the flat top face, pieces and all.
+    """
+    if manifold is None or manifold.is_empty():
+        return CrossSection()
+    box = manifold.bounding_box()
+    if box[2] >= z_top:
+        return CrossSection()
+    mid_z = 0.5 * (box[2] - 1.0 + z_top)
+    size = (max(1e-3, box[3] - box[0]) + 2.0,
+            max(1e-3, box[4] - box[1]) + 2.0,
+            max(1e-3, z_top - (box[2] - 1.0)))
+    clip = (Manifold.cube(size, center=True)
+            .translate((0.5 * (box[0] + box[3]), 0.5 * (box[1] + box[4]), mid_z)))
+    part = Manifold.batch_boolean([manifold, clip], m3d.OpType.Intersect)
+    if part.is_empty():
+        return CrossSection()
+    return part.project()
+
+
+def section_pieces(outline: CrossSection, shadow: CrossSection):
+    """Areas of the connected pieces of ``outline`` minus ``shadow``, largest first."""
+    if outline is None or outline.is_empty():
+        return []
+    keep = (outline if shadow is None or shadow.is_empty()
+            else CrossSection.batch_boolean([outline, shadow], m3d.OpType.Subtract))
+    if keep.is_empty():
+        return []
+    return sorted((float(c.area()) for c in keep.decompose()), reverse=True)
+
+
+def section_overlap(a: CrossSection, b: CrossSection) -> float:
+    """Area the two 2D regions have in common."""
+    if a is None or b is None or a.is_empty() or b.is_empty():
+        return 0.0
+    return float(CrossSection.batch_boolean(
+        [a, b], m3d.OpType.Intersect).area())
 
 
 def oriented_box(center, axes, half_extents) -> Manifold:

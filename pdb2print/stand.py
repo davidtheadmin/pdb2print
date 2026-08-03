@@ -91,6 +91,15 @@ _SCALEBAR_STEPS_ANG = (5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000)
 #: the point where this starts to matter.
 _TILE_GAP_MM = 2.5
 
+#: How far back from the plate's edge a white tile is held, in mm.
+#:
+#: The tile is clipped to the plate's rounded plan so a big corner radius cannot
+#: leave white hanging over the round.  Clipping it to the plan exactly would put
+#: two surfaces in the same place and leave the slicer to decide which colour the
+#: outermost extrusion is; a fifth of a millimetre of plate showing all round
+#: reads as a deliberate border and prints as one.
+_TILE_EDGE_MM = 0.2
+
 #: The apron is never shallower than this (mm), so there is always somewhere for
 #: the lettering to go even on a small model.
 _APRON_MIN_MM = 22.0
@@ -729,6 +738,31 @@ def _point_in_triangle(p, a, b, c) -> bool:
 # --------------------------------------------------------------------------
 # Primitive helpers
 # --------------------------------------------------------------------------
+#: Largest gap (mm) allowed between a rounded corner and the true arc.
+#:
+#: The corner cylinders used to take the kernel's default tessellation, which is
+#: a *count* — twenty segments however big the circle is. That is five segments
+#: in a quarter turn, so a 14 mm corner came out as six visible facets: the
+#: bigger the radius, the worse it looked, which is exactly backwards. Chord
+#: error is the thing to hold constant, and at 0.03 mm it is under a layer line.
+_ARC_SAG_MM = 0.03
+
+
+def _arc_segments(radius: float, sag: float = _ARC_SAG_MM) -> int:
+    """Segments for a full circle of ``radius`` held to ``sag`` of chord error.
+
+    Rounded up to a multiple of four so each quarter turn gets the same number
+    and the four corners of a plate are identical.
+    """
+    radius = float(radius)
+    if radius <= sag:
+        return 24
+    theta = 2.0 * math.acos(max(-1.0, min(1.0, 1.0 - sag / radius)))
+    n = int(math.ceil(2.0 * math.pi / max(theta, 1e-6)))
+    n = int(math.ceil(n / 4.0)) * 4
+    return max(24, min(96, n))
+
+
 def _rounded_slab(x0: float, x1: float, y0: float, y1: float,
                   z0: float, z1: float, radius: float):
     """A rounded rectangular slab over the given extents.
@@ -751,12 +785,13 @@ def _rounded_slab(x0: float, x1: float, y0: float, y1: float,
                                [half_x, half_y - radius, height * 0.5]),
     ]
     if radius > 1e-6:
+        segments = _arc_segments(radius)
         for sx in (-1.0, 1.0):
             for sy in (-1.0, 1.0):
                 parts.append(_manifold.frustum(
                     [cx + sx * (half_x - radius), cy + sy * (half_y - radius), z0],
                     [cx + sx * (half_x - radius), cy + sy * (half_y - radius), z1],
-                    radius, radius))
+                    radius, radius, segments))
     return _manifold.union(parts)
 
 
@@ -893,6 +928,146 @@ def _column_solid(x: float, y: float, z0: float, z1: float,
                                         foot, foot))
 
     return _manifold.union(parts) if len(parts) > 1 else parts[0]
+
+
+#: The nudge search: eight directions at three distances, plus staying put.
+#:
+#: Small on purpose. This is a correction to a seat that was already scored and
+#: chosen, not a second placement pass -- far enough to walk a column off a
+#: splinter, not far enough to walk it somewhere the reachability and edge
+#: filters never looked at.
+_NUDGE_DIRS = 8
+_NUDGE_FRACS = (0.30, 0.55, 0.80)
+_NUDGE_MAX_MM = 2.5
+
+#: Fraction of the seat's contact area a nudge has to keep.
+_NUDGE_MIN_CONTACT = 0.6
+
+#: A piece of column top smaller than this is a splinter, in mm².
+#:
+#: About a 1.2 mm circle. Below that there is not room for a perimeter and its
+#: infill, so a slicer draws it as a lone extrusion standing the height of the
+#: cradle -- which arrives on the bed as swarf, or does not arrive at all.
+_ISLAND_MIN_MM2 = 1.2
+
+
+def _carve_tool(model_manifold, px: float, py: float, pz: float, top: float,
+                radius: float, clearance: float):
+    """The clearance-grown model near one column, or ``None`` if none is near.
+
+    Carving against the whole model would be a boolean with a surface mesh of
+    hundreds of thousands of faces, per column, to change a few millimetres at
+    the top of a stick -- the same localisation the interference pass makes, for
+    the same reason. The window only has to cover the column and the distance it
+    might be nudged: material the column cannot reach cannot shape it.
+    """
+    from . import interference
+
+    low, high = pz - 4.0, top + 2.0
+    window = _manifold.oriented_box(
+        [px, py, 0.5 * (low + high)], np.eye(3),
+        [radius * 2.4, radius * 2.4, 0.5 * (high - low)])
+    local = _manifold.intersection(model_manifold, window)
+    if local.is_empty():
+        return None
+    return interference.dilate(local, float(clearance))
+
+
+def _seat_z(model_manifold, x: float, y: float, radius: float,
+            lo: float, hi: float) -> Optional[float]:
+    """Lowest the model gets over a column footprint at ``(x, y)``."""
+    box = _manifold.oriented_box(
+        [x, y, 0.5 * (lo + hi)], np.eye(3),
+        [radius * 0.95, radius * 0.95, 0.5 * (hi - lo)])
+    local = _manifold.intersection(model_manifold, box)
+    if local.is_empty():
+        return None
+    return float(local.bounding_box()[2])
+
+
+def _tune_column(model_manifold, px: float, py: float, pz: float, top: float,
+                 radius: float, stand: StandParams):
+    """Walk one column off any splinters its top would otherwise be left with.
+
+    Seen from above, a downward-only cut leaves the column's flat top as its own
+    outline minus the model's shadow. Where the model clips a corner of the
+    footprint that top comes apart into pieces, and the small ones are splinters
+    -- they carry nothing, they print badly, and the seat is no better for them.
+
+    So the whole test is done in plan, on two polygons: the outline moved to a
+    trial position and the shadow, which does not move. A boolean and a
+    decompose each, which is why two dozen trial positions cost less than one of
+    the 3D booleans further down. The best one wins on splinter count, then on
+    how much splinter there is, then on having moved least -- so staying put
+    wins every tie, and the column only ever moves to escape something.
+
+    Returns ``(x, y, seat_z, top_z)``, unchanged if nothing is worth moving to.
+    """
+    try:
+        tool = _carve_tool(model_manifold, px, py, pz, top, radius,
+                           stand.cradle_clearance_mm)
+        if tool is None:
+            return px, py, pz, top
+        shadow = _manifold.footprint_below(tool, top)
+        if shadow.is_empty():
+            return px, py, pz, top
+
+        shape = stand.column_shape
+        profile = _profile_polygon(shape)
+        # What the shaft measures where it meets the model, per _column_solid.
+        scale = radius * (0.94 if shape == ColumnShape.FLUTED else 1.0)
+
+        def look(nx: float, ny: float):
+            """``(splinter count, splinter area, contact area)`` at a position."""
+            outline = _manifold.cross_section(
+                profile * scale + np.array([nx, ny]))
+            small = [a for a in _manifold.section_pieces(outline, shadow)
+                     if a < _ISLAND_MIN_MM2]
+            return len(small), sum(small), _manifold.section_overlap(outline,
+                                                                     shadow)
+
+        here = look(px, py)
+        if here[0] == 0:
+            return px, py, pz, top
+        # How much of the footprint the model covers now. A nudge that gives up
+        # most of that is not a nudge, it is a column standing next to the thing
+        # it was meant to hold.
+        contact_floor = here[2] * _NUDGE_MIN_CONTACT
+
+        best = (here[0], here[1], 0.0), px, py
+        for frac in _NUDGE_FRACS:
+            step = min(_NUDGE_MAX_MM, radius * frac)
+            if step < 0.15:
+                continue
+            for k in range(_NUDGE_DIRS):
+                angle = 2.0 * math.pi * k / _NUDGE_DIRS
+                nx = px + step * math.cos(angle)
+                ny = py + step * math.sin(angle)
+                count, area, contact = look(nx, ny)
+                if contact < contact_floor:
+                    continue
+                if (count, area, step) < best[0]:
+                    best = (count, area, step), nx, ny
+
+        nx, ny = best[1], best[2]
+        if nx == px and ny == py:
+            return px, py, pz, top
+
+        # Re-seat it. Measured the same way at both positions and applied as a
+        # difference, so whatever convention put the original seat where it is
+        # survives the move.
+        was = _seat_z(model_manifold, px, py, radius, pz - 6.0, top + 6.0)
+        now = _seat_z(model_manifold, nx, ny, radius, pz - 6.0, top + 6.0)
+        if was is None or now is None:
+            return px, py, pz, top
+        shift = now - was
+        if abs(shift) > float(stand.cradle_depth_mm):
+            # A different part of the underside entirely. Not a nudge.
+            return px, py, pz, top
+        seat = pz + shift
+        return nx, ny, seat, seat + float(stand.cradle_depth_mm)
+    except Exception:
+        return px, py, pz, top
 
 
 def _place(solid, transform: np.ndarray):
@@ -1125,14 +1300,63 @@ def legend_label(chain, index: int) -> str:
     return f"{name} ({cid})"
 
 
+#: Ceiling on how far a corner radius may push the lettering inboard, in mm.
+#:
+#: The shift is paid for by a wider plate, and a 14 mm round on a small text
+#: size asks for a good deal of plate. Past this the radius is simply a very
+#: round plate with the lettering as far in as it is going to go, and the tile
+#: clip in :func:`build_stand` catches whatever is left.
+_MAX_EDGE_SHIFT_MM = 12.0
+
+
+def _corner_inset(radius: float, height: float) -> float:
+    """How far in the rounded corner has bitten, ``height`` above the edge.
+
+    Straight trigonometry on the corner arc: at ``height`` above the plate's
+    front edge the plan's own side has moved inboard by this much, and anything
+    laid out from the nominal edge has to move with it or hang over the round.
+    Zero once the height clears the radius, because past that the side is
+    straight again.
+    """
+    r = max(0.0, float(radius))
+    b = max(0.0, float(height))
+    if r <= 0.0 or b >= r:
+        return 0.0
+    return r - math.sqrt(max(0.0, 2.0 * r * b - b * b))
+
+
+def _plate_corner(stand: StandParams, x0: float, x1: float,
+                  y0: float, y1: float, notes: List[str]) -> float:
+    """The corner radius the plate will actually be built with.
+
+    Only the geometric limit is applied here — half the plate's shorter side,
+    a hair under, so the corners never meet. The lettering is no longer a limit
+    on it: the blocks are moved inboard by :func:`_corner_inset` and the plate
+    widened to pay for it, which is what lets the top of the slider be a very
+    round plate rather than an error.
+    """
+    want = max(0.0, float(stand.plate_corner_mm))
+    limit = min(0.45 * (x1 - x0), 0.45 * (y1 - y0))
+    got = max(0.0, min(want, limit))
+    if want - got > 0.05:
+        notes.append(
+            f"The corner radius was held to {got:.1f} mm — {want:.1f} mm is "
+            f"more than half this plate's shorter side.")
+    return got
+
+
 def legend_overrides(raw: str) -> Dict[int, str]:
     """Parse ``index<TAB>label`` lines into ``{index: label}``.
 
     Best-effort by design, like everything else that reads a name: a malformed
     line is skipped rather than raised on, because a typo in one row must not
-    cost the user the other rows or the stand. Blank labels are dropped so that
-    clearing a box means "go back to the generated name" rather than "print an
-    empty row".
+    cost the user the other rows or the stand.
+
+    A line with an empty label is kept, as an empty string, and means "this
+    chain gets no legend row at all". Emptying a box has to be able to say
+    something -- an editor where clearing a field puts the old text back is an
+    editor that will not let you delete. A chain the caller says nothing about
+    at all is absent from the mapping and keeps its generated name.
     """
     out: Dict[int, str] = {}
     for line in (raw or "").splitlines():
@@ -1143,9 +1367,7 @@ def legend_overrides(raw: str) -> Dict[int, str]:
             index = int(head.strip())
         except ValueError:
             continue
-        label = label.strip()[:48]
-        if label:
-            out[index] = label
+        out[index] = label.strip()[:48]
     return out
 
 
@@ -1347,6 +1569,7 @@ class StandLayout:
     meshes: list
     chains: list
     chain_rows: List[dict]
+    chain_all: List[dict]
     model_min: np.ndarray
     model_max: np.ndarray
 
@@ -1360,6 +1583,7 @@ class StandLayout:
     apron: float
     apron_top: float
     pad: float
+    edge_shift: float
     info_width: float
     legend_width: float
     rake_deg: float
@@ -1493,16 +1717,27 @@ def solve_layout(built, params: PrintParams,
 
     # ---- lay the plaque out first: it decides how deep the apron is --------
     chain_rows = []
+    chain_all = []
     overrides = legend_overrides(getattr(stand, 'plaque_legend_labels', ''))
     for i, (chain, _m) in enumerate(built):
         if getattr(chain, "mtype", None) == MoleculeType.STAND:
             continue
-        chain_rows.append({
+        row = {
             "index": i,
             "chain_id": str(getattr(chain, "chain_id", "?")),
-            "label": overrides.get(i) or legend_label(chain, i),
+            "label": overrides[i] if i in overrides else legend_label(chain, i),
             "color": color_for_index(i),
-        })
+        }
+        # Every chain, whether or not it ends up on the plaque: the editor is
+        # built from this, so a row somebody emptied still has a box to type
+        # back into. ``generated`` is what the box falls back to showing.
+        chain_all.append(dict(row, generated=legend_label(chain, i)))
+        if not row["label"]:
+            # Emptied on purpose. Nothing is reserved for it — the rows below
+            # move up into the space, rather than the legend keeping a blank
+            # line where a chain used to be.
+            continue
+        chain_rows.append(row)
 
     # The plate is at least wide enough for the model, and wider if the plaque
     # needs it to be. One rule, in one place:
@@ -1517,10 +1752,29 @@ def solve_layout(built, params: PrintParams,
     # when it disagreed with what somebody expected there was no way to tell
     # which of the three moving parts had done it.
     pad = max(3.0, float(stand.plaque_text_mm) * 0.6)
+
+    # How far the rounded corners push both blocks inboard.
+    #
+    # A block is laid out from one ``pad`` inside the plate's nominal edge, and
+    # its tile reaches half a pad wider and 0.45 of one lower — so the tile's
+    # outer bottom corner sits about ``0.55·pad`` above the plate's front edge,
+    # which on a large radius is inside the arc. Clipping the tile there was the
+    # first answer and it looked like a mistake; moving the lettering in and
+    # paying for it with plate is the real one. The same shift on both sides,
+    # so the two blocks stay symmetric about the plate rather than the left one
+    # walking in while the right stays put.
+    #
+    # Measured against the radius that was *asked* for. The clamp below can only
+    # lower it, and a lower radius makes this shift generous rather than short.
+    edge_shift = 0.0
+    if stand.plaque:
+        edge_shift = min(_MAX_EDGE_SHIFT_MM,
+                         _corner_inset(float(stand.plate_corner_mm), pad * 0.55))
+
     # A margin at each edge, and between the blocks a gap wide enough that the
     # two tiles still have ``_TILE_GAP_MM`` of plate between them once each has
     # taken its own half-pad of surround.
-    spare = pad * 2.0 + (pad + _TILE_GAP_MM)
+    spare = pad * 2.0 + (pad + _TILE_GAP_MM) + 2.0 * edge_shift
     natural_half = max(abs(float(model_min[0])), abs(float(model_max[0]))) + margin
     natural_usable = max(12.0, 2.0 * natural_half - spare)
 
@@ -1695,13 +1949,17 @@ def solve_layout(built, params: PrintParams,
     # Callers treat these as read-only; a cache hit hands out the same objects.
     notes.extend(column_notes)
 
+    corner_mm = _plate_corner(stand, plate_x0, plate_x1, plate_y0, plate_y1,
+                              notes)
+
     return StandLayout(
         oriented_built=oriented_built, meshes=meshes, chains=chains,
-        chain_rows=chain_rows, model_min=model_min, model_max=model_max,
+        chain_rows=chain_rows, chain_all=chain_all,
+        model_min=model_min, model_max=model_max,
         plate_x0=plate_x0, plate_x1=plate_x1, plate_y0=plate_y0,
         plate_y1=plate_y1, plate_top=plate_top,
-        corner_mm=float(stand.plate_corner_mm),
-        apron=apron, apron_top=apron_top, pad=pad,
+        corner_mm=corner_mm,
+        apron=apron, apron_top=apron_top, pad=pad, edge_shift=edge_shift,
         info_width=info_width, legend_width=legend_width,
         rake_deg=rake_deg, rake_rise=rake_rise, rake_lip=rake_lip,
         info_rows=info_rows, legend_rows=legend_rows, shrink=shrink, meta=meta,
@@ -1759,6 +2017,9 @@ def layout_summary(layout: StandLayout, params: PrintParams) -> dict:
             "depth": round(layout.apron, 3),
             "top": round(layout.apron_top, 3),
             "pad": round(layout.pad, 3),
+            # How far both blocks were moved in off the corner arc, so the
+            # sketch puts them where the plate will.
+            "edge": round(layout.edge_shift, 3),
             "info_width": round(layout.info_width, 3),
             "legend_width": round(layout.legend_width, 3),
             "info_mm": round(float(getattr(stand, "plaque_info_mm", 0.0) or 0.0), 1),
@@ -1804,6 +2065,16 @@ def layout_summary(layout: StandLayout, params: PrintParams) -> dict:
             "tile": bool(stand.plaque_tile),
             "info": _rows(layout.info_rows),
             "legend": _rows(layout.legend_rows, by_index),
+            # Every chain there is, in build order, so the name editor can offer
+            # a box for one that is currently switched off. ``label`` is what is
+            # set now (empty when it has been cleared); ``generated`` is the
+            # name the header gives, which is what an untouched box shows.
+            "chains": [{"index": int(r["index"]),
+                        "chain_id": str(r["chain_id"]),
+                        "color": _rgb_hex(r["color"]),
+                        "label": str(r["label"]),
+                        "generated": str(r["generated"])}
+                       for r in layout.chain_all],
         },
         "notes": list(layout.notes),
     }
@@ -1918,8 +2189,6 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         except Exception:
             model_manifold = None
 
-    from . import interference
-
     # Pinned, the columns leave the plate and become parts in their own right —
     # which is the whole point: a plate nobody has welded columns to can be
     # turned over and printed with its lettering face down against the build
@@ -1959,6 +2228,20 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         # anyway. The column grows from the plate until it reaches the surface,
         # and stops there.
         top = pz + float(stand.cradle_depth_mm)
+
+        # Shuffle off any splinters before anything is built.
+        #
+        # The seat is placed on the *lowest* point of the underside, which says
+        # nothing about what the rest of the footprint runs into. A tube passing
+        # over one corner of it leaves a sliver of column standing beside the
+        # cut — printable in principle, snapped off in practice, and the sort of
+        # thing you only see once the part is in your hand. A millimetre either
+        # way is free: the seat is a saucer, not a keyed fit, and the scoring
+        # that chose this spot was working on a grid coarser than the move.
+        if model_manifold is not None:
+            px, py, pz, top = _tune_column(
+                model_manifold, px, py, pz, top, radius, stand)
+
         # Unpinned the column is fused to the plate, so it starts just inside it
         # to guarantee the union has volume to work with. Pinned it starts *on*
         # the plate, because the two are about to be separate objects and a
@@ -1989,22 +2272,31 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             ]))
         if model_manifold is not None:
             try:
-                # Carve only against the model *near this column*. The whole
-                # model would be a boolean against a surface mesh with hundreds
-                # of thousands of faces, per column, to change a few millimetres
-                # at the top of a stick — the same localisation the interference
-                # pass makes for the same reason. The window only has to cover
-                # the column plus a margin: material the column cannot reach
-                # cannot shape it.
-                low, high = pz - 4.0, top + 2.0
-                window = _manifold.oriented_box(
-                    [px, py, 0.5 * (low + high)], np.eye(3),
-                    [radius * 2.4, radius * 2.4, 0.5 * (high - low)])
-                local = _manifold.intersection(model_manifold, window)
-                if not local.is_empty():
-                    tool = interference.dilate(
-                        local, float(stand.cradle_clearance_mm))
+                # Rebuilt here rather than carried over from the nudge: the
+                # column may have moved, and a tool cut for where it used to be
+                # is the wrong shape by exactly the distance it travelled.
+                tool = _carve_tool(model_manifold, px, py, pz, top, radius,
+                                   stand.cradle_clearance_mm)
+                if tool is not None:
                     carved = _manifold.difference(solid, tool)
+                    # A plain difference cuts the model's shape out of the
+                    # column and leaves whatever the column had *above* that
+                    # shape standing: against a tube or a cartoon it bores a
+                    # tunnel through the shaft and roofs it over, and the roof
+                    # is a lid the model cannot be lowered past. Sweeping the
+                    # tool upward first and cutting that too means the column
+                    # stops wherever the model starts and never resumes above
+                    # it. The exact difference is kept and applied as well, so
+                    # the seat itself is still the model's own surface: the
+                    # sweep is quantised and would round the imprint off, but
+                    # each of its slabs starts at the height the model reaches
+                    # rather than below it, so it can only take material the
+                    # difference has already opened the way to.
+                    sky = _manifold.sweep_up(tool, top + 0.5)
+                    if sky is not None:
+                        opened = _manifold.difference(carved, sky)
+                        if not opened.is_empty():
+                            carved = opened
                     if not carved.is_empty():
                         solid = carved
             except Exception:
@@ -2196,8 +2488,9 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 widest = max(widest, lead + text_w)
             return widest
 
-        info_left = layout.plate_x0 + pad
-        legend_right = layout.plate_x1 - pad
+        # Both edges moved inboard by the same amount, off the corner arc.
+        info_left = layout.plate_x0 + pad + layout.edge_shift
+        legend_right = layout.plate_x1 - pad - layout.edge_shift
         # The block is anchored to the right margin, the rows are set from its
         # left. Setting the rows themselves flush right lined the *names* up and
         # left the colour dots down a ragged edge, which is the wrong thing to
@@ -2225,6 +2518,25 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         cutters = [_place(s, face_xf) for s in cutters]
         if tiles:
             tile_solid = _place(_manifold.union(tiles), face_xf)
+            # The tile is cut to the lettering, which knows nothing about the
+            # plate's rounded corners: at a large corner radius its front
+            # corners hang out over the round and the white reads as a slab
+            # that missed. Clipped to the plate's own plan, held back from the
+            # edge so the two do not fight for the same tenth of a millimetre,
+            # the tile follows the corner instead of crossing it.
+            try:
+                keep = _rounded_slab(
+                    layout.plate_x0 + _TILE_EDGE_MM,
+                    layout.plate_x1 - _TILE_EDGE_MM,
+                    layout.plate_y0 + _TILE_EDGE_MM,
+                    layout.plate_y1 - _TILE_EDGE_MM,
+                    -1.0, surface_z + 20.0,
+                    max(0.0, layout.corner_mm - _TILE_EDGE_MM))
+                clipped = _manifold.intersection(tile_solid, keep)
+                if not clipped.is_empty():
+                    tile_solid = clipped
+            except Exception:
+                pass
             text_parts.append((StandPart("tile", "stand_plaque_tile", TILE_COLOR),
                                tile_solid, False))
         if info_text:

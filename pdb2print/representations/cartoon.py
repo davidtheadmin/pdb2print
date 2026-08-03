@@ -508,9 +508,23 @@ def build(chain, params: PrintParams):
             run_len = run_end[i0] - run_start[i0] + 1
             eff_arrow = min(arrow_len, max(1.0, run_len - 1.0))
             dist = run_end[i0] - res_coord
-            if dist <= eff_arrow:
-                hw = _arrow_halfwidth(dist, dims["strand_hw"], dims["tip_half"],
-                                      factor, eff_arrow)
+            if dist >= 0.0:
+                if dist <= eff_arrow:
+                    hw = _arrow_halfwidth(dist, dims["strand_hw"],
+                                          dims["tip_half"], factor, eff_arrow)
+                    ht = dims["strand_ht"]
+            elif i1 != i0:
+                # Past the point.  ``i0`` is still the strand's last residue for
+                # this whole segment, so without this the section would sit
+                # frozen at the tip and then jump to the coil's round tube in a
+                # single step -- a flat plank becoming a fatter tube with no
+                # taper between them.  Blend the tip into whatever follows, the
+                # same way every other run boundary is crossed.
+                hw = (1.0 - frac) * dims["tip_half"] + frac * hw_res[i1]
+                ht = (1.0 - frac) * dims["strand_ht"] + frac * ht_res[i1]
+            else:
+                # Nothing follows: the chain ends on the point.
+                hw = dims["tip_half"]
                 ht = dims["strand_ht"]
 
         centers.append(pos)
