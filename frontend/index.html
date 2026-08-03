@@ -111,8 +111,8 @@
     --accent:      #147a53;
     --accent-d:    #0d5c3d;
     --accent-fg:   #ffffff;
-    --accent-soft: rgba(20,122,83,.09);
-    --accent-mid:  rgba(20,122,83,.22);
+    --accent-soft: rgba(20,122,83,.13);
+    --accent-mid:  rgba(20,122,83,.27);
 
     /* the second accent, and it means exactly one thing: this is
        Advanced. Nothing else in the app is allowed to be amber. */
@@ -165,8 +165,8 @@
     --accent:      #2f9e6f;
     --accent-d:    #257e58;
     --accent-fg:   #ffffff;
-    --accent-soft: rgba(47,158,111,.12);
-    --accent-mid:  rgba(47,158,111,.28);
+    --accent-soft: rgba(47,158,111,.16);
+    --accent-mid:  rgba(47,158,111,.33);
     --adv:       #d8a33f;
     --adv-soft:  rgba(216,163,63,.08);
     --adv-mid:   rgba(216,163,63,.20);
@@ -430,8 +430,14 @@
     background: none; border: none; overflow: visible;
   }
   .seg.pick.three { grid-template-columns: 1fr 1fr 1fr; }
+  /* One height whether or not the card carries a second line. Most of these
+     lost their sub-line and shrank to 34px against the 49px of the ones that
+     kept theirs, which read as two different kinds of control rather than the
+     same one twice. The floor is the taller of the two; a single-line card
+     centres in it. */
   .seg.pick button {
-    display: block; text-align: left; padding: 9px 10px;
+    display: flex; flex-direction: column; justify-content: center;
+    min-height: 49px; text-align: left; padding: 9px 10px;
     border: 1px solid var(--border); border-left: 1px solid var(--border);
     border-radius: var(--r2); background: var(--s2); white-space: normal;
     transition: border-color .12s, background .12s, box-shadow .12s;
@@ -564,13 +570,21 @@
      HELP — one affordance, one popover, everywhere
      =================================================================== */
   .hx {
-    flex: none; width: 14px; height: 14px; padding: 0; margin-left: 5px;
+    flex: none; width: 14px; height: 14px; padding: 0; margin-left: 3px;
     display: inline-grid; place-items: center; vertical-align: 1px;
     border-radius: 50%; border: 1px solid var(--border-2); background: transparent;
     color: var(--muted); font: 700 9px/1 ui-monospace, monospace;
     cursor: help; transition: color .12s, border-color .12s, background .12s;
   }
   .hx:hover, .hx.on { color: var(--accent-fg); border-color: var(--accent); background: var(--accent); }
+  /* In a flex row the container's own gap already spaces it; the margin is for
+     the inline case, where the marker follows a run of text. */
+  .switch > .hx, .sp-switch > .hx { margin-left: 0; }
+  /* A group heading is flex with an 8px gap, which set the marker adrift from
+     the word it belongs to; and baseline alignment hangs a 14px circle 1.5px
+     below the bottom of 13.5px bold text, which only shows at that size. Pull
+     it in and sit it flush. */
+  .grp-h > .hx { margin-left: -4px; position: relative; top: -1.5px; }
   #tip {
     position: fixed; z-index: 99; max-width: 300px;
     background: var(--s1); border: 1px solid var(--border-2);
@@ -836,6 +850,19 @@
   .sp-stage .stage-caret { flex: none; color: var(--muted); transition: transform .16s; }
   .sp-stage[open] .stage-caret { transform: rotate(90deg); color: var(--accent); margin-left: auto; }
   .sp-stage .sp-inner { padding: 2px 11px 12px; border-top: 1px solid var(--border); padding-top: 11px; }
+  /* The same numbered chip as the main panel, one weight down, so a stand is
+     read as a sequence the way a build is. Advanced carries a glyph rather than
+     a third number: it is not a step you work through, it is the drawer you go
+     to once. */
+  .sp-stage .stage-num {
+    flex: none; width: 17px; height: 17px; border-radius: 5px;
+    display: grid; place-items: center;
+    background: var(--s2); color: var(--muted);
+    font: 700 9.5px/1 ui-monospace, monospace;
+    transition: background .14s, color .14s;
+  }
+  .sp-stage[open] .stage-num { background: var(--accent); color: var(--accent-fg); }
+  .sp-stage .stage-num svg { width: 10px; height: 10px; }
 
   .sp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
   .sp-row > span { font-size: 11.5px; color: var(--text2); }
@@ -848,7 +875,7 @@
   }
   .sp-stale[hidden] { display: none; }
 
-  .sp-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .sp-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .sp-card {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
     padding: 7px 2px 5px; border-radius: var(--r1); cursor: pointer;
@@ -856,7 +883,7 @@
     color: var(--text2); font: 500 10px/1 inherit; font-family: inherit;
     transition: border-color .12s, color .12s, background .12s;
   }
-  .sp-card svg { width: 26px; height: 40px; }
+  .sp-card svg { width: 32px; height: 48px; }
   .sp-card:hover { border-color: var(--border-2); color: var(--text); }
   .sp-card[aria-pressed="true"] {
     border-color: var(--accent); color: var(--accent);
@@ -885,7 +912,7 @@
   .sp-chip[disabled] { opacity: .35; pointer-events: none; }
 
   .sp-switch {
-    display: flex; align-items: center; gap: 9px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 13px; cursor: pointer; user-select: none;
     font-size: 11.5px; color: var(--text2); margin-bottom: 9px;
   }
   .sp-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -1244,13 +1271,13 @@
 
           <!-- ---- protein ---- -->
           <div class="grp" style="margin-top:2px">
-            <p class="grp-h">Protein <span class="sub">every amino-acid chain</span></p>
+            <p class="grp-h" title="All the amino-acid chains, drawn the same way. Surface is a solid skin over the molecule and the easiest to print. Cartoon is the ribbon picture from textbooks. Tubes is the backbone on its own. Cartoon and tubes are thin in places, so expect supports.">Protein</p>
             <div class="seg pick three" data-group="protein_rep">
-              <button data-value="surface" class="active" title="Solid molecular (solvent-excluded) surface"><span class="t">Surface</span><span class="d">solid, robust</span></button>
-              <button data-value="cartoon" title="ChimeraX-style ribbon: helix &amp; strand ribbons, β-arrowheads, coil tube"><span class="t">Cartoon</span><span class="d">textbook ribbons</span></button>
-              <button data-value="tubes" title="Smooth backbone tube"><span class="t">Tubes</span><span class="d">backbone only</span></button>
+              <button data-value="surface" class="active" title="A solid skin over the whole molecule."><span class="t">Surface</span></button>
+              <button data-value="cartoon" title="Ribbons for the helices, arrows for the sheets, a thin tube for the loops."><span class="t">Cartoon</span></button>
+              <button data-value="tubes" title="One smooth tube along the backbone."><span class="t">Tubes</span></button>
             </div>
-            <p class="rep-note" id="protein-exp-note">Cartoon and Tubes are delicate to print — bump the scale or thickness, expect supports, and prefer resin.</p>
+            <p class="rep-note" id="protein-exp-note">Thin in places. Expect supports, and raise the scale or the thickness.</p>
 
             <div id="surface">
               <details class="adv" id="advanced-surface">
@@ -1261,24 +1288,24 @@
                 <div class="drawer">
                   <div id="cartoon" hidden>
                     <div class="field" data-slider="cartoon_helix_width">
-                      <div class="slider-row"><span class="name" title="Scales the whole helix ribbon — wider and proportionally thicker, so it stays a flat spiral band">Helix size (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Sizes the helix ribbon. Wider and thicker together, so it stays a flat band.">Helix size (mm)</span><span class="val"></span></div>
                       <input type="range" min="1.5" max="10.0" step="0.1" value="4.5">
                     </div>
                     <div class="field" data-slider="cartoon_strand_width">
-                      <div class="slider-row"><span class="name" title="Scales the whole β-sheet ribbon and its arrowheads — wider and proportionally thicker, always a flat plank">Sheet size (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Sizes the sheet ribbon and its arrowheads. Wider and thicker together, so it stays a flat plank.">Sheet size (mm)</span><span class="val"></span></div>
                       <input type="range" min="1.5" max="10.0" step="0.1" value="4.0">
                     </div>
                     <div class="field" data-slider="cartoon_tube">
-                      <div class="slider-row"><span class="name" title="Thickness (diameter) of the round tube used for every loop / coil between the ribbons">Tube thickness (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Thickness of the round tube used for the loops between the ribbons.">Tube thickness (mm)</span><span class="val"></span></div>
                       <input type="range" min="0.6" max="6.0" step="0.1" value="1.8">
                     </div>
                   </div>
                   <div class="field" data-slider="surface_padding">
-                    <div class="slider-row"><span class="name" title="Inflate every atom outward before the surface is built — fattens thin features so they print">Surface padding (Å)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Fattens every atom before the surface is built, so thin parts come out thick enough to print.">Surface padding (Å)</span><span class="val"></span></div>
                     <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
                   </div>
                   <div class="field" data-slider="probe_radius">
-                    <div class="slider-row"><span class="name" title="Radius of the rolling solvent ball that defines the molecular surface (1.4 Å = water). Larger = smoother and fills small pockets. It does NOT set the overall size — on an outward-facing patch the probe cancels out of the surface definition, so use Surface padding for that. Below 1.2 Å the surface starts pinching apart between atoms and fails the watertight check. Surface style only.">Probe radius (Å)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Size of the ball that rolls over the atoms to trace the surface. 1.4 Å is a water molecule. Bigger smooths it out and fills in small pockets. It does not make the model bigger. Use Surface padding for that.">Probe radius (Å)</span><span class="val"></span></div>
                     <input type="range" min="1.4" max="2.0" step="0.1" value="1.4">
                   </div>
                   <div class="field" data-slider="protein_tube_radius">
@@ -1292,22 +1319,22 @@
 
           <!-- ---- DNA / RNA ---- -->
           <div class="grp">
-            <p class="grp-h">DNA / RNA <span class="sub">every nucleic chain</span></p>
+            <p class="grp-h" title="All the DNA and RNA chains. Surface wraps the lot in one solid skin, so there is nothing thin to snap off. Tube-slab draws the two strands as tubes with the bases as rungs between them. It looks like a double helix but breaks more easily.">DNA / RNA</p>
             <div class="seg pick" data-group="nucleic_rep">
-              <button data-value="surface" title="Solid molecular (solvent-excluded) surface"><span class="t">Surface</span><span class="d">solid, robust</span></button>
-              <button data-value="tube_slab" class="active" title="Backbone tube with base rungs"><span class="t">Tube-slab</span><span class="d">strands + rungs</span></button>
+              <button data-value="surface" title="A solid skin over the whole molecule."><span class="t">Surface</span></button>
+              <button data-value="tube_slab" class="active" title="Strands as tubes, bases as rungs between them."><span class="t">Tube-slab</span></button>
             </div>
 
             <div id="tubeslab" class="rep-detail">
               <div class="sub-grp">
-                <p class="lbl">Backbone <span class="sub">— the strand itself</span></p>
+                <p class="lbl">Backbone</p>
                 <div class="seg" data-group="backbone_style">
                   <button data-value="tube" class="active" title="One smooth tube running along the strand">Tube</button>
                   <button data-value="molecule" title="Every backbone atom as a ball, every bond as a stick">Molecule</button>
                 </div>
               </div>
               <div class="sub-grp">
-                <p class="lbl">Bases <span class="sub">— the rungs between the strands</span></p>
+                <p class="lbl">Bases</p>
                 <div class="seg" data-group="base_style">
                   <button data-value="slab" title="Each base is a flat plate on a small connecting rod">Slab</button>
                   <button data-value="rod" class="active" title="Each base is a single round rod">Rod</button>
@@ -1334,7 +1361,7 @@
                     <input type="range" min="0.2" max="8.0" step="0.1" value="1.2">
                   </div>
                   <div class="field" data-slider="plate_size">
-                    <div class="slider-row"><span class="name" title="Scales the whole flat plate at the end of each base — its area and its thickness together, so it keeps its proportions.">Plate size</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Sizes the flat plate at the end of each base, area and thickness together.">Plate size</span><span class="val"></span></div>
                     <input type="range" min="0.3" max="3.0" step="0.05" value="1.0">
                   </div>
                   <div class="field" data-slider="connector_radius">
@@ -1356,24 +1383,24 @@
                 </div>
               </details>
             </div>
-            <p class="rep-note" id="dna-surface-note" hidden>DNA is set to Surface — it uses the padding &amp; probe set under Protein.</p>
+            <p class="rep-note" id="dna-surface-note" hidden>Both are set to Surface. They share the padding and probe under Protein.</p>
           </div>
 
           <!-- ---- ligands ---- -->
           <div class="grp" id="grp-ligands">
-            <p class="grp-h">Ligands <span class="sub">bound small molecules</span></p>
+            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand uses the probe and padding set under Protein, so it matches its host.">Ligands</p>
             <label class="switch">
               <input type="checkbox" id="include_ligands"><span class="track"></span>
-              <span class="sw-text"><span>Include ligands</span><span class="sw-sub">each bound molecule gets its own object and filament, in a pocket carved to its shape</span></span>
+              <span class="sw-text"><span>Include ligands</span></span>
             </label>
             <div id="ligand-opts" class="switch-body">
               <div class="field">
-                <p class="field-label">Style <span class="sub">— how each bound molecule is drawn</span></p>
+                <p class="field-label">Style</p>
                 <div class="seg pick" data-group="ligand_style">
-                  <button data-value="ball_stick" class="active" title="Balls at the atoms, sticks between them — reads as that specific molecule"><span class="t">Ball &amp; stick</span><span class="d">reads as chemistry</span></button>
-                  <button data-value="spacefill" title="Van der Waals spheres fused into one lump — by far the most printable"><span class="t">Spacefill</span><span class="d">safest to print</span></button>
-                  <button data-value="surface" title="The same solvent surface the protein uses — matches a surface-rendered host"><span class="t">Surface</span><span class="d">matches the host</span></button>
-                  <button data-value="sticks" title="Bonds only, no atom balls — clearest chemistry, most fragile print"><span class="t">Sticks</span><span class="d">most fragile</span></button>
+                  <button data-value="ball_stick" class="active" title="Balls for the atoms, sticks for the bonds. Looks like the molecule."><span class="t">Ball &amp; stick</span></button>
+                  <button data-value="spacefill" title="Atoms as overlapping spheres, fused into one lump. The most reliable to print."><span class="t">Spacefill</span></button>
+                  <button data-value="surface" title="The same solid skin the protein uses, so the two match."><span class="t">Surface</span></button>
+                  <button data-value="sticks" title="Bonds only, no balls. Clearest to read, easiest to break."><span class="t">Sticks</span></button>
                 </div>
               </div>
               <details class="adv" id="advanced-ligand">
@@ -1383,7 +1410,7 @@
                 </summary>
                 <div class="drawer">
                   <div class="field" data-slider="ligand_atom">
-                    <div class="slider-row"><span class="name" title="Ball diameter in ball-and-stick, and the floor on atom size in spacefill. This is an absolute size in millimetres while the atom spacing follows Scale, so the two only agree at one scale: raise Scale and raise this with it, or the molecule thins out into pinheads on long sticks.">Ligand atoms (mm)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Ball diameter, in millimetres. The gaps between the atoms follow Scale but this does not, so raise both together or you get pinheads on long sticks.">Ligand atoms (mm)</span><span class="val"></span></div>
                     <input type="range" min="0.8" max="8.0" step="0.1" value="2.2">
                   </div>
                   <div class="field" data-slider="ligand_bond">
@@ -1394,8 +1421,6 @@
                     <div class="slider-row"><span class="name" title="Spacefill only: multiplies the real van der Waals radii. 1.0 is chemically honest; higher fuses the spheres into one lump.">Spacefill fullness</span><span class="val"></span></div>
                     <input type="range" min="0.6" max="1.6" step="0.05" value="1.0">
                   </div>
-                  <p class="rep-note" id="ligand-surface-note" hidden>Surface ligands are sized by the <b>probe radius</b> and <b>surface padding</b> set under Protein — the same controls, so the ligand and its host always agree.</p>
-                  <p class="rep-note">Water and single ions are always skipped, along with common crystallisation additives. <b>Spacefill</b> is the safest bet on a printer; <b>sticks</b> is the most fragile.</p>
                 </div>
               </details>
             </div>
@@ -1415,15 +1440,11 @@
 
           <!-- ---- size ---- -->
           <div class="grp">
-            <p class="grp-h">Size <span class="sub">applies to the whole model</span></p>
+            <p class="grp-h" title="Scale sets how big the print comes out: millimetres of print per ångström of structure. Set it roughly and generate, and the real measurements appear under the slider.">Size</p>
             <div class="field" data-slider="scale">
-              <div class="slider-row"><span class="name" title="Millimetres of print per Ångström of structure">Scale (mm/Å)</span><span class="val"></span></div>
+              <div class="slider-row"><span class="name">Scale (mm/Å)</span><span class="val"></span></div>
               <input type="range" min="0.2" max="6.0" step="0.1" value="1.5">
               <div class="size-est" id="size-est">Printed size shown after you generate</div>
-            </div>
-            <div class="field" data-slider="grid_spacing">
-              <div class="slider-row"><span class="name" title="Meshing resolution — smaller is finer but slower. What actually matters is grid spacing divided by scale, so doubling both changes nothing.">Grid spacing (mm)</span><span class="val"></span></div>
-              <input type="range" min="0.2" max="1.5" step="0.05" value="0.5">
             </div>
             <details class="adv" id="advanced-global">
               <summary>
@@ -1431,8 +1452,12 @@
                 Advanced settings
               </summary>
               <div class="drawer">
+                <div class="field" data-slider="grid_spacing">
+                  <div class="slider-row"><span class="name" title="How finely the model is measured out before it is built. Smaller is more detailed and slower. It works against Scale, so doubling both changes nothing.">Grid spacing (mm)</span><span class="val"></span></div>
+                  <input type="range" min="0.2" max="1.5" step="0.05" value="0.5">
+                </div>
                 <div class="field" data-slider="min_wall">
-                  <div class="slider-row"><span class="name" title="Floor on feature size, applied as the geometry is built: the tube, rungs, connectors and cartoon ribbons are each clamped up to at least this thick. The molecular surface ignores it — a solvent-excluded surface is thick everywhere by construction.">Min wall (mm)</span><span class="val"></span></div>
+                  <div class="slider-row"><span class="name" title="Nothing gets built thinner than this. Tubes, rungs, connectors and cartoon ribbons are all held up to it. Surfaces ignore it, they are thick everywhere anyway.">Min wall (mm)</span><span class="val"></span></div>
                   <input type="range" min="0.0" max="5.0" step="0.1" value="1.0">
                 </div>
                 <!-- The "Min-wall mode" control (uniform / selective) was removed
@@ -1457,69 +1482,41 @@
                forks under it. The three legacy controls still exist and are
                still what collectForm reads; they are driven from here. -->
           <div class="grp">
-            <p class="grp-h">Assembly <span class="sub">how the parts relate</span></p>
+            <p class="grp-h">Assembly</p>
             <div class="seg pick" data-group="assembly">
-              <button data-value="apart" class="active" title="Chains are separate objects you put together yourself"><span class="t">Takes apart</span><span class="d">separate chains</span></button>
-              <button data-value="one_piece" title="Chains are joined in plastic — the model comes off the bed as one object"><span class="t">One piece</span><span class="d">chains fused together</span></button>
+              <button data-value="apart" class="active" title="Each chain is its own object. You put them together."><span class="t">Takes apart</span><span class="d">separate chains</span></button>
+              <button data-value="one_piece" title="The chains are joined in plastic. It comes off the bed as one object."><span class="t">One piece</span><span class="d">chains fused together</span></button>
             </div>
 
             <!-- branch: ONE PIECE -->
             <div class="branch-kids" id="asm-fused" hidden>
               <div class="field" id="conn-nomagnet">
-                <p class="field-label">Joined by</p>
                 <div class="seg" data-group="no_magnet_method">
-                  <button data-value="inflate" class="active" title="Grow the gap closed automatically — no fixed size to choose">Inflate</button>
-                  <button data-value="bridge" title="Add a rod of fixed diameter across the gap">Bridges</button>
+                  <button data-value="inflate" class="active" title="Grows the chains until the gap closes. Nothing to set.">Inflate</button>
+                  <button data-value="bridge" title="Puts a rod of a size you choose across the gap.">Bridges</button>
                 </div>
               </div>
             </div>
 
-            <!-- branch: TAKES APART -->
+            <!-- branch: TAKES APART
+                 One switch, because there were only ever two answers and one of
+                 them was "nothing". A segmented control whose off state is a
+                 button labelled Nothing is a checkbox that has been made to
+                 look like a decision. -->
             <div class="branch-kids" id="asm-apart">
-              <div class="field">
-                <p class="field-label">Held together by</p>
-                <div class="seg" data-group="apart_mode">
-                  <button data-value="loose" class="active" title="No joint at all — the chains simply sit against each other">Nothing</button>
-                  <button data-value="magnets" title="Cut a pocket in each side for an embedded magnet">Magnets</button>
-                </div>
-              </div>
-            </div>
-
-            <!-- The legacy controls. Kept in the DOM because collectForm and
-                 updateConnOpts read them by id and by data-group, and a rewrite
-                 of the form contract is a separate change from a rewrite of the
-                 way it looks. Driven by the two branches above. -->
-            <input type="checkbox" id="connect" hidden>
-            <div class="seg" data-group="use_magnets" hidden>
-              <button data-value="false" class="active">Fixed joint</button>
-              <button data-value="true">Magnets</button>
-            </div>
-
-            <div id="conn-body" class="branch-body" hidden>
-              <!-- The one diameter field serves both branches, so it is moved
-                   between them rather than duplicated: two sliders for one
-                   payload field is two chances for them to disagree. -->
-              <div id="bridge-slot"></div>
-
-              <!-- MAGNETS. Order is the order you decide things in: what shape
-                   magnet you have, whether the faces are flattened to meet it,
-                   how big it is, how many. Everything after that is tuning. -->
+              <label class="switch" title="Cuts a matching pocket in each side of every join for an embedded magnet, so the parts snap together and come apart again. Off, they just sit against each other.">
+                <input type="checkbox" id="magnets"><span class="track"></span>
+                <span class="sw-text"><span>Magnets</span></span>
+              </label>
               <div id="conn-magnet" class="switch-body" hidden>
                 <div class="field">
-                  <p class="field-label">Shape <span class="sub">— what you have in the drawer</span></p>
+                  <p class="field-label">Shape</p>
                   <div class="seg" data-group="magnet_shape">
                     <button data-value="round" class="active">Round</button>
                     <button data-value="square">Square</button>
                   </div>
                 </div>
-
-                <label class="switch">
-                  <input type="checkbox" id="socket" checked><span class="track"></span>
-                  <span class="sw-text"><span>Flush socket</span><span class="sw-sub">raise a flat collar on both parts so they meet on one clean disc</span></span>
-                </label>
-
                 <div class="magnet-preview"><svg id="magnet-diagram" viewBox="0 0 230 122" role="img" aria-label="Magnet dimensions preview"></svg></div>
-
                 <!-- Ø and thickness are the two halves of one number you read off
                      the magnet's packet, so they are read as one row. -->
                 <div class="pair" id="magnet-size">
@@ -1547,9 +1544,12 @@
                       <button data-value="4">4</button>
                     </div>
                   </div>
-                  <p class="rep-note">Magnet positions are highlighted in the preview.</p>
                 </div>
 
+                <label class="switch" title="Raises a flat collar on both parts so they meet on one clean disc, instead of on whatever shape the two surfaces make.">
+                  <input type="checkbox" id="socket" checked><span class="track"></span>
+                  <span class="sw-text"><span>Flush socket</span></span>
+                </label>
                 <details class="adv" id="advanced-socket">
                   <summary>
                     <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
@@ -1557,18 +1557,39 @@
                   </summary>
                   <div class="drawer">
                     <div class="field" data-slider="magnet_fit_clearance">
-                      <div class="slider-row"><span class="name" title="Extra Ø on the pocket over the magnet's nominal size. FDM holes print undersize, so a nominal pocket will not take the magnet at all. 0.2 mm is a press fit you still have to push; raise it if magnets won't go in, lower it if they fall out.">Press-fit clearance (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Extra width on the pocket over the magnet&#39;s stated size, because printed holes come out undersize. 0.2 mm is a fit you still have to push. Raise it if the magnets will not go in, lower it if they fall out.">Press-fit clearance (mm)</span><span class="val"></span></div>
                       <input type="range" min="0.0" max="0.6" step="0.05" value="0.2">
                     </div>
                     <div id="socket-opts" class="switch-body">
                       <div class="field" data-slider="socket_wall">
-                        <div class="slider-row"><span class="name" title="Plastic left around the pocket — the collar Ø is the magnet Ø plus twice this">Collar wall (mm)</span><span class="val"></span></div>
+                        <div class="slider-row"><span class="name" title="Plastic left around the pocket. The collar is the magnet Ø plus twice this.">Collar wall (mm)</span><span class="val"></span></div>
                         <input type="range" min="0.4" max="4.0" step="0.1" value="1.5">
                       </div>
                     </div>
                   </div>
                 </details>
               </div>
+            </div>
+
+            <!-- The legacy controls. Kept in the DOM because collectForm and
+                 updateConnOpts read them by id and by data-group, and a rewrite
+                 of the form contract is a separate change from a rewrite of the
+                 way it looks. Driven by the two branches above. -->
+            <input type="checkbox" id="connect" hidden>
+            <div class="seg" data-group="use_magnets" hidden>
+              <button data-value="false" class="active">Fixed joint</button>
+              <button data-value="true">Magnets</button>
+            </div>
+
+            <div id="conn-body" class="branch-body" hidden>
+              <!-- The one diameter field serves both branches, so it is moved
+                   between them rather than duplicated: two sliders for one
+                   payload field is two chances for them to disagree. -->
+              <div id="bridge-slot"></div>
+
+              <!-- MAGNETS. Order is the order you decide things in: what shape
+                   magnet you have, whether the faces are flattened to meet it,
+                   how big it is, how many. Everything after that is tuning. -->
 
               <!-- Lives outside #conn-magnet: it is the field the bridge branch
                    uses too, and it is parked here when that branch is active. -->
@@ -1579,9 +1600,9 @@
             </div>
 
             <div class="conn-sep">
-              <label class="switch">
+              <label class="switch" title="Fuses the two strands to each other at every base pair, so the helix holds together instead of arriving as two loose spirals.">
                 <input type="checkbox" id="basepair_connect"><span class="track"></span>
-                <span class="sw-text"><span>Connect DNA base pairs</span><span class="sw-sub">fuse the two strands so the helix holds together</span></span>
+                <span class="sw-text"><span>Connect DNA base pairs</span></span>
               </label>
             </div>
           </div>
@@ -1712,22 +1733,30 @@
              below use. Custom is not a style, it is where you end up. -->
         <div class="sp-presets" id="sp-presets">
           <button class="sp-chip" type="button" data-preset="museum" aria-pressed="false">
-            <span class="t">Museum</span><span class="d">square, flush sans, deep plate</span></button>
+            <span class="t">Museum</span><span class="d">grooved columns, bold text</span></button>
           <button class="sp-chip" type="button" data-preset="classical" aria-pressed="false">
-            <span class="t">Classical</span><span class="d">fluted, raised serif, tile</span></button>
+            <span class="t">Classical</span><span class="d">smooth columns, name plate</span></button>
           <button class="sp-chip" type="button" data-preset="lab" aria-pressed="false">
-            <span class="t">Lab</span><span class="d">slim, round, engraved</span></button>
+            <span class="t">Lab</span><span class="d">slim and plain</span></button>
           <button class="sp-chip" type="button" data-preset="custom" aria-pressed="true">
-            <span class="t">Custom</span><span class="d">whatever you set below</span></button>
+            <span class="t">Custom</span><span class="d">your own settings</span></button>
         </div>
 
-        <details class="sp-stage sp-group" data-part="columns" name="spstage" open>
+        <!-- Columns and plate are one decision made twice: the two parts of the
+             stand you are styling, the way Protein and DNA are the two parts of
+             the model you are styling. Same shape of panel, same shape of
+             heading, so there is one thing to learn. The plaque is not a third
+             of these — it is lettering, and it gets its own panel. -->
+        <details class="sp-stage" name="spstage">
           <summary>
-            <span>Columns</span>
-            <span class="stage-sum" id="sum-sp-columns"></span>
+            <span class="stage-num">1</span>
+            <span>Style</span>
+            <span class="stage-sum" id="sum-sp-style"></span>
             <svg class="stage-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
           </summary>
           <div class="sp-inner">
+           <div class="grp sp-group" data-part="columns">
+            <p class="grp-h">Columns</p>
             <!-- Silhouettes, all on the same footing line and the same shaft
                  height, so the difference you see between them is the only
                  thing that actually differs in the part. -->
@@ -1753,11 +1782,6 @@
                   <path d="M9.8 29a3.2 1.3 0 0 0 6.4 0"/>
                   <path d="M7.5 8.2h11v3.4h-11z"/><path d="M6 30.5h14v4H6z"/><path d="M4 36.5h18"/>
                 </svg>Fluted</button>
-              <button class="sp-card" type="button" data-s="taper" aria-pressed="false">
-                <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
-                  <path d="M13 5.5 16.1 11l.9 19.5h-8L9.9 11z"/><path d="M9.9 11h6.2" opacity=".45"/>
-                  <path d="M6 30.5h14v4H6z"/><path d="M4 36.5h18"/>
-                </svg>Obelisk</button>
             </div>
 
             <div class="sp-row" style="margin-top:11px">
@@ -1783,33 +1807,25 @@
               <div class="lab"><span class="name" title="Clear air between the underside of the model and the top of the plate.">Float above the plate</span><span class="val"></span></div>
               <input type="range" min="2" max="24" step="0.5" value="6">
             </div>
-          </div>
-        </details>
+           </div>
 
-        <details class="sp-stage sp-group" data-part="plate" name="spstage">
-          <summary>
-            <span>Base plate</span>
-            <span class="stage-sum" id="sum-sp-plate"></span>
-            <svg class="stage-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-          </summary>
-          <div class="sp-inner">
+           <div class="grp sp-group" data-part="plate">
+            <p class="grp-h">Base plate</p>
             <div class="sp-slider" data-f="plate_thickness">
               <div class="lab"><span class="name">Thickness</span><span class="val"></span></div>
               <input type="range" min="2" max="12" step="0.5" value="4">
             </div>
-            <div class="sp-slider" data-f="plate_margin">
-              <div class="lab"><span class="name" title="How far the plate reaches out past the model's silhouette.">Margin round the model</span><span class="val"></span></div>
-              <input type="range" min="2" max="24" step="0.5" value="7">
-            </div>
             <div class="sp-slider" data-f="plate_corner">
-              <div class="lab"><span class="name">Corner radius</span><span class="val"></span></div>
+              <div class="lab"><span class="name" title="A big radius moves the lettering inwards to clear the curve and widens the plate to make room, so nothing runs off the corner.">Corner radius</span><span class="val"></span></div>
               <input type="range" min="0" max="14" step="0.5" value="4">
             </div>
+           </div>
           </div>
         </details>
 
         <details class="sp-stage sp-group" data-part="plaque" name="spstage">
           <summary>
+            <span class="stage-num">2</span>
             <span>Plaque</span>
             <span class="stage-sum" id="sum-sp-plaque"></span>
             <svg class="stage-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
@@ -1835,6 +1851,15 @@
                 <input id="sp-note-text" class="sp-text" type="text" maxlength="80"
                        placeholder="lab, date, anything"></label>
 
+              <!-- One box per chain, next to the two lines you also type, and
+                   only while the legend is switched on: a name editor for a
+                   legend that is not being printed is a control with nothing on
+                   the other end of it. -->
+              <div id="sp-legend-box">
+                <p class="field-label" style="margin:11px 0 5px" title="Taken from the file header, which often gives a class of molecule instead of a name. Type over any of them. Empty a box to drop that chain from the legend; the rows below move up.">Chain names</p>
+                <div id="sp-legend-edit"></div>
+              </div>
+
               <div class="sp-row" style="margin-top:11px">
                 <span>Typeface</span>
                 <div class="sp-seg" id="sp-font">
@@ -1854,71 +1879,65 @@
               </div>
               <p class="sp-note" id="sp-relief-hint"></p>
 
-              <!-- One box per chain, prefilled with what the server would print.
-                   Behind Advanced because it is a correction, not a decision:
-                   most headers are fine and the ones that are not are obvious
-                   the moment you read the sketch. -->
-              <details class="adv" id="advanced-legend">
-                <summary>
-                  <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-                  Advanced settings
-                </summary>
-                <div class="drawer">
-                <div class="sp-slider" data-f="apron_rake">
-                  <div class="lab"><span class="name" title="Rakes the apron toward the viewer so the lettering faces you rather than the far wall. The wedge is added to the plate, not cut into it.">Tilt toward you</span><span class="val"></span></div>
-                  <input type="range" min="0" max="25" step="1" value="0">
-                </div>
-                  <p class="sp-note" style="margin:10px 0 8px">Legend names come from the file header, which often gives a class
-                  word rather than a name. Type over any of them; clear a box to go back to the header's.</p>
-                  <div id="sp-legend-edit"></div>
-                </div>
-              </details>
-
               <div class="sp-slider" data-f="plaque_text">
-                <div class="lab"><span class="name" title="Cap height of the largest line. 5 mm is the floor because below it a bold face stops being a bold face: the stems thin out until the minimum-stroke guard has to widen the letters to keep the slicer from dropping them.">Text size</span><span class="val"></span></div>
+                <div class="lab"><span class="name" title="Height of the capitals on the biggest line. Everything else is sized from it. Below 5 mm the letters have to be thickened to survive printing, and stop looking like the typeface.">Text size</span><span class="val"></span></div>
                 <input type="range" min="5" max="11" step="0.25" value="7">
+              </div>
+              <div class="sp-slider" data-f="apron_rake">
+                <div class="lab"><span class="name" title="Tips the lettering panel up towards you, so you read it standing in front of the stand rather than from above.">Tilt toward you</span><span class="val"></span></div>
+                <input type="range" min="0" max="25" step="1" value="0">
               </div>
 
             </div>
           </div>
         </details>
 
-        <details class="adv" id="sp-advanced">
+        <!-- A panel, not a drawer inside one. There is nothing "advanced" about
+             a plate margin; what these have in common is that they are set once
+             for a printer and then left, which is a different kind of control
+             from the ones above and deserves a different place, not a smaller
+             one. -->
+        <details class="sp-stage" name="spstage">
           <summary>
-            <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-            Advanced settings
+            <span class="stage-num" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.2"/><circle cx="10" cy="16" r="2.2"/></svg></span>
+            <span>Advanced</span>
+            <span class="stage-sum" id="sum-sp-adv"></span>
+            <svg class="stage-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
           </summary>
-          <div class="drawer">
-          <div class="sp-slider" data-f="plaque_info_mm" style="margin-bottom:0">
-              <div class="lab"><span class="name" title="Millimetres, or Auto at zero for half the plate. The legend keeps the width its own names need and is never shortened; the plate gets wider if the two do not fit side by side.">Width of the left block</span><span class="val"></span></div>
+          <div class="sp-inner">
+            <div class="sp-slider" data-f="plate_margin">
+              <div class="lab"><span class="name" title="How far the plate reaches out past the model's silhouette.">Margin round the model</span><span class="val"></span></div>
+              <input type="range" min="2" max="24" step="0.5" value="7">
+            </div>
+            <div class="sp-slider" data-f="plaque_info_mm">
+              <div class="lab"><span class="name" title="How much of the plaque the left block gets. Auto gives it half. The chain names on the right always keep the width they need, so the plate gets wider instead of either side being squeezed.">Width of the left block</span><span class="val"></span></div>
               <input type="range" min="0" max="140" step="2" value="0">
             </div>
-            <div class="sp-slider" data-f="plaque_min_stroke" style="margin-bottom:0">
-              <div class="lab"><span class="name" title="Only reads on a real typeface. Where a letter's stem would come out thinner than this at the size asked for, the outline is grown by half the shortfall so the slicer does not quietly drop it. Raise it for a 0.6 mm nozzle.">Thinnest printable stroke</span><span class="val"></span></div>
-              <input type="range" min="0.3" max="0.9" step="0.05" value="0.45">
-            </div>
-            <div class="sp-slider" data-f="cradle_clearance" style="margin-bottom:0">
-              <div class="lab"><span class="name" title="How loose the seat is. Untested on your printer — the first print is what should set this, not a guess made here.">Cradle clearance</span><span class="val"></span></div>
+            <div class="sp-slider" data-f="cradle_clearance">
+              <div class="lab"><span class="name" title="How loose the seat is. Your first print is what should set this.">Cradle clearance</span><span class="val"></span></div>
               <input type="range" min="0.1" max="0.8" step="0.05" value="0.35">
             </div>
-            <p class="sp-note warn" style="margin:0">Cradle clearance is still a guess. Let your first print set it.</p>
-            <label class="sp-switch" style="margin-bottom:0"><input type="checkbox" id="sp-pins"><span class="track"></span>Pin the columns to the plate</label>
-            <p class="sp-note" style="margin:-4px 0 0">Prints the plate and the columns as separate parts, joined by a peg into a socket, so you can turn the plate over and print it face down. Lettering printed against a smooth build sheet comes out as good as the sheet; printed upward it comes out as good as an FDM top surface, which is not the same thing. Push together afterwards.</p>
-            <div class="sp-slider" data-f="pin_diameter" style="margin-bottom:0">
-              <div class="lab"><span class="name">Pin &Oslash;</span><span class="val"></span></div>
-              <input type="range" min="2" max="8" step="0.5" value="4">
-            </div>
-            <div class="sp-slider" data-f="pin_depth" style="margin-bottom:0">
-              <div class="lab"><span class="name">Pin depth</span><span class="val"></span></div>
-              <input type="range" min="1" max="8" step="0.5" value="3">
-            </div>
-            <div class="sp-slider" data-f="cradle_depth" style="margin-bottom:0">
-              <div class="lab"><span class="name" title="How far the column's seat wraps up around the model. Deeper resists the model rocking about the line through the columns; too deep and the pocket needs supports of its own, and starts to swallow the part of the structure it is holding. 4 mm suits almost everything.">Cradle depth</span><span class="val"></span></div>
+            <div class="sp-slider" data-f="cradle_depth">
+              <div class="lab"><span class="name" title="How far the seat wraps up around the model. Deeper stops it rocking. Too deep and the pocket needs supports of its own, and starts hiding the structure. 4 mm suits almost everything.">Cradle depth</span><span class="val"></span></div>
               <input type="range" min="1.5" max="9" step="0.5" value="4">
             </div>
-            <div class="sp-slider" data-f="column_edge_frac" style="margin-bottom:0">
+            <div class="sp-slider" data-f="column_edge_frac">
               <div class="lab"><span class="name" title="Higher pulls the columns further in from the silhouette edge, at the cost of how far apart they can get.">Keep columns inboard</span><span class="val"></span></div>
               <input type="range" min="0.15" max="0.8" step="0.05" value="0.45">
+            </div>
+
+            <!-- Last, and its two numbers only once it is on: the same shape as
+                 the ligand block in the main panel. -->
+            <label class="sp-switch" style="margin-bottom:0" title="Splits the plate from the columns and joins them with a peg, so you can print the plate upside down. Lettering printed face-down against the build sheet comes out much cleaner. Push the two together afterwards."><input type="checkbox" id="sp-pins"><span class="track"></span>Pin the columns to the plate</label>
+            <div id="sp-pin-opts" class="switch-body" hidden>
+              <div class="sp-slider" data-f="pin_diameter">
+                <div class="lab"><span class="name">Pin &Oslash;</span><span class="val"></span></div>
+                <input type="range" min="2" max="8" step="0.5" value="4">
+              </div>
+              <div class="sp-slider" data-f="pin_depth" style="margin-bottom:0">
+                <div class="lab"><span class="name">Pin depth</span><span class="val"></span></div>
+                <input type="range" min="1" max="8" step="0.5" value="3">
+              </div>
             </div>
           </div>
         </details>
@@ -2163,7 +2182,7 @@
       <ol>
         <li>Enter a PDB ID, upload a <code>.pdb</code>/<code>.cif</code>, or click one of the examples.</li>
         <li>Pick a style &mdash; surface for a robust print, cartoon or tubes for ribbons, tube-slab for DNA.</li>
-        <li>Set the scale and grid spacing, and connect the chains if you want one piece.</li>
+        <li>Set the size, and choose whether it comes apart or prints as one piece.</li>
         <li>Generate, then download the 3MF and open it in your slicer.</li>
       </ol>
 
@@ -2171,7 +2190,7 @@
       <ul class="new">
         <li><b>Display stands</b> &mdash; after a build, mount the model on a plate with
         carved columns and an engraved plaque: PDB ID, name, scale bar and a
-        colour-matched chain legend. Four column styles and three stand presets.</li>
+        colour-matched chain legend. Three column styles and three presets.</li>
         <li><b>Ligand styles</b> &mdash; hemes, drugs and metals in ball &amp; stick,
         spacefill, surface or sticks, each in its own carved pocket.</li>
       </ul>
@@ -2307,17 +2326,40 @@
     show('atom_radius',      base === 'molecule');
     show('bond_radius',      base === 'molecule');
   }
+  // Padding and probe describe a molecular surface, and there is one pair of
+  // them for both molecules — so they belong to whichever card is asking for a
+  // surface. They used to live permanently in the protein drawer, which meant
+  // that setting DNA to Surface put "Probe radius" and "Surface padding" under
+  // a protein set to Cartoon: two controls that read as cartoon settings,
+  // describing something the protein was not doing. Moved rather than
+  // duplicated, because two controls for one number is two chances to disagree
+  // about what it is.
+  function homeSurfaceFields(pRep, nRep) {
+    const host = pRep === 'surface' ? $('#advanced-surface .drawer')
+               : (nRep === 'surface' ? $('#advanced-dna .drawer') : null);
+    if (!host) return;
+    const anchor = host.querySelector('[data-slider="protein_tube_radius"]');
+    ['surface_padding', 'probe_radius'].forEach(key => {
+      const f = $(`[data-slider="${key}"]`);
+      if (!f || f.parentElement === host) return;
+      if (anchor) host.insertBefore(f, anchor); else host.appendChild(f);
+    });
+  }
+
   function updateReps() {
     const pRep = groups.protein_rep();        // surface | cartoon | tubes
     const nRep = groups.nucleic_rep();         // surface | tube_slab
     $('#tubeslab').hidden = (nRep !== 'tube_slab');
-    const note = $('#dna-surface-note'); if (note) note.hidden = (nRep !== 'surface');
+    // Only worth saying when both are surfaces and therefore actually sharing.
+    const note = $('#dna-surface-note');
+    if (note) note.hidden = !(nRep === 'surface' && pRep === 'surface');
     // Show only the protein shape control relevant to the chosen style.
     const anySurface = pRep === 'surface' || nRep === 'surface';
     const show = (key, on) => { const f = $(`[data-slider="${key}"]`); if (f) f.hidden = !on; };
     show('surface_padding',     anySurface);      // used by any molecular surface
     show('probe_radius',        anySurface);
     show('protein_tube_radius', pRep === 'tubes');
+    homeSurfaceFields(pRep, nRep);
     // Cartoon panel (its own sliders live inside the block, shown/hidden as one).
     const cartoon = pRep === 'cartoon';
     const cartoonBlock = $('#cartoon'); if (cartoonBlock) cartoonBlock.hidden = !cartoon;
@@ -2387,7 +2429,9 @@
   function updateConnOpts() {
     const on = $('#connect').checked;
     const magnets = groups.use_magnets() === 'true';
-    $('#conn-body').hidden = !on;
+    // With magnets everything that was in here has moved into the Magnets
+    // well; leaving the empty container in the flow costs a stray gap.
+    $('#conn-body').hidden = !on || magnets;
     { const nm = $('#conn-nomagnet'); if (nm) nm.hidden = magnets; }  // method lives in the branch now
     $('#conn-magnet').hidden = !magnets;           // diagram + sliders + shape only with magnets
     // The shared diameter slider is the magnet Ø with magnets, bridge Ø without.
@@ -2443,8 +2487,6 @@
       const field = $(`.field[data-slider="${key}"]`);
       if (field) field.hidden = !shown.includes(key);
     });
-    const note = $('#ligand-surface-note');
-    if (note) note.hidden = (style !== 'surface');
   }
   $('#include_ligands').addEventListener('change', updateLigandOpts);
   $('.seg[data-group="ligand_style"]').addEventListener('click', updateLigandOpts);
@@ -3117,7 +3159,7 @@
     column_diameter: 'mm', stand_off: 'mm', cradle_depth: 'mm',
     plate_thickness: 'mm', plate_margin: 'mm', plate_corner: 'mm',
     plaque_text: 'mm', cradle_clearance: 'mm', apron_rake: '°',
-    plaque_min_stroke: 'mm', plaque_info_mm: 'mm',
+    plaque_info_mm: 'mm',
     pin_diameter: 'mm', pin_depth: 'mm', column_edge_frac: '',
   };
   function spNum(field) { const el = spSlider(field); return el ? parseFloat(el.value) : 0; }
@@ -3127,9 +3169,13 @@
   }
 
   // The generated names come from the file header, which is a guess and
-  // sometimes a bad one. One box per legend row, prefilled with whatever the
-  // server last printed; clearing a box sends nothing for that row, and the
-  // server goes back to working the name out.
+  // sometimes a bad one. One box per chain, prefilled with whatever the server
+  // last printed; emptying a box takes that chain off the legend and the ones
+  // below it move up.
+  //
+  // Built from every chain there is, not from the rows currently on the plaque:
+  // a box that vanished the moment you emptied it would be a box you could
+  // never type back into. The placeholder shows the name it would go back to.
   //
   // Rows are addressed by built index, not by chain id: a homodimer has two
   // rows sharing one id and they are not interchangeable.
@@ -3166,7 +3212,13 @@
       input.className = 'sp-text';
       input.maxLength = 48;
       input.dataset.legendIndex = String(r.index);
-      input.value = r.full || r.text || '';
+      // ``label`` is what is set for this chain right now and is empty when the
+      // box has been emptied; ``generated`` is the header's own name, shown as
+      // the placeholder so an empty box still says what typing nothing means.
+      // ``full``/``text`` are the older per-row shape, kept for a server that
+      // has not been restarted yet.
+      input.value = (r.label != null ? r.label : (r.full || r.text || ''));
+      input.placeholder = r.generated || '';
       // Same rule as the name and note fields below: ask the server on blur,
       // not per letter. These were wired the old way, and the debounce caps at
       // 1.4s, so on a slow solve a typist queued full solves that all ran and
@@ -3181,13 +3233,14 @@
     });
   }
 
+  // Every box that exists sends a line, empty ones included: an empty line is
+  // how "leave this chain off the legend" is said. A chain with no line at all
+  // is one this editor has never seen, and the server names that one itself.
   function legendOverrides() {
     const box = document.querySelector('#sp-legend-edit');
     if (!box) return '';
     return Array.from(box.querySelectorAll('input[data-legend-index]'))
-      .map(i => [i.dataset.legendIndex, i.value.trim().replace(/\t/g, ' ')])
-      .filter(([, v]) => v)
-      .map(([k, v]) => `${k}\t${v}`)
+      .map(i => `${i.dataset.legendIndex}\t${i.value.trim().replace(/\t/g, ' ')}`)
       .join('\n');
   }
 
@@ -3217,7 +3270,6 @@
       plaque_tile: spChip('plaque_tile'),
       plaque_relief: spRelief,
       plaque_font: spFont,
-      plaque_min_stroke: spNum('plaque_min_stroke'),
       plaque_info_mm: spNum('plaque_info_mm'),
       plaque_note: $('#sp-note-text').value.trim(),
       plaque_text: spNum('plaque_text'),
@@ -3229,14 +3281,11 @@
   let spFont = 'sans';                        // sans | serif | line
 
   const FONT_HINT = {
-    sans: 'DejaVu Sans Bold, as filled outlines — real lowercase, real counters, '
-        + 'real letterfitting. Bold on purpose: a regular weight at 2 mm has stems '
-        + 'a nozzle cannot draw.',
-    serif: 'DejaVu Serif Bold. The museum-label look, and the serifs give the '
-         + 'lettering more to hold on to at the headline size.',
-    line: 'The built-in stroke font: centre lines swept to a width you choose, so '
-        + 'it is exactly as thick as the nozzle can manage however small it gets. '
-        + 'No lowercase — it sets it as small capitals.',
+    sans: 'Plain and bold, like signage. Bold because at this size a lighter '
+        + 'weight has strokes too thin to print.',
+    serif: 'The museum-label look. The feet on the letters also give them more '
+         + 'to hold on to.',
+    line: 'Single-line strokes, as thick as the nozzle can manage. Capitals only.',
   };
 
   function setFont(key) {
@@ -3289,17 +3338,17 @@
   // thing you can pick.
   const STAND_PRESETS = {
     museum: {
-      shape: 'square', flared: true, relief: 'raised', font: 'sans',
+      shape: 'fluted', flared: true, relief: 'raised', font: 'sans',
       column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
       plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
-      plaque_text: 7.5, apron_rake: 10,
+      plaque_text: 7.5, apron_rake: 0,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
     },
     classical: {
-      shape: 'fluted', flared: true, relief: 'raised', font: 'serif',
+      shape: 'round', flared: false, relief: 'raised', font: 'serif',
       column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
       plate_thickness: 6, plate_margin: 11, plate_corner: 3,
-      plaque_text: 7.5, apron_rake: 8,
+      plaque_text: 7.5, apron_rake: 0,
       content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
     },
     lab: {
@@ -3345,14 +3394,12 @@
   }
 
   const RELIEF_HINT = {
-    flush: 'Everything sunk level with the apron — the tile too. One flat top '
-         + 'surface whose colour changes partway through a layer, which is what '
-         + 'a multi-material printer does best. Nothing proud, nothing hollow.',
-    raised: 'Letters standing off the surface as their own object, so they read '
-          + 'by shadow as well as by colour. Needs a second filament to be worth it.',
-    engraved: 'Cut away, and no separate objects at all — the legend dots are '
-            + 'cut too. The one for a single-filament printer: colour it in later '
-            + 'if you want to.',
+    flush: 'Letters set level with the panel. The face stays flat and only the '
+         + 'colour changes. Best if your printer can change filament.',
+    raised: 'Letters standing off the panel, so they read by their shadow as '
+          + 'well as by colour. Also needs a filament change.',
+    engraved: 'Letters cut into the panel, nothing added. Pick this on a '
+            + 'single-filament printer. You can paint them in later.',
   };
 
   function setRelief(mode) {
@@ -3536,7 +3583,12 @@
     const naturalHalf = w / 2 + vals.plate_margin;
     // Margins, plus a gap between the blocks wide enough that the two tiles
     // keep 2.5 mm of plate between them. Mirrors stand._TILE_GAP_MM.
-    const spare = pad0 * 3 + 2.5;
+    // Mirrors stand._corner_inset / solve_layout: the rounded corner pushes
+    // both blocks inboard and the plate widens to pay for it. Kept in step by
+    // hand, like the rest of this fallback — the server's answer replaces the
+    // whole thing the moment it lands.
+    const edge0 = vals.plaque ? cornerInset(vals.plate_corner, pad0 * 0.55) : 0;
+    const spare = pad0 * 3 + 2.5 + 2 * edge0;
     const naturalUsable = Math.max(12, 2 * naturalHalf - spare);
     const legSize = vals.plaque_text * 0.42;
     let legendNeed = 0;
@@ -3598,7 +3650,7 @@
     return {
       generic: true,
       plate: { x0, x1, y0, y1, top: vals.plate_thickness, corner_mm: vals.plate_corner },
-      apron: { depth: apron, top: y0 + apron, pad,
+      apron: { depth: apron, top: y0 + apron, pad, edge: edge0,
                info_width: infoW, legend_width: legendW,
                rake_deg: vals.apron_rake, rise: 0, lip: 0 },
       model: { min: [-w / 2, -depth / 2, zb], max: [w / 2, depth / 2, zb + h], stand_off: vals.stand_off },
@@ -3909,6 +3961,15 @@
     return pts;
   }
 
+  // How far a rounded corner has bitten into the plate's side, ``b`` above its
+  // front edge. The twin of stand._corner_inset; both ends need it, one to lay
+  // the lettering out and one to draw where it went.
+  function cornerInset(radius, b) {
+    const r = Math.max(0, radius || 0);
+    if (r <= 0 || b >= r) return 0;
+    return r - Math.sqrt(Math.max(0, 2 * r * b - b * b));
+  }
+
   // The plaque content, in millimetres on the apron face. ``s`` runs forward
   // from the back edge of the apron; glyphs stand up the slope, which is what
   // fillText already does relative to a baseline. ``frame`` re-anchors the
@@ -3919,8 +3980,10 @@
     const engraved = lay.plaque.relief === 'engraved';
     const tiled = lay.plaque.tile;
     const ink = engraved ? (tiled ? '#7f858c' : '#0d0f11') : (tiled ? '#4c5158' : '#e9ecef');
-    const infoLeft = plate.x0 + pad;
-    const legendRight = plate.x1 - pad;
+    // Off the corner arc, the same distance on each side. See _corner_inset.
+    const edge = lay.apron.edge || 0;
+    const infoLeft = plate.x0 + pad + edge;
+    const legendRight = plate.x1 - pad - edge;
 
     // The nearest thing a browser has to the face the plaque will be set in.
     // Small caps for the stroke font because that is literally what it draws —
@@ -4327,8 +4390,13 @@
     }
     updateColumnHint();
     updateFontHint();
-    if (standLayout && standLayout.plaque && standLayout.plaque.legend) {
-      renderLegendEditor(standLayout.plaque.legend.filter(r => r.index != null));
+    if (standLayout && standLayout.plaque) {
+      // ``chains`` is every chain there is, including any switched off; a
+      // server old enough not to send it still has the printed rows, which is
+      // what the editor used to be built from.
+      const src = standLayout.plaque.chains
+        || standLayout.plaque.legend || [];
+      renderLegendEditor(src.filter(r => r.index != null));
     }
     drawSketch();
   }
@@ -4346,6 +4414,12 @@
     const on = $('#sp-plaque').checked;
     $('#sp-plaque-opts').style.opacity = on ? '1' : '.45';
     $('#sp-plaque-opts').querySelectorAll('button, input').forEach(el => { el.disabled = !on; });
+    // Both of these are the same rule: a control whose setting is not read is
+    // not shown. The name boxes go with the legend, the pin sizes with the pin.
+    const legendBox = $('#sp-legend-box');
+    if (legendBox) legendBox.hidden = !spChip('plaque_legend');
+    const pinOpts = $('#sp-pin-opts');
+    if (pinOpts) pinOpts.hidden = !$('#sp-pins').checked;
     updateColumnHint();
     drawSketch();
     if (solve) requestPreview();
@@ -4982,16 +5056,15 @@
      their head while looking at a control called Joint type. */
   function syncAssembly() {
     const asm = groups.assembly();          // one_piece | apart
-    const mode = groups.apart_mode();       // magnets   | loose
     $('#asm-fused').hidden = asm !== 'one_piece';
     $('#asm-apart').hidden = asm !== 'apart';
-    const magnets = (asm === 'apart' && mode === 'magnets');
+    const magnets = (asm === 'apart' && $('#magnets').checked);
     setSeg('use_magnets', magnets ? 'true' : 'false');
     $('#connect').checked = (asm === 'one_piece') || magnets;
     updateConnOpts();
   }
   $('.seg[data-group="assembly"]').addEventListener('click', syncAssembly);
-  $('.seg[data-group="apart_mode"]').addEventListener('click', syncAssembly);
+  $('#magnets').addEventListener('change', syncAssembly);
 
   /* ---- accordion ----------------------------------------------------
      <details name> already does this natively; this is the fallback for
@@ -5015,11 +5088,11 @@
   const L_NAME = { ball_stick: 'ball & stick', spacefill: 'spacefill', surface: 'surface', sticks: 'sticks' };
 
   function assemblyPhrase() {
-    const asm = groups.assembly(), mode = groups.apart_mode();
+    const asm = groups.assembly();
     if (asm === 'one_piece') {
       return groups.no_magnet_method() === 'bridge' ? 'one piece, bridged' : 'one piece, inflated';
     }
-    return mode === 'magnets' ? 'takes apart, magnets' : 'takes apart, loose';
+    return $('#magnets').checked ? 'takes apart, magnets' : 'takes apart, loose';
   }
 
   function structureLabel() {
@@ -5074,14 +5147,18 @@
   function spSum() {
     const shapeBtn = $('#sp-shape .sp-card[aria-pressed="true"]');
     const nBtn = $('#sp-columns button[aria-pressed="true"]');
-    const a = $('#sum-sp-columns');
-    if (a) a.textContent = (shapeBtn ? shapeBtn.textContent.trim() : '')
-      + (nBtn ? ' · ' + (nBtn.dataset.n === '0' ? 'auto' : nBtn.dataset.n) : '');
-    const b = $('#sum-sp-plate');
-    if (b) {
+    const a = $('#sum-sp-style');
+    if (a) {
       const t = $('.sp-slider[data-f="plate_thickness"] .val');
+      a.textContent = (shapeBtn ? shapeBtn.textContent.trim() : '')
+        + (nBtn ? ' · ' + (nBtn.dataset.n === '0' ? 'auto' : nBtn.dataset.n) : '')
+        + (t ? ' · ' + t.textContent + ' plate' : '');
+    }
+    const d = $('#sum-sp-adv');
+    if (d) {
       const m = $('.sp-slider[data-f="plate_margin"] .val');
-      b.textContent = (t ? t.textContent : '') + ' · ' + (m ? m.textContent : '') + ' margin';
+      d.textContent = (m ? m.textContent + ' margin' : '')
+        + ($('#sp-pins').checked ? ' · pinned' : '');
     }
     const c = $('#sum-sp-plaque');
     if (c) {
