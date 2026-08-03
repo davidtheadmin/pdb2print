@@ -998,8 +998,12 @@ def _filled_solid(outer, holes, origin: np.ndarray, axis_u: np.ndarray,
     # An unpaired directed edge is a boundary edge: interior edges appear once
     # each way. Read after the winding fix above, so every triangle is already
     # turned the same way and the pairing means what it says.
+    #
+    # ``tolist`` first: this is the one Python-level loop in the glyph path and
+    # iterating the array directly boxes three numpy scalars per triangle, which
+    # on a full plaque is tens of thousands of them for nothing.
     open_edges: dict = {}
-    for ta, tb, tc in tri:
+    for ta, tb, tc in tri.tolist():
         for x, y in ((ta, tb), (tb, tc), (tc, ta)):
             if open_edges.pop((y, x), None) is None:
                 open_edges[(x, y)] = True

@@ -704,6 +704,11 @@
     letter-spacing: -0.01em; color: var(--accent); cursor: pointer;
     transition: background .12s, border-color .12s, color .12s, transform .12s;
   }
+  .stand-btn:disabled {
+    opacity: .45; cursor: default; border-color: var(--line);
+    color: var(--muted); backdrop-filter: none;
+  }
+  .stand-btn:disabled:hover { background: var(--glass); transform: none; }
   .stand-btn:hover {
     background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
     transform: translateY(-1px);
@@ -2900,11 +2905,16 @@
   // and uses to stop the build itself — so Cancel frees the machine, not just
   // the browser.
   let inflight = null;
+  // Which kind: 'model' or 'stand'. The stand button is Cancel during a stand
+  // build and *not a control at all* during a model one, and without this it
+  // could not tell the two apart -- see its click handler.
+  let inflightKind = null;
 
   function cancelBuild() {
     if (!inflight) return;
     inflight.abort();
     inflight = null;
+    inflightKind = null;
   }
 
   // ---- orientation gizmo ----
@@ -3029,6 +3039,13 @@
   const standBtn = $('#stand-btn');
   const standSheet = $('#stand-sheet');
   const standPanel = $('#stand-panel');
+
+  function setStandBtnBusy(busy) {
+    standBtn.disabled = !!busy;
+    standBtn.title = busy
+      ? 'Available when the model has finished writing its download files'
+      : 'Generate a display stand matching the orientation you are looking at';
+  }
 
   function standReady(data) {
     // A *stand* result must not become the thing the next stand is built from:
@@ -4536,7 +4553,18 @@
   // user just came from, so it is where they look to stop it — not the Generate
   // button on the far side of the window.
   standBtn.addEventListener('click', () => {
-    if (inflight) { cancelBuild(); return; }
+    // Only a *stand* build turns this into Cancel. During a model build it is
+    // not a control at all.
+    //
+    // It used to cancel whatever was in flight, and the button is on screen
+    // throughout a second build because the previous one put it there. So
+    // reaching for it while the model was still writing its download files
+    // killed the build -- and cost more than the build: ``generate`` clears
+    // ``standBuild``, so the token the stand would have been raised from went
+    // with it, and the next stand started from a full rebuild of the model.
+    // "The stand takes forever" was this, one click earlier.
+    if (inflightKind === 'stand') { cancelBuild(); return; }
+    if (inflight) return;
     showStandSheet(standSheet.hidden && standPanel.hidden);
   });
   $('#stand-cancel').addEventListener('click', () => showStandSheet(false));
@@ -4565,6 +4593,7 @@
 
     const ctrl = new AbortController();
     inflight = ctrl;
+    inflightKind = 'stand';
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Standing…';
     const standLabel = standBtn.querySelector('span');
@@ -4581,6 +4610,8 @@
       else setReport('Stand failed: ' + err.message, true);
     } finally {
       inflight = null;
+      inflightKind = null;
+      setStandBtnBusy(false);
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
       standLabel.textContent = 'Create display stand';
@@ -4682,6 +4713,8 @@
     titleTouched = false;
     const ctrl = new AbortController();
     inflight = ctrl;
+    inflightKind = 'model';
+    setStandBtnBusy(true);
     ensureViewer();          // downloads while the build runs, not after it
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Building…';
@@ -4698,6 +4731,8 @@
       else setReport('Request failed: ' + err.message, true);
     } finally {
       inflight = null;
+      inflightKind = null;
+      setStandBtnBusy(false);
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
       hideProgress();
