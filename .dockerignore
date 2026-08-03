@@ -17,3 +17,12 @@ docs/
 
 # Photo and video originals. Not needed by the app and 78 MB of build context.
 media/
+
+# The *runtime* cache is a different thing from the repo-root cache/, and it must
+# never enter the build context. deploy/cache is the host side of the bind mount
+# in docker-compose.yml, so on a live server it is every entry the site has ever
+# built — 7.9 GB on 2026-07-30. Docker copies all of it into the daemon and bakes
+# it into the image at /app/deploy/cache, where nothing reads it: the mount lands
+# on /app/cache, not there. It cost ~28 minutes of a 33-minute deploy, and it
+# grows every time somebody builds a model.
+deploy/cache/
