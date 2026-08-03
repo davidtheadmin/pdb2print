@@ -631,7 +631,7 @@ def resolve(mans, chains: List[Chain], params: PrintParams,
     return mans, overlaps, notes
 
 
-def audit(mans, chains: List[Chain]) -> List[str]:
+def audit(mans, chains: List[Chain], ignore=None) -> List[str]:
     """Report any pair still sharing space — the honest end-of-pipeline check.
 
     Interference resolution is exact when it runs on the raw chain solids: the
@@ -640,10 +640,16 @@ def audit(mans, chains: List[Chain]) -> List[str]:
     leave interference that the closing sweep will not remove, because removing
     it would cut a part in two.  That is a real "these will not fit" condition
     and it belongs in the user's face rather than in a comment.
+
+    ``ignore`` is a set of ``(i, j)`` index pairs the caller deliberately left
+    interpenetrating — a pair the user asked to keep fused.  Those share space
+    on purpose, so naming them here would be reporting the request back as a
+    fault.
     """
+    skip = set(ignore or ())
     notes: List[str] = []
     for ov in pair_overlaps(mans, want_pieces=False):
-        if ov.volume < _REPORT_MIN_MM3:
+        if ov.volume < _REPORT_MIN_MM3 or (ov.i, ov.j) in skip:
             continue
         notes.append(
             f"{chains[ov.i].label()} and {chains[ov.j].label()} still share "

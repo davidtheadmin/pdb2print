@@ -6,6 +6,42 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
+## [Unreleased]
+
+Not mesh-affecting on its own: with no override set, a build hashes and comes
+out exactly as it did at 1.2.0, so `CACHE_VERSION` stays at 5. Bridge builds are
+the one exception — see below.
+
+### Added
+
+- **Per-pair joint overrides.** After a build, the Assembly group lists the
+  joints it made and each one can be set to Default, None or Join. None leaves
+  that pair carved apart with nothing joining it. Join leaves the pair fused:
+  its overlap is kept out of the carve, so the two parts stay welded without any
+  new geometry. A pair with no override follows the global setting. Changing one
+  applies on the next Generate.
+- **Zero magnets per interface is a real answer.** Setting either count to zero
+  now vetoes every interface of that kind instead of silently placing one.
+- **A joint reports how many connectors went in.** `count` was left at its
+  default of 1 however many magnets were seated; the real number was only ever
+  in the free-text note.
+- **The connections payload carries the built-index pair** (`ai`, `bi`), so a
+  row can be addressed. Chain ids are not unique — a homodimer gives two rows
+  sharing one id.
+
+### Fixed
+
+- **The bridge count reaches the cache key.** Both magnet counts were dropped
+  from the key whenever magnets were off, which is right for inflate and wrong
+  for the bridge: it reads exactly those two fields to decide how many rods to
+  drop, so two bridge builds asking for different numbers of rods hashed the
+  same. Bridge entries already in `cache/` are unreachable as a result;
+  everything else keeps hitting.
+- **A vetoed joint does not report a refusal.** "No magnet placed — every
+  candidate was refused" used to repeat once per interface about something the
+  user could not act on. Once a pair is set to None that is the plan, and the
+  report comes out clean.
+
 ## [1.2.0] — 2026-08-03
 
 Mesh-affecting: cartoon arrowheads, column tops and the plaque layout all

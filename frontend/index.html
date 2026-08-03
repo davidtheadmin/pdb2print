@@ -531,6 +531,22 @@
   .count-grid { display: grid; grid-template-columns: auto 1fr; gap: 8px 10px; align-items: center; }
   .count-lbl { font-size: 11px; color: var(--muted); white-space: nowrap; }
 
+  /* One joint per row: who it joins on the left, what to do with it on the
+     right. The status line under the names says what the last build gave this
+     pair, and grows an arrow when the control no longer agrees with it — which
+     is the whole of "this is not built yet", said without a paragraph. */
+  .joint-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 6px 0;
+  }
+  .joint-row + .joint-row { border-top: 1px solid var(--border); }
+  .joint-who { min-width: 0; }
+  .joint-pair { font-size: 11.5px; color: var(--text); }
+  .joint-was { display: block; font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .joint-row.pending .joint-was { color: var(--accent); }
+  .joint-seg { flex: none; }
+  .joint-seg button { padding: 4px 8px; font-size: 10.5px; }
+
   /* ===================================================================
      ADVANCED — its own material, everywhere, open or shut
      A drawer that looks like the panel it is inside cannot tell you
@@ -1571,6 +1587,16 @@
               </div>
             </div>
 
+            <!-- The joints the last build made, one row each, with a veto.
+                 Appears after a build and not before, the way the stand panel
+                 does: there is nothing to list until something has been built.
+                 Rows are addressed by built index, never by chain id — a
+                 homodimer gives two rows sharing one id. -->
+            <div class="field" id="joints-panel" hidden>
+              <p class="field-label" title="Default is whatever the setting above does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. A change here applies on the next Generate.">Joints</p>
+              <div id="joint-list"></div>
+            </div>
+
             <!-- The legacy controls. Kept in the DOM because collectForm and
                  updateConnOpts read them by id and by data-group, and a rewrite
                  of the form contract is a separate change from a rewrite of the
@@ -2492,7 +2518,10 @@
   $('.seg[data-group="ligand_style"]').addEventListener('click', updateLigandOpts);
   updateLigandOpts();
   $('.seg[data-group="use_magnets"]').addEventListener('click', updateConnOpts);
-  $('.seg[data-group="no_magnet_method"]').addEventListener('click', updateConnOpts);
+  $('.seg[data-group="no_magnet_method"]').addEventListener('click', () => {
+    updateConnOpts();
+    syncJointsPanel();     // inflate has no per-pair joints to veto
+  });
 
   // ---- live 3D magnet sketch ----
   // A single magnet drawn in isometric-ish 3D so its exact shape reads clearly:
@@ -2664,6 +2693,142 @@
       box.appendChild(pill);
     });
   }
+
+  /* ---- the joints the last build made, and the veto on each -----------
+     Keyed on the built-index pair, never on chain id: a homodimer gives two
+     rows sharing one id and they are not interchangeable. Same reasoning as
+     the legend name boxes in the stand panel.
+
+     A row is a veto, not a method picker. "Default" means "whatever the
+     Assembly control above does for this pair", so nothing here can ever
+     contradict the control that made the joint — it can only take one away. */
+  const jointOverrides = new Map();       // "ai,bi" -> "none" | "join"
+  let jointRowCount = 0;
+
+  // The panel is hidden until there is a build to list, and hidden again while
+  // Inflate is selected: that mode skips the fit pass for the whole model, so a
+  // veto would do nothing at all. The vetoes themselves are kept, so switching
+  // back does not lose them.
+  function syncJointsPanel() {
+    const panel = $('#joints-panel');
+    if (!panel) return;
+    const inflating = groups.assembly() === 'one_piece'
+      && groups.no_magnet_method() === 'inflate';
+    panel.hidden = !jointRowCount || inflating;
+  }
+
+  // What the last build actually gave this pair, in three words.  The full
+  // sentence is still in the report below; a row is not the place for it.
+  function jointWas(c) {
+    if (c.method === 'none') return 'left unjoined';
+    if (c.method === 'join') return c.applied ? 'fused' : 'does not touch';
+    if (!c.applied) return 'nothing placed';
+    const what = c.method === 'bridge' ? 'bridge' : 'magnet';
+    return c.count > 1 ? `${c.count} ${what}s` : `1 ${what}`;
+  }
+
+  const JOINT_KIND = {
+    'protein-protein': 'protein–protein',
+    'dna-protein': 'DNA–protein',
+  };
+
+  function renderJoints(conns) {
+    const box = $('#joint-list');
+    if (!box) return;
+    // Base pairs are a whole-duplex feature with its own switch, and inflate is
+    // a whole-build mode that skips the fit pass entirely — an override would
+    // do nothing in either, and a control that does nothing is worse than no
+    // control. Rows without an index pair come from a server older than this
+    // page and cannot be addressed at all.
+    const rows = (conns || []).filter(c =>
+      c.ai >= 0 && c.bi >= 0 && c.method !== 'basepair' && c.method !== 'inflate');
+
+    // Drop vetoes for pairs this build no longer has, so a leftover cannot
+    // travel to a structure it was never about.
+    const live = new Set(rows.map(c => c.ai + ',' + c.bi));
+    Array.from(jointOverrides.keys()).forEach(k => {
+      if (!live.has(k)) jointOverrides.delete(k);
+    });
+
+    box.textContent = '';
+    jointRowCount = rows.length;
+    syncJointsPanel();
+    if (!rows.length) return;
+
+    rows.forEach(c => {
+      const key = c.ai + ',' + c.bi;
+      const row = document.createElement('div');
+      row.className = 'joint-row';
+      row.dataset.joint = key;
+
+      const who = document.createElement('div');
+      who.className = 'joint-who';
+      const pair = document.createElement('span');
+      pair.className = 'joint-pair';
+      pair.textContent = `${c.a} ↔ ${c.b}`;
+      const was = document.createElement('span');
+      was.className = 'joint-was';
+      was.dataset.was = `${JOINT_KIND[c.kind] || c.kind} · ${jointWas(c)}`;
+      // Which veto this build already ran with, read back from what it did
+      // rather than from what was sent — so a row is only ever "not built yet"
+      // when the control really disagrees with the model on screen. A pair the
+      // global setting left unjoined by itself reports "none" here too, which
+      // is right: picking None on it changes nothing and claims nothing.
+      was.dataset.built = (c.method === 'none' || c.method === 'join')
+        ? c.method : '';
+      who.appendChild(pair);
+      who.appendChild(was);
+
+      // Order on screen is the order the help text names them.
+      const seg = document.createElement('div');
+      seg.className = 'seg joint-seg';
+      [['', 'Default'], ['none', 'None'], ['join', 'Join']].forEach(([v, label]) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.value = v;
+        b.textContent = label;
+        seg.appendChild(b);
+      });
+
+      row.appendChild(who);
+      row.appendChild(seg);
+      box.appendChild(row);
+      paintJoint(row);
+    });
+  }
+
+  // One row's control and its status line, from the veto currently held.
+  function paintJoint(row) {
+    const mode = jointOverrides.get(row.dataset.joint) || '';
+    $$('button', row).forEach(b =>
+      b.classList.toggle('active', b.dataset.value === mode));
+    const was = $('.joint-was', row);
+    const built = was.dataset.was;
+    // The arrow is the whole of "you have changed this and it is not built
+    // yet". Nothing is rebuilt on a click; the next Generate applies it.
+    const pending = mode !== (was.dataset.built || '');
+    row.classList.toggle('pending', pending);
+    was.textContent = pending ? `${built} → ${mode || 'default'}` : built;
+  }
+
+  $('#joint-list').addEventListener('click', e => {
+    const btn = e.target.closest('button');
+    const row = e.target.closest('.joint-row');
+    if (!btn || !row) return;
+    const v = btn.dataset.value;
+    if (v) jointOverrides.set(row.dataset.joint, v);
+    else jointOverrides.delete(row.dataset.joint);
+    paintJoint(row);
+  });
+
+  // One line per vetoed pair, and nothing for the rest: absent means "follow
+  // the global setting", which is what the server reads it as.
+  function jointOverridesField() {
+    return Array.from(jointOverrides.entries())
+      .map(([k, mode]) => k.split(',').join('\t') + '\t' + mode)
+      .join('\n');
+  }
+
   function setReport(text, isError) {
     const r = $('#report');
     r.textContent = text || '';
@@ -2747,6 +2912,7 @@
     fd.append('socket', $('#socket').checked);
     fd.append('socket_wall', sliders.socket_wall.value);
     fd.append('magnet_fit_clearance', sliders.magnet_fit_clearance.value);
+    fd.append('joint_overrides', jointOverridesField());
     fd.append('basepair_connect', $('#basepair_connect').checked);
     return fd;
   }
@@ -2840,6 +3006,7 @@
       v.setAttribute('src', data.glb_url);
     }
     renderLegend(data.chains);
+    renderJoints(data.connections);
     setDownload($('#dl-3mf'), data.threemf_url);
     setDownload($('#dl-stl'), data.stl_url);
     if (data.ok) standReady(data);
@@ -5062,6 +5229,7 @@
     setSeg('use_magnets', magnets ? 'true' : 'false');
     $('#connect').checked = (asm === 'one_piece') || magnets;
     updateConnOpts();
+    syncJointsPanel();
   }
   $('.seg[data-group="assembly"]').addEventListener('click', syncAssembly);
   $('#magnets').addEventListener('change', syncAssembly);

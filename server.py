@@ -712,8 +712,15 @@ def _map_connections(fields: dict) -> ConnectionParams:
                                if "connector_diameter" in fields else 4.0),
         magnet_thickness_mm=float(fields.get("magnet_thickness", 2.0)),
         magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
-        magnet_count=int(float(fields.get("magnet_count", 1))),
-        dna_magnet_count=int(float(fields.get("dna_magnet_count", 1))),
+        # Floored at zero rather than at one: zero now means "no joint on these
+        # interfaces" and has to survive, but a negative count is nonsense that
+        # would read as a veto by accident.
+        magnet_count=max(0, int(float(fields.get("magnet_count", 1)))),
+        dna_magnet_count=max(0, int(float(fields.get("dna_magnet_count", 1)))),
+        # Capped like every other free-text field that reaches the builder: one
+        # line per joint, and a structure has a handful, so 2000 characters is
+        # far more than any real model needs and still bounds the field.
+        joint_overrides=str(fields.get("joint_overrides", "") or "")[:2000],
         socket=_bool(fields.get("socket", True)),
         socket_wall_mm=float(fields.get("socket_wall", 1.5)),
         magnet_fit_clearance_mm=float(fields.get("magnet_fit_clearance", 0.2)),
@@ -1240,6 +1247,7 @@ async def generate(
     socket: str = Form("true"),
     socket_wall: float = Form(1.5),
     magnet_fit_clearance: float = Form(0.2),
+    joint_overrides: str = Form(""),
     basepair_connect: str = Form("false"),
     file: UploadFile | None = None,
 ):
@@ -1326,6 +1334,7 @@ async def generate(
             "magnet_count": magnet_count, "dna_magnet_count": dna_magnet_count,
             "socket": socket, "socket_wall": socket_wall,
             "magnet_fit_clearance": magnet_fit_clearance,
+            "joint_overrides": joint_overrides,
             "basepair_connect": basepair_connect,
         })
     except (ValueError, TypeError) as exc:

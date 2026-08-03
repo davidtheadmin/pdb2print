@@ -82,7 +82,7 @@ shipping parts that quietly will not close.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 from scipy.spatial import cKDTree
@@ -108,17 +108,24 @@ class Connection:
     a_id: str
     b_id: str
     kind: str            # protein-protein | dna-protein | dna-dna | dna-basepair
-    method: str          # magnet | inflate | bridge | basepair
+    method: str          # magnet | inflate | bridge | basepair | none | join
     gap_mm: float = 0.0
     count: int = 1
     applied: bool = True
     note: str = ""
+    #: The two built indices this row is about.  Chain ids are not unique — a
+    #: homodimer gives two rows sharing one id — so the index pair is the only
+    #: thing the front end can address a row by.  Same reasoning, and the same
+    #: shape, as ``plaque_legend_labels`` keying on built index.
+    ai: int = -1
+    bi: int = -1
 
     def as_dict(self) -> dict:
         return {
             "a": self.a_id, "b": self.b_id, "kind": self.kind,
             "method": self.method, "gap_mm": round(float(self.gap_mm), 2),
             "count": self.count, "applied": self.applied, "note": self.note,
+            "ai": self.ai, "bi": self.bi,
         }
 
 
@@ -160,6 +167,41 @@ def _min_wall_radius(params: PrintParams, r: float) -> float:
     if params.min_wall_mm > 0:
         return max(r, params.min_wall_mm / 2.0)
     return r
+
+
+#: The two things a user can say about one pair.  Not a method picker: a pair
+#: with no override follows the global setting, so this can only ever remove a
+#: joint the build would have made, never contradict the control that made it.
+JOINT_MODES = ("none", "join")
+
+
+def joint_overrides(raw: str) -> Dict[Tuple[int, int], str]:
+    """Parse ``i<TAB>j<TAB>mode`` lines into ``{(i, j): mode}`` with ``i < j``.
+
+    Best-effort by design, like :func:`stand.legend_overrides`: a malformed line
+    is skipped rather than raised on, because one typo must not cost the user
+    the other rows or the build.  An unknown mode is a malformed line.
+
+    The pair is normalised to ``i < j`` so a caller that wrote it the other way
+    round still addresses the row it meant.  A pair naming the same index twice
+    is dropped — there is no such joint.  A pair that is not offered at all (a
+    ligand, two DNA strands, two parts that never touch) is left in the mapping
+    and simply never looked up.
+    """
+    out: Dict[Tuple[int, int], str] = {}
+    for line in (raw or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        try:
+            i, j = int(parts[0].strip()), int(parts[1].strip())
+        except ValueError:
+            continue
+        mode = parts[2].strip().lower()
+        if mode not in JOINT_MODES or i == j or i < 0 or j < 0:
+            continue
+        out[(min(i, j), max(i, j))] = mode
+    return out
 
 
 def _kind(a: Chain, b: Chain) -> str:
@@ -1282,7 +1324,7 @@ def _socket_scale_note(built, cp: ConnectionParams) -> str:
 def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
                   params: PrintParams, markers: list,
                   overlap=None, gap_falloff: float = None,
-                  hidden_weight: float = None) -> Tuple[bool, str]:
+                  hidden_weight: float = None) -> Tuple[bool, str, int]:
     """Seat ``count`` press-fit magnet pockets on the best-scoring contacts.
 
     The pocket is cut oversize on purpose (see ``magnet_fit_clearance_mm`` /
@@ -1362,7 +1404,7 @@ def _apply_magnet(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
 
 
 def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
-                  params: PrintParams, overlap=None) -> Tuple[bool, str]:
+                  params: PrintParams, overlap=None) -> Tuple[bool, str, int]:
     """Join two parts with clean flat-ended cylinders on the best contacts.
 
     Same seat selection and same collar as the magnet joint, minus the pocket —
@@ -1403,7 +1445,14 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
 
 
 def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
-    """The (ok, human note) pair reported back to the UI for one interface."""
+    """The ``(ok, human note, placed)`` triple reported back to the UI.
+
+    ``placed`` is returned because it is the real number of connectors that went
+    in, and until now it existed only inside the free-text note: the call site
+    never passed ``count`` to :class:`Connection`, so a three-magnet interface
+    reported ``count = 1``.  The joints list shows that number, so it has to be
+    a number rather than a phrase.
+    """
     seated = seats[:max(placed, 1)]
     extra: list = []
     # One measure now, because the search takes one: how much of the probe ball
@@ -1420,15 +1469,15 @@ def _joint_note(placed: int, attempted: int, reasons, what: str, seats):
                          f"backbone or a larger scale would seat it better")
     if placed and not reasons:
         parts = ([f"{placed} {what}s"] if placed > 1 else []) + extra
-        return True, "; ".join(parts)
+        return True, "; ".join(parts), placed
     joined = "; ".join(sorted(set(reasons)) + extra)
     if placed:
-        return True, f"placed {placed}/{attempted} — skipped: {joined}"
+        return True, f"placed {placed}/{attempted} — skipped: {joined}", placed
     if not attempted and _LAST_REFUSALS:
         why = ", ".join(f"{n}x {reason}" for reason, n
                         in sorted(_LAST_REFUSALS.items(), key=lambda kv: -kv[1]))
-        return False, f"no {what} placed — every candidate was refused: {why}"
-    return False, f"no {what} placed — " + (joined or "no contact")
+        return False, f"no {what} placed — every candidate was refused: {why}", 0
+    return False, f"no {what} placed — " + (joined or "no contact"), 0
 
 
 #: Weld overlap added on top of the measured gap, so the two surfaces actually
@@ -1917,6 +1966,26 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     inflate = cp.connect and not cp.use_magnets \
         and cp.no_magnet_method == NoMagnetMethod.INFLATE
 
+    # What the user vetoed by hand, keyed on the built-index pair.  Read once:
+    # ``none`` is consulted in the joint loop below, ``join`` also has to reach
+    # the fit pass above it, and both have to agree about which pairs they mean.
+    overrides = joint_overrides(getattr(cp, "joint_overrides", ""))
+
+    def _override(i: int, j: int, kind: str) -> str:
+        """The mode in force for one pair: ``none``, ``join``, or ``""``.
+
+        A count of zero is folded in here rather than at the count's own site,
+        so "none on every protein interface" and "none on this one" take the
+        same path out of the loop and report identically.  The clamp inside
+        ``_find_seats`` is left alone — it is protecting that search from a
+        degenerate input, not expressing a policy.
+        """
+        mode = overrides.get((min(i, j), max(i, j)), "")
+        if mode:
+            return mode
+        n = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
+        return "none" if n <= 0 else ""
+
     # 1a) Inflate is the one mode that *wants* the parts to overlap — it grows
     #     neighbouring surfaces until they weld into one body — so the fit pass
     #     is skipped for it rather than undoing the join it just made.
@@ -1977,12 +2046,12 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id,
                     _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
-                    applied=True, note=note))
+                    applied=True, note=note, ai=i, bi=j))
             else:
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id,
                     _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
-                    applied=False,
+                    applied=False, ai=i, bi=j,
                     note="neither part can be grown without changing its "
                          "proportions (a cartoon ribbon's thickness is tied to "
                          "its width) — use magnets or a bridge for this joint"))
@@ -1991,9 +2060,51 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
 
     # 1c) Make the solids physically disjoint, and remember where they were not.
     overlaps = {}
+    #: Pairs the user asked to keep fused.  Held for the whole pass: the carve
+    #: below has to leave them alone, and so does the closing sweep near the end
+    #: — that second ``resolve`` runs its own full sweep, so a pair joined here
+    #: is carved straight back apart unless it is excluded there too.
+    joined: set = set()
     if do_fit and not inflate:
         step(0.05, "Checking how the parts fit together…")
         found = interference.pair_overlaps(mans)
+
+        # "Join" means skipping the carve, not growing anything. The chains are
+        # built overlapping and this pass is what pulls them apart, so leaving a
+        # pair's overlap out of the list leaves the two interpenetrating, which
+        # is welded: no new geometry, no rebuilt chain, no gauge change.
+        #
+        # An override naming a pair that is not offered — a ligand, two DNA
+        # strands, an index that does not exist — is ignored without complaint.
+        n_built = len(chains)
+        joined = {
+            (i, j) for (i, j), m in overrides.items()
+            if m == "join" and i < n_built and j < n_built
+            and _joinable(chains[i], chains[j])
+            and _kind(chains[i], chains[j]) != "dna-dna"
+        }
+        if joined:
+            _has_overlap = {(o.i, o.j) for o in found}
+            for i, j in sorted(joined):
+                if (i, j) in _has_overlap:
+                    applied.append(Connection(
+                        chains[i].chain_id, chains[j].chain_id,
+                        _kind(chains[i], chains[j]), "join",
+                        gap_mm=0.0, count=0, applied=True, ai=i, bi=j,
+                        note="left fused — set by hand"))
+                else:
+                    # Nothing to skip carving, so the two simply stay where they
+                    # are. Welding a gapped pair would mean adding geometry,
+                    # which is the one thing "join" does not do.
+                    _pa, _pb, _gap = _nearest(meshes[i], meshes[j])
+                    applied.append(Connection(
+                        chains[i].chain_id, chains[j].chain_id,
+                        _kind(chains[i], chains[j]), "join",
+                        gap_mm=_gap, count=0, applied=False, ai=i, bi=j,
+                        note="these two do not touch, so there is nothing "
+                             "to fuse"))
+            found = [o for o in found if (o.i, o.j) not in joined]
+
         if found:
             step(0.15, f"Carving {len(found)} overlapping interface(s) apart…")
         before = list(mans)
@@ -2046,10 +2157,35 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 # them, so it should be the only thing that does.
                 if kind == "dna-dna":
                     continue
+                mode = _override(i, j, kind)
+                if mode == "none":
+                    # Checked *after* the contact test, so the list only ever
+                    # carries pairs the build would really have joined. The fit
+                    # pass still ran for this pair, so the two parts are still
+                    # carved to fit each other — there is simply nothing holding
+                    # them, which is exactly what a no-connect build produces at
+                    # every interface.
+                    #
+                    # It is reported rather than dropped: a joint that vanishes
+                    # from the list is a joint the user cannot un-veto. And it
+                    # reports the plan, not a failure, so the "no magnet placed
+                    # — every candidate was refused" line does not appear for
+                    # it. On a structure where several interfaces refuse a
+                    # magnet, that warning used to repeat once per pair about
+                    # something the user had already decided.
+                    applied.append(Connection(
+                        chains[i].chain_id, chains[j].chain_id, kind, "none",
+                        gap_mm=gap, count=0, applied=False, ai=i, bi=j,
+                        note="left unjoined — set by hand"))
+                    continue
+                if mode == "join":
+                    # Reported by the join pass above, which had to run before
+                    # the carve. Nothing to add and nothing to seat here.
+                    continue
                 if cp.use_magnets:
                     method = "magnet"
                     first_mark = len(markers)
-                    ok, note = _apply_magnet(
+                    ok, note, placed = _apply_magnet(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
                         markers, overlap=overlap,
                         # Two proteins meet across a broad face, and the middle
@@ -2074,12 +2210,13 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         mark["b"] = chains[j].chain_id
                 else:
                     method = "bridge"
-                    ok, note = _apply_bridge(
+                    ok, note, placed = _apply_bridge(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
                         overlap=overlap)
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id, kind, method,
-                    gap_mm=gap, applied=ok, note=note))
+                    gap_mm=gap, count=placed, applied=ok, note=note,
+                    ai=i, bi=j))
 
     # 2) DNA interstrand base-pair connect.
     if cp.basepair_connect:
@@ -2088,7 +2225,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 mans[i], mans[j], chains[i], chains[j], params)
             applied.append(Connection(
                 chains[i].chain_id, chains[j].chain_id, "dna-basepair", "basepair",
-                count=n_links, applied=n_links > 0,
+                count=n_links, applied=n_links > 0, ai=i, bi=j,
                 note=f"{n_links} base-pair link(s)" if n_links else "no base pairs found",
             ))
 
@@ -2098,9 +2235,26 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     #     do not interpenetrate" a property of the pass as a whole rather than of
     #     each step remembering to behave, which is the only version of that
     #     guarantee worth having.  It is normally a no-op and reports nothing.
-    if do_fit and not inflate and any(c.applied for c in applied):
+    #
+    #     "none" and "join" are excluded from the gate because neither adds
+    #     material: a vetoed pair leaves nothing behind to re-check, and a
+    #     joined one is the thing this sweep must not touch. Letting either
+    #     trigger it would buy a full O(n²) sweep to confirm a known negative.
+    _added = any(c.applied and c.method not in ("none", "join")
+                 for c in applied)
+    if do_fit and not inflate and _added:
         step(0.93, "Re-checking the fit after connecting…")
-        mans, _again, late = interference.resolve(mans, chains, params,
+        # The trap in this feature: left to itself this call takes no overlap
+        # list, runs its own full sweep and carves every joined pair straight
+        # back apart — undoing the join a few lines after it was made. When
+        # anything is joined the sweep is run here, with the same flags, and the
+        # joined pairs are dropped before ``resolve`` ever sees them.
+        _late = None
+        if joined:
+            _late = [o for o in interference.pair_overlaps(
+                         mans, want_pieces=False, want_boxes=True)
+                     if (o.i, o.j) not in joined]
+        mans, _again, late = interference.resolve(mans, chains, params, _late,
                                                   allow_split=False,
                                                   want_pieces=False,
                                                   want_boxes=True)
@@ -2116,7 +2270,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         # is the normal one, that was a third of the interference stage spent
         # confirming a known negative.
         if _again:
-            fit_notes.extend(interference.audit(mans, chains))
+            fit_notes.extend(interference.audit(mans, chains, ignore=joined))
 
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
     step(0.97, "Rebuilding meshes…")

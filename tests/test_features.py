@@ -412,8 +412,11 @@ def _blocks_join(gap_mm: float, socket: bool):
                           magnet_thickness_mm=0.5,      # 2T = 1.0 mm
                           contact_threshold_mm=4.0)
     markers: list = []
-    ok, note = cx._apply_magnet(mans, 0, 1, meshes[0], meshes[1], 1, cp,
-                                PrintParams(), markers)
+    # The third value is how many magnets really went in — the number the
+    # joints list shows, which used to exist only inside ``note``.
+    ok, note, placed = cx._apply_magnet(mans, 0, 1, meshes[0], meshes[1], 1, cp,
+                                        PrintParams(), markers)
+    assert placed == len(markers)
     return ok, note, markers, [_manifold.to_trimesh(m) for m in mans]
 
 
@@ -1182,3 +1185,157 @@ def test_rod_rung_honours_its_thickness_setting():
         return meshops.repair(geometry.generate_chain_mesh(chain, p)).volume
 
     assert vol(slab_thickness_mm=2.5) > vol(slab_thickness_mm=1.0) * 1.2
+
+
+# --------------------------------------------------------------------------
+# Per-pair joint overrides
+# --------------------------------------------------------------------------
+def test_joint_override_parser_is_best_effort():
+    """One bad line costs that line and nothing else."""
+    from pdb2print.connections import joint_overrides
+    got = joint_overrides(
+        "0\t1\tnone\n"
+        "3\t2\tjoin\n"        # written the other way round
+        "x\ty\tnone\n"        # not numbers
+        "4\t4\tnone\n"        # a pair with itself is not a joint
+        "5\t6\tmagnet\n"      # not one of the two modes
+        "7\t8\n"              # no mode at all
+        "\n"
+    )
+    assert got == {(0, 1): "none", (2, 3): "join"}
+    assert joint_overrides("") == {}
+    assert joint_overrides(None) == {}
+
+
+def test_joint_overrides_reach_the_cache_key_in_every_branch():
+    """Two different override sets must never share one cache entry.
+
+    ``canonical_params`` prunes the connections block in four branches and two
+    of them replace the dict wholesale.  A ``join`` changes the interference
+    carve, and that pass runs whether or not the connect switch is on, so the
+    field has to survive even the branch that throws the joinery away.
+    """
+    from pdb2print import cache
+
+    def key(**conn):
+        return cache.key_for(BNA, _params(**conn))
+
+    for branch in (
+        dict(connect=False, basepair_connect=False),      # 1: dict replaced
+        dict(connect=False, basepair_connect=True),       # 2: dict replaced
+        dict(connect=True, use_magnets=False),            # 3: keys popped
+        dict(connect=True, use_magnets=True),             # 4: keys popped
+    ):
+        plain = key(**branch)
+        none = key(**branch, joint_overrides="0\t1\tnone")
+        join = key(**branch, joint_overrides="0\t1\tjoin")
+        assert len({plain, none, join}) == 3, branch
+
+
+def test_empty_joint_overrides_do_not_move_the_cache_key():
+    """Empty means today's behaviour, so it has to mean today's key.
+
+    Otherwise adding the field would orphan every entry already in ``cache/``,
+    including the pre-generated ones shipped in the repo.
+    """
+    from pdb2print import cache
+    p = _params(connect=True, use_magnets=True)
+    before = cache.key_for(BNA, p)
+    p.connections.joint_overrides = ""
+    assert cache.key_for(BNA, p) == before
+
+
+def test_bridge_count_reaches_the_cache_key():
+    """The bridge reads the two magnet counts, so they must be part of its key.
+
+    They used to be dropped for the whole no-magnets branch, which was right for
+    inflate — it never runs the seat search — and wrong for the bridge, which
+    uses exactly those two fields to decide how many rods to drop.
+    """
+    from pdb2print import cache
+    from pdb2print.config import NoMagnetMethod
+
+    def key(n):
+        return cache.key_for(BNA, _params(
+            connect=True, use_magnets=False,
+            no_magnet_method=NoMagnetMethod.BRIDGE, magnet_count=n))
+
+    assert key(1) != key(3)
+
+
+def test_none_veto_leaves_the_pair_unjoined_and_says_so():
+    """A vetoed pair keeps its row, reports the plan, and gets no connector."""
+    report = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    magnets = [c for c in report.connections if c["method"] == "magnet"
+               and c["applied"]]
+    assert magnets, "nothing to veto in the baseline build"
+    i, j = magnets[0]["ai"], magnets[0]["bi"]
+
+    vetoed = build_all(OVERLAP, _params(
+        connect=True, use_magnets=True,
+        joint_overrides=f"{i}\t{j}\tnone"))
+    row = [c for c in vetoed.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1, "a vetoed joint must stay in the list to be un-vetoed"
+    assert row[0]["method"] == "none"
+    assert row[0]["count"] == 0
+    # No refusal warning for something the user already decided.
+    assert "refused" not in row[0]["note"]
+    assert _all_watertight_single(vetoed)
+    # And no magnet went in for that pair.
+    for m in vetoed.connection_markers:
+        assert {m.get("a"), m.get("b")} != {row[0]["a"], row[0]["b"]}
+
+
+def test_zero_count_vetoes_every_pair_of_that_kind():
+    """Zero is a real answer, and it is the same skip a hand veto takes."""
+    report = build_all(OVERLAP, _params(
+        connect=True, use_magnets=True, magnet_count=0, dna_magnet_count=0))
+    joins = [c for c in report.connections if c["kind"] != "dna-basepair"]
+    assert joins, "no interfaces found at all"
+    assert all(c["method"] == "none" for c in joins)
+    assert not report.connection_markers
+    assert _all_watertight_single(report)
+
+
+def test_join_keeps_a_pair_fused_through_the_closing_sweep():
+    """The trap: the sweep after connecting must not carve a joined pair apart.
+
+    That second ``interference.resolve`` takes no overlap list of its own, so it
+    runs a full sweep and will undo the join unless the pair is excluded there
+    too.  What is pinned here is the outcome — the two solids still share space
+    at the end of the whole pass, and every other pair does not.
+    """
+    from pdb2print import interference
+    from pdb2print.representations import _manifold
+
+    baseline = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    mans = [_manifold.from_trimesh(m) for _c, m in baseline.built]
+    assert interference.residual_overlap(mans) < 1.0, "baseline already overlaps"
+
+    # A pair the carve really had to pull apart, so there is an overlap to skip.
+    carved = [c for c in baseline.connections
+              if c["kind"] in ("protein-protein", "dna-protein")]
+    assert carved
+    i, j = carved[0]["ai"], carved[0]["bi"]
+
+    fused = build_all(OVERLAP, _params(
+        connect=True, use_magnets=True, joint_overrides=f"{i}\t{j}\tjoin"))
+    row = [c for c in fused.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1 and row[0]["method"] == "join"
+
+    mans = [_manifold.from_trimesh(m) for _c, m in fused.built]
+    shared = {(o.i, o.j): o.volume
+              for o in interference.pair_overlaps(mans, want_pieces=False)}
+    if row[0]["applied"]:
+        assert shared.get((i, j), 0.0) > 0.0, "the join was carved back apart"
+        # Nothing else was left interpenetrating on the way.
+        assert all(v < 1.0 for k, v in shared.items() if k != (i, j))
+        # And the request is not reported back as a fault.
+        assert not any("still share" in w for w in fused.warnings)
+    else:
+        # The pair does not touch: nothing to skip carving, and saying so is
+        # the whole of the answer.  No geometry is invented for it.
+        assert "do not touch" in row[0]["note"]
+        assert not shared
+
+    assert all(m.is_watertight for _c, m in fused.built)

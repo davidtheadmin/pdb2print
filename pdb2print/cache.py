@@ -234,25 +234,56 @@ def canonical_params(params: PrintParams) -> dict:
     # The connections block is large and almost entirely irrelevant when the
     # pass is off.  Keep the two switches so "off" cannot collide with "on".
     conn = data.get("connections") or {}
+    # Per-pair joint overrides have to survive *every* branch below, including
+    # the two that replace the whole dict.  A ``join`` changes the interference
+    # carve, and that pass runs whether or not the connect switch is on — so
+    # dropping the field where connect is off would let two different override
+    # sets collide on one cache entry and serve the wrong geometry.
+    #
+    # An *empty* override is dropped instead, in every branch.  Empty means
+    # today's behaviour, so it must also mean today's key: leaving the field in
+    # would change the canonical dict for every ordinary build and orphan the
+    # whole existing cache, including the entries shipped in the repo.  That is
+    # why ``CACHE_VERSION`` does not need a bump for this feature.
+    _overrides = conn.get("joint_overrides") or ""
+    if not _overrides:
+        conn.pop("joint_overrides", None)
+
+    def _keep_overrides(reduced: dict) -> dict:
+        if _overrides:
+            reduced["joint_overrides"] = _overrides
+        return reduced
+
     if not (conn.get("connect") or conn.get("basepair_connect")):
-        data["connections"] = {"connect": False, "basepair_connect": False}
+        data["connections"] = _keep_overrides(
+            {"connect": False, "basepair_connect": False})
     elif not conn.get("connect"):
-        # Base-pair connection only: nothing about the chain-join joinery is read.
-        data["connections"] = {
+        # Base-pair connection only: nothing about the chain-join joinery is
+        # read — except the overrides, which reach the fit pass, not the joinery.
+        data["connections"] = _keep_overrides({
             "connect": False,
             "basepair_connect": True,
             "basepair_max_dist_ang": conn.get("basepair_max_dist_ang"),
-        }
+        })
     elif not conn.get("use_magnets"):
-        for k in ("magnet_thickness_mm", "magnet_shape", "magnet_count",
-                  "dna_magnet_count", "magnet_fit_clearance_mm",
+        for k in ("magnet_thickness_mm", "magnet_shape",
+                  "magnet_fit_clearance_mm",
                   "magnet_depth_clearance_mm", "magnet_chamfer_mm"):
             conn.pop(k, None)
         # "inflate" grows the surfaces together and never reads a diameter or
         # builds a collar; "bridge" reads both.
         if conn.get("no_magnet_method") == "inflate":
             for k in ("connector_diameter_mm", "socket", "socket_wall_mm",
-                      "path_clearance_mm"):
+                      "path_clearance_mm",
+                      # Inflate never runs the seat search, so the two counts
+                      # are genuinely unread here — but *only* here.  They used
+                      # to be dropped for the whole no-magnets branch, which was
+                      # wrong: the bridge reads exactly these two fields to
+                      # decide how many rods to drop, so two bridge builds
+                      # asking for different numbers of rods hashed the same.
+                      # Now that zero is a veto, that collision would also serve
+                      # a bridged model to someone who asked for no joints.
+                      "magnet_count", "dna_magnet_count"):
                 conn.pop(k, None)
     else:
         conn.pop("no_magnet_method", None)   # unused once magnets are on

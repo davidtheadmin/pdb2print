@@ -292,12 +292,27 @@ class ConnectionParams:
     magnet_thickness_mm: float = 2.0
     magnet_shape: MagnetShape = MagnetShape.ROUND
     #: How many magnets per protein↔protein interface (spread across the contact
-    #: patch).
+    #: patch).  Zero is a real answer and means "no joint on these interfaces",
+    #: which is not the same as turning the whole pass off.
     magnet_count: int = 1
     #: How many magnets per DNA↔protein interface.  These contact patches are
     #: usually smaller than protein↔protein ones, so this is exposed separately
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
+
+    #: Per-pair vetoes supplied by the user, as ``i<TAB>j<TAB>mode`` lines with
+    #: ``i < j`` (built indices, not chain ids) and mode ``none`` or ``join``.
+    #: A pair with no line follows whatever the global setting says, so this
+    #: never contradicts the control above it — it only removes joints the build
+    #: would otherwise have made.
+    #:
+    #: ``none`` leaves the pair carved apart with nothing joining it. ``join``
+    #: leaves the pair's overlap uncarved, so the two parts stay welded; it adds
+    #: no geometry and is not the inflate path.
+    #:
+    #: Kept as the raw string rather than a mapping so it canonicalises into the
+    #: cache key by itself, the way ``plaque_legend_labels`` does.
+    joint_overrides: str = ""
 
     # --- flush socket (magnets *and* bridge) ---------------------------
     #: Raise a flat-faced cylindrical collar around the joint on both parts so
