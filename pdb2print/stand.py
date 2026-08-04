@@ -51,6 +51,7 @@ from . import typeset
 from .config import (
     ColumnShape, MoleculeType, PlaqueRelief, PrintParams, StandParams,
     color_for_index,
+    _palette_index,
 )
 from .representations import _manifold
 
@@ -1726,7 +1727,12 @@ def solve_layout(built, params: PrintParams,
             "index": i,
             "chain_id": str(getattr(chain, "chain_id", "?")),
             "label": overrides[i] if i in overrides else legend_label(chain, i),
-            "color": color_for_index(i),
+            # The dot has to be the colour the chain is really exported in, and
+            # that follows its position in the structure rather than its
+            # position in this build — see ``export.object_colors``. The row is
+            # still keyed on the built index, which is what the plaque's own
+            # layout and the label overrides are keyed on.
+            "color": color_for_index(_palette_index(chain, i)),
         }
         # Every chain, whether or not it ends up on the plaque: the editor is
         # built from this, so a row somebody emptied still has a box to type

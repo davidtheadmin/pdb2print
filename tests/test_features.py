@@ -1339,3 +1339,102 @@ def test_join_keeps_a_pair_fused_through_the_closing_sweep():
         assert not shared
 
     assert all(m.is_watertight for _c, m in fused.built)
+
+
+# --------------------------------------------------------------------------
+# Chain exclusion, and the stable identity it needs
+# --------------------------------------------------------------------------
+def test_split_chains_numbers_every_chain_in_source_order():
+    """The index is the only stable name a chain has."""
+    atoms, _ = io.load_with_names(OVERLAP)
+    got = chains_mod.split_chains(atoms)
+    assert [c.index for c in got] == list(range(len(got)))
+
+
+def test_excluded_chain_parser_is_best_effort():
+    from pdb2print.chains import parse_excluded
+    assert parse_excluded("0, 2 ,x,,3\n5") == {0, 2, 3, 5}
+    assert parse_excluded("") == set()
+    assert parse_excluded(None) == set()
+    assert parse_excluded("-1") == set()          # no such chain
+
+
+def test_excluding_a_chain_leaves_the_others_alone():
+    """The point of the source index: nothing about the kept chains moves.
+
+    Colour especially. Excluding a chain used to shift every chain after it onto
+    the next palette entry, which is a bad surprise for anyone who has already
+    printed half a model in matching filament.
+    """
+    import dataclasses
+    from pdb2print import export
+
+    full = build_all(OVERLAP, _params())
+    assert len(full.built) >= 3
+    colors = {c.chain_id: col for (c, _m), col
+              in zip(full.built, export.object_colors(full.built))}
+    drop = full.built[0][0].index
+
+    cut = build_all(OVERLAP, dataclasses.replace(
+        _params(), exclude_chains=str(drop)))
+    assert len(cut.built) == len(full.built) - 1
+    assert all(c.index != drop for c, _m in cut.built)
+    assert _all_watertight_single(cut)
+
+    kept = {c.chain_id: col for (c, _m), col
+            in zip(cut.built, export.object_colors(cut.built))}
+    for cid, col in kept.items():
+        assert col == colors[cid], f"chain {cid} was recoloured by the exclusion"
+
+
+def test_a_joint_veto_survives_excluding_another_chain():
+    """Vetoes are keyed on the source pair, so a dropped chain cannot move one.
+
+    Keyed on built position instead, removing a chain would silently slide every
+    veto after it onto a different pair — the quietest possible way to get the
+    wrong model.
+    """
+    import dataclasses
+    base = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    pairs = [(c["ai"], c["bi"]) for c in base.connections
+             if c["method"] == "magnet"]
+    assert len(pairs) >= 2
+
+    # Drop a chain that is in neither of the first pair's ends, so the pair
+    # itself survives and only the numbering could have moved.
+    ends = set(pairs[0])
+    spare = next(c.index for c, _m in base.built if c.index not in ends)
+    i, j = pairs[0]
+
+    cut = build_all(OVERLAP, dataclasses.replace(
+        _params(connect=True, use_magnets=True),
+        exclude_chains=str(spare),
+        connections=dataclasses.replace(
+            _params(connect=True, use_magnets=True).connections,
+            joint_overrides=f"{i}\t{j}\tnone")))
+    row = [c for c in cut.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1, "the vetoed pair lost its identity when a chain went"
+    assert row[0]["method"] == "none"
+    assert _all_watertight_single(cut)
+
+
+def test_excluding_every_chain_is_refused():
+    import dataclasses
+    atoms, _ = io.load_with_names(BNA)
+    n = len(chains_mod.split_chains(atoms))
+    with pytest.raises(ValueError):
+        build_all(BNA, dataclasses.replace(
+            _params(), exclude_chains=",".join(str(i) for i in range(n))))
+
+
+def test_exclude_chains_reaches_the_cache_key():
+    """It changes which objects exist, so it can never be merged away."""
+    import dataclasses as dc
+    from pdb2print import cache
+    p = _params()
+    plain = cache.key_for(BNA, p)
+    assert cache.key_for(BNA, dc.replace(p, exclude_chains="0")) != plain
+    assert cache.key_for(BNA, dc.replace(p, exclude_chains="1")) != \
+        cache.key_for(BNA, dc.replace(p, exclude_chains="0"))
+    # ...and an empty list is today's behaviour, so it has to be today's key.
+    assert cache.key_for(BNA, dc.replace(p, exclude_chains="")) == plain

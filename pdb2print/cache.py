@@ -165,6 +165,19 @@ def canonical_params(params: PrintParams) -> dict:
     # Its *thickness* is a different matter and does drop out: with ligands off
     # nothing reads it, so someone who nudged the ligand slider and then switched
     # ligands off still hits the build they would have got anyway.
+    # ``exclude_chains`` is never dropped either, for exactly the reason
+    # ``include_ligands`` is not: it changes *which objects exist*, and it also
+    # changes the ones that remain — a chain with a neighbour switched off is no
+    # longer carved to fit it and no longer offered a joint to it. There is no
+    # setting under which "with chain B" and "without chain B" are the same file.
+    #
+    # Empty is removed rather than kept, the same as ``joint_overrides``: an
+    # empty list means today's behaviour, so it has to mean today's key, or
+    # every entry already in ``cache/`` would be orphaned by a field none of
+    # them ever set.
+    if not data.get("exclude_chains"):
+        data.pop("exclude_chains", None)
+
     if not data.get("include_ligands"):
         drop("ligand_style", "ligand_atom_mm", "ligand_bond_mm",
              "ligand_vdw_scale")

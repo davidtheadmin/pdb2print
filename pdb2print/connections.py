@@ -113,10 +113,13 @@ class Connection:
     count: int = 1
     applied: bool = True
     note: str = ""
-    #: The two built indices this row is about.  Chain ids are not unique — a
-    #: homodimer gives two rows sharing one id — so the index pair is the only
-    #: thing the front end can address a row by.  Same reasoning, and the same
-    #: shape, as ``plaque_legend_labels`` keying on built index.
+    #: The two chains this row is about, as :attr:`chains.Chain.index` — where
+    #: each sits in the structure, not where it sits in this build.  Chain ids
+    #: are not unique (a homodimer repeats one, a ligand carries its host's), so
+    #: an index pair is the only thing the front end can address a row by, and
+    #: it has to be the *source* index: leaving one chain out of a build shifts
+    #: every built position after it, which would move a veto onto a different
+    #: pair of chains without saying anything.
     ai: int = -1
     bi: int = -1
 
@@ -1966,10 +1969,23 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     inflate = cp.connect and not cp.use_magnets \
         and cp.no_magnet_method == NoMagnetMethod.INFLATE
 
-    # What the user vetoed by hand, keyed on the built-index pair.  Read once:
-    # ``none`` is consulted in the joint loop below, ``join`` also has to reach
-    # the fit pass above it, and both have to agree about which pairs they mean.
+    # What the user vetoed by hand, keyed on the pair of *source* indices —
+    # where each chain sits in the structure, not where it sits in this build.
+    # Those are the same list until a chain is excluded, and then they are not:
+    # leaving one chain out shifts every built position after it, and a veto
+    # keyed on those would quietly move to a different pair of chains.
+    #
+    # Read once: ``none`` is consulted in the joint loop below, ``join`` also
+    # has to reach the fit pass above it, and both have to agree about which
+    # pairs they mean.
     overrides = joint_overrides(getattr(cp, "joint_overrides", ""))
+    src = [getattr(c, "index", None) for c in chains]
+    src = [k if s is None else int(s) for k, s in enumerate(src)]
+
+    def _pair(i: int, j: int) -> tuple:
+        """The (source, source) key for two built positions, low first."""
+        a, b = src[i], src[j]
+        return (min(a, b), max(a, b))
 
     def _override(i: int, j: int, kind: str) -> str:
         """The mode in force for one pair: ``none``, ``join``, or ``""``.
@@ -1980,7 +1996,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         ``_find_seats`` is left alone — it is protecting that search from a
         degenerate input, not expressing a policy.
         """
-        mode = overrides.get((min(i, j), max(i, j)), "")
+        mode = overrides.get(_pair(i, j), "")
         if mode:
             return mode
         n = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
@@ -2046,12 +2062,12 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id,
                     _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
-                    applied=True, note=note, ai=i, bi=j))
+                    applied=True, note=note, ai=src[i], bi=src[j]))
             else:
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id,
                     _kind(chains[i], chains[j]), "inflate", gap_mm=gap,
-                    applied=False, ai=i, bi=j,
+                    applied=False, ai=src[i], bi=src[j],
                     note="neither part can be grown without changing its "
                          "proportions (a cartoon ribbon's thickness is tied to "
                          "its width) — use magnets or a bridge for this joint"))
@@ -2075,11 +2091,13 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         # is welded: no new geometry, no rebuilt chain, no gauge change.
         #
         # An override naming a pair that is not offered — a ligand, two DNA
-        # strands, an index that does not exist — is ignored without complaint.
+        # strands, a chain that is not in this build — is ignored without
+        # complaint. Held in *built* positions, because that is what the
+        # overlap list is indexed by.
         n_built = len(chains)
         joined = {
-            (i, j) for (i, j), m in overrides.items()
-            if m == "join" and i < n_built and j < n_built
+            (i, j) for i in range(n_built) for j in range(i + 1, n_built)
+            if overrides.get(_pair(i, j)) == "join"
             and _joinable(chains[i], chains[j])
             and _kind(chains[i], chains[j]) != "dna-dna"
         }
@@ -2090,7 +2108,8 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     applied.append(Connection(
                         chains[i].chain_id, chains[j].chain_id,
                         _kind(chains[i], chains[j]), "join",
-                        gap_mm=0.0, count=0, applied=True, ai=i, bi=j,
+                        gap_mm=0.0, count=0, applied=True,
+                        ai=src[i], bi=src[j],
                         note="left fused — set by hand"))
                 else:
                     # Nothing to skip carving, so the two simply stay where they
@@ -2100,7 +2119,8 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     applied.append(Connection(
                         chains[i].chain_id, chains[j].chain_id,
                         _kind(chains[i], chains[j]), "join",
-                        gap_mm=_gap, count=0, applied=False, ai=i, bi=j,
+                        gap_mm=_gap, count=0, applied=False,
+                        ai=src[i], bi=src[j],
                         note="these two do not touch, so there is nothing "
                              "to fuse"))
             found = [o for o in found if (o.i, o.j) not in joined]
@@ -2175,7 +2195,8 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     # something the user had already decided.
                     applied.append(Connection(
                         chains[i].chain_id, chains[j].chain_id, kind, "none",
-                        gap_mm=gap, count=0, applied=False, ai=i, bi=j,
+                        gap_mm=gap, count=0, applied=False,
+                        ai=src[i], bi=src[j],
                         note="left unjoined — set by hand"))
                     continue
                 if mode == "join":
@@ -2216,7 +2237,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id, kind, method,
                     gap_mm=gap, count=placed, applied=ok, note=note,
-                    ai=i, bi=j))
+                    ai=src[i], bi=src[j]))
 
     # 2) DNA interstrand base-pair connect.
     if cp.basepair_connect:
@@ -2225,7 +2246,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 mans[i], mans[j], chains[i], chains[j], params)
             applied.append(Connection(
                 chains[i].chain_id, chains[j].chain_id, "dna-basepair", "basepair",
-                count=n_links, applied=n_links > 0, ai=i, bi=j,
+                count=n_links, applied=n_links > 0, ai=src[i], bi=src[j],
                 note=f"{n_links} base-pair link(s)" if n_links else "no base pairs found",
             ))
 

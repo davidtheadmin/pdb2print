@@ -90,6 +90,11 @@ class BuildReport:
     connections: List[dict] = field(default_factory=list)
     #: Magnet marker placements (center/axis/size) for the preview highlight.
     connection_markers: List[dict] = field(default_factory=list)
+    #: Every chain the structure offered, in source order, *before* anything was
+    #: excluded or failed to mesh. ``built`` is what came out; this is what could
+    #: have. The UI needs both — a chain that was switched off has to stay on
+    #: screen or there is no way to switch it back on.
+    candidates: List = field(default_factory=list)
     #: Where the structure was actually read from, and what its header called
     #: it.  Read here because here is the one moment both are certainly
     #: available: an uploaded file is deleted when the build finishes, and a
@@ -256,6 +261,29 @@ def build_all(source: str, params: PrintParams,
     for chain in chain_list:
         if chain.mtype != MoleculeType.LIGAND:
             chain.name = names.get(chain.chain_id)
+
+    # Every chain the file offered, named and numbered, kept whole. The UI lists
+    # this rather than the built list, because a chain that has been excluded
+    # has to stay on screen to be put back — the same rule as a vetoed joint.
+    out.candidates = list(chain_list)
+
+    # Now drop the ones the user left out. After the numbering and after the
+    # names, so an index means the same thing whatever is excluded and the list
+    # above can still say what each dropped chain was.
+    excluded = chains_mod.parse_excluded(getattr(params, "exclude_chains", ""))
+    if excluded:
+        kept = [c for c in chain_list if c.index not in excluded]
+        if not kept:
+            raise ValueError(
+                "Every chain in this structure is switched off, so there is "
+                "nothing to build. Switch at least one back on.")
+        dropped = len(chain_list) - len(kept)
+        if dropped:
+            out.warnings.append(
+                f"{dropped} chain(s) left out of this build on purpose."
+                if dropped > 1 else
+                "1 chain left out of this build on purpose.")
+        chain_list = kept
 
     not_watertight = []
     n = len(chain_list)

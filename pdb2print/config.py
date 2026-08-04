@@ -706,6 +706,21 @@ class PrintParams:
     #: Water and lone ions are never included whatever this is set to — see
     #: :data:`LIGAND_MIN_HEAVY_ATOMS` and :data:`LIGAND_BLOCKLIST`.
     include_ligands: bool = False
+
+    #: Chains to leave out of the build entirely, as a comma-separated list of
+    #: :attr:`chains.Chain.index` values — positions in the structure, not in
+    #: the build, so a list stays correct however many other chains are dropped.
+    #:
+    #: An excluded chain is not meshed, not exported, and not present for the
+    #: fit pass or the joint search, so nothing is carved to fit it and no joint
+    #: is offered to it. It is not a visibility toggle: the point is to not do
+    #: the work at all, and to get a model of the part of the complex you
+    #: actually want to hold.
+    #:
+    #: Kept as the raw string rather than a set so it canonicalises into the
+    #: cache key by itself, the way every other list-shaped field here does.
+    exclude_chains: str = ""
+
     #: How the ligand is drawn.  See :class:`LigandStyle`.
     ligand_style: LigandStyle = LigandStyle.BALL_STICK
     #: **Ligand atom size** — the *diameter* (mm) of the balls in ball-and-stick,
@@ -1009,6 +1024,18 @@ CHAIN_PALETTE = [
 
 def color_for_index(i: int):
     return CHAIN_PALETTE[i % len(CHAIN_PALETTE)]
+
+
+def _palette_index(chain, fallback: int) -> int:
+    """Which palette entry a built object takes.
+
+    A chain's own position in the structure (``Chain.index``) rather than its
+    position in the build, so leaving a chain out does not recolour the ones
+    after it.  ``fallback`` is used for anything with no source index — a
+    display-stand part, or a Chain assembled by hand in a test.
+    """
+    idx = getattr(chain, "index", None)
+    return fallback if idx is None else int(idx)
 
 
 # Representations that must NOT receive the voxel ``enforce_min_wall`` pass.

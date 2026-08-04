@@ -8,31 +8,48 @@ version are not interchangeable with new ones.
 
 ## [Unreleased]
 
-Not mesh-affecting on its own: with no override set, a build hashes and comes
-out exactly as it did at 1.2.0, so `CACHE_VERSION` stays at 5. Bridge builds are
-the one exception — see below.
+Not mesh-affecting on its own: with nothing switched off and no override set, a
+build hashes and comes out exactly as it did at 1.2.0, so `CACHE_VERSION` stays
+at 5. Bridge builds are the one exception — see below.
 
 ### Added
 
-- **Per-pair joint overrides.** After a build, a Joints button appears under
-  Create display stand and opens a panel listing the joints the build made. Each
-  one is set to Default, None or Join. None leaves that pair carved apart with
-  nothing joining it. Join leaves the pair fused: its overlap is kept out of the
-  carve, so the two parts stay welded without any new geometry. A pair with no
-  override follows the Assembly setting. Changing one applies on the next
-  Generate; nothing is rebuilt on a click. The joints panel and the stand panel
-  share the right-hand column, and opening one closes the other.
+- **Chains you do not want are not built.** A Chains & joints button appears
+  under Create display stand and opens a panel listing every chain the structure
+  offered. Remove one and it is not meshed, not exported, and not there for the
+  others to be carved to fit — the point is to not do the work, and to get a
+  model of the part of the complex you actually want to hold. A removed chain
+  stays in the list so it can be put back, and the last one cannot be removed.
+- **Per-pair joint overrides**, in the second half of the same panel. Each joint
+  the build made is set to Default, None or Join. None leaves that pair carved
+  apart with nothing joining it. Join leaves the pair fused: its overlap is kept
+  out of the carve, so the two parts stay welded without any new geometry. A
+  pair with no override follows the Assembly setting.
+- **A Regenerate button in the panel**, because the panel is a window away from
+  Generate. Nothing is rebuilt on a click; one Regenerate applies every chain
+  and every joint you have changed. The panel and the stand panel share the
+  right-hand column, and opening one closes the other.
 - **Zero magnets per interface is a real answer.** Setting either count to zero
   now vetoes every interface of that kind instead of silently placing one.
 - **A joint reports how many connectors went in.** `count` was left at its
   default of 1 however many magnets were seated; the real number was only ever
   in the free-text note.
-- **The connections payload carries the built-index pair** (`ai`, `bi`), so a
-  row can be addressed. Chain ids are not unique — a homodimer gives two rows
-  sharing one id.
+- **Every chain has a stable identity.** `Chain.index` is a chain's position in
+  the structure, assigned before anything is dropped, and it is what the palette,
+  a joint's two ends (`ai`, `bi` in the connections payload) and the exclusion
+  list all point at. Chain ids could never do this job — a homodimer repeats one
+  and a ligand carries its host's.
 
 ### Fixed
 
+- **Leaving a chain out does not recolour the others.** Palette entries followed
+  a chain's position in the *build*, so removing one shifted every chain after
+  it onto the next colour — a bad surprise for anyone who has already printed
+  half a model in matching filament. They follow the position in the structure
+  now. The display stand's legend dots follow with them.
+- **The stand sheet no longer covers the button under it.** It was pinned to a
+  top offset sized for exactly one viewer button; it sits in the button stack's
+  flow instead, so it lands below however many there are.
 - **The bridge count reaches the cache key.** Both magnet counts were dropped
   from the key whenever magnets were off, which is right for inflate and wrong
   for the bridge: it reads exactly those two fields to decide how many rods to

@@ -547,6 +547,46 @@
   .joint-seg { flex: none; }
   .joint-seg button { padding: 4px 8px; font-size: 10.5px; }
 
+  /* Two lists in one panel, so each says what it is. */
+  .sp-sect {
+    margin: 4px 0 0; font-size: 11px; font-weight: 650; color: var(--text2);
+    letter-spacing: -0.01em;
+  }
+  .sp-sect + div { margin-top: 2px; }
+  .sp-foot {
+    flex: none; padding: 11px 13px 13px; border-top: 1px solid var(--border);
+    background: var(--s1);
+  }
+  .sp-foot .sp-note { margin: 6px 0 0; text-align: center; }
+
+  /* A chain row is the same shape as a joint row, with a colour dot for the
+     filament it prints in and a switch instead of a three-way. */
+  .chain-row {
+    display: flex; align-items: center; gap: 9px; padding: 6px 0;
+  }
+  .chain-row + .chain-row { border-top: 1px solid var(--border); }
+  .chain-dot {
+    flex: none; width: 10px; height: 10px; border-radius: 50%;
+    border: 1px solid rgba(0,0,0,.18);
+  }
+  .chain-who { flex: 1; min-width: 0; }
+  .chain-name {
+    display: block; font-size: 11.5px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chain-sub { display: block; font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .chain-row.off .chain-name, .chain-row.off .chain-dot { opacity: .4; }
+  .chain-row.off .chain-sub { color: var(--accent); }
+  .chain-row.failed .chain-sub { color: var(--red-text); }
+  .chain-btn {
+    flex: none; padding: 4px 9px; border-radius: var(--r1);
+    border: 1px solid var(--border-2); background: var(--s2);
+    color: var(--text2); font: 600 10.5px/1 inherit; font-family: inherit;
+    cursor: pointer;
+  }
+  .chain-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .chain-row.off .chain-btn { border-color: var(--accent); color: var(--accent); }
+
   /* ===================================================================
      ADVANCED — its own material, everywhere, open or shut
      A drawer that looks like the panel it is inside cannot tell you
@@ -728,7 +768,7 @@
   /* Stacked, so a second viewer button lands under the first rather than
      beside it — the viewer is wide but its top-right corner is not. */
   .stand-group {
-    position: absolute; top: 14px; right: 14px; z-index: 2;
+    position: absolute; top: 14px; right: 14px; z-index: 5;
     display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   }
   .stand-btn {
@@ -768,9 +808,11 @@
   .stand-btn.subtle:hover .stand-badge { background: rgba(255,255,255,.22); color: inherit; }
   .stand-badge:empty { display: none; }
 
+  /* In the button stack's flow, not pinned to a top offset: the offset was
+     sized for exactly one button above it, and the moment a second appeared the
+     sheet covered it. */
   .stand-sheet {
-    position: absolute; z-index: 5; width: 292px; top: 62px; right: 14px;
-    background: var(--s1);
+    width: 292px; background: var(--s1);
     border: 1px solid var(--border-2); border-radius: 13px;
     padding: 15px 16px 16px; box-shadow: var(--shadow-2);
   }
@@ -788,6 +830,8 @@
     font-family: inherit; cursor: pointer;
   }
   .stand-go:hover { background: var(--accent-d); }
+  .stand-go:disabled { opacity: .5; cursor: default; }
+  .stand-go:disabled:hover { background: var(--accent); }
   .stand-cancel {
     width: 100%; margin-top: 6px; padding: 7px 0; border: none; border-radius: var(--r1);
     background: none; color: var(--muted); font: 500 12px/1 inherit;
@@ -1703,12 +1747,11 @@
                and this is a list you only open when something about the joints
                is wrong. -->
           <button id="joints-btn" class="stand-btn subtle" type="button" hidden
-                  title="The joints this build made, and a veto on any of them">
+                  title="Which chains to build, and the joints between the ones you keep">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg>
-            <span>Joints</span>
+            <span>Chains &amp; joints</span>
             <span class="stand-badge" id="joints-count"></span>
           </button>
-        </div>
         <div id="stand-sheet" class="stand-sheet" hidden>
           <h4>Display stand</h4>
 
@@ -1730,6 +1773,7 @@
           </div>
 
           <button id="stand-cancel" class="stand-cancel" type="button">Cancel</button>
+        </div>
         </div>
         <!-- min/max-camera-orbit are set explicitly because the defaults stop
              short: model-viewer clamps the polar angle away from the poles, so
@@ -1761,13 +1805,25 @@
     <aside id="joints-panel" class="stand-panel" hidden>
       <div class="sp-head">
         <div>
-          <h4 title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. A change applies on the next Generate.">Joints</h4>
+          <h4>Chains &amp; joints</h4>
           <p class="sp-sub" id="joints-sub"></p>
         </div>
         <button id="joints-close" class="sp-close" type="button" title="Close" aria-label="Close">&times;</button>
       </div>
       <div class="sp-body">
+        <!-- Chains first: what to build at all comes before how the built
+             things are joined, and switching one off removes joints below. -->
+        <p class="sp-sect" title="A chain switched off is not built at all — not meshed, not exported, and not there for the others to be carved to fit. Switch one back on to get it back.">Build these chains</p>
+        <div id="chain-list"></div>
+
+        <p class="sp-sect" id="joints-head" title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic.">Joints</p>
         <div id="joint-list"></div>
+        <p class="sp-note" id="joints-empty" hidden></p>
+      </div>
+      <!-- The panel is on the far side of the window from Generate, so the
+           button that applies what is set here is here. -->
+      <div class="sp-foot">
+        <button id="joints-go" class="stand-go" type="button">Regenerate</button>
         <p class="sp-note" id="joints-pending" hidden></p>
       </div>
     </aside>
@@ -2741,54 +2797,77 @@
     });
   }
 
-  /* ---- the joints the last build made, and the veto on each -----------
-     Keyed on the built-index pair, never on chain id: a homodimer gives two
-     rows sharing one id and they are not interchangeable. Same reasoning as
-     the legend name boxes in the stand panel.
+  /* ---- what to build, and how the built things are joined -------------
+     Both lists key on ``Chain.index`` — where a chain sits in the *structure*,
+     not in the build. Chain ids are not unique (a homodimer repeats one, a
+     ligand carries its host's), and a built position moves the moment a chain
+     is switched off, which would silently take every veto after it with it.
 
-     A row is a veto, not a method picker. "Default" means "whatever the
-     Assembly control above does for this pair", so nothing here can ever
-     contradict the control that made the joint — it can only take one away. */
+     A joint row is a veto, not a method picker. "Default" means "whatever the
+     Assembly control does for this pair", so nothing here can contradict the
+     control that made the joint — it can only take one away. */
   const jointOverrides = new Map();       // "ai,bi" -> "none" | "join"
+  const excludedChains = new Set();       // Chain.index
   let jointRowCount = 0;
+  let chainRows = [];                     // last build's parts payload
 
-  // The button appears once there is a build to list, and goes again while
-  // Inflate is selected: that mode skips the fit pass for the whole model, so a
-  // veto would do nothing at all. The vetoes themselves are kept, so switching
-  // away and back does not lose them — and the panel closes with the button, or
-  // it would be left open over a list that no longer applies.
-  function jointsAvailable() {
-    const inflating = groups.assembly() === 'one_piece'
-      && groups.no_magnet_method() === 'inflate';
-    return jointRowCount > 0 && !inflating;
+  // The button appears once there is a build to list. The joints half goes
+  // while Inflate is selected — that mode skips the fit pass for the whole
+  // model, so a veto would do nothing at all — but the chains half still
+  // applies, so the panel stays. The vetoes are kept either way, so switching
+  // away and back does not lose them.
+  function jointsApply() {
+    return !(groups.assembly() === 'one_piece'
+             && groups.no_magnet_method() === 'inflate');
+  }
+
+  function panelAvailable() {
+    return chainRows.length > 0 || jointRowCount > 0;
   }
 
   function syncJointsPanel() {
     const btn = $('#joints-btn');
     if (!btn) return;
-    const can = jointsAvailable();
+    const can = panelAvailable();
     btn.hidden = !can;
     if (!can && !$('#joints-panel').hidden) showJoints(false);
-    const pending = countPendingJoints();
+
+    // The joints half hides itself rather than the whole panel: a control that
+    // does nothing is worse than no control, and the chain list still works.
+    const showJoin = jointsApply() && jointRowCount > 0;
+    $('#joints-head').hidden = !showJoin;
+    $('#joint-list').hidden = !showJoin;
+    const none = $('#joints-empty');
+    none.hidden = showJoin || !chainRows.length;
+    none.textContent = jointRowCount === 0
+      ? 'No joints in this build.'
+      : 'Inflate fuses the whole model, so there are no joints to set here.';
+
+    const pending = countPending();
     $('#joints-count').textContent = pending ? String(pending) : '';
     btn.classList.toggle('on', !$('#joints-panel').hidden);
 
     const sub = $('#joints-sub');
-    if (sub) sub.textContent = jointRowCount
-      ? `${jointRowCount} in this build` : '';
-    // The Generate button is on the far side of the window from this panel, so
-    // the one thing worth saying here is where the change is applied.
+    if (sub) {
+      const off = excludedChains.size;
+      sub.textContent = off
+        ? `${chainRows.length} chains, ${off} switched off`
+        : `${chainRows.length} chains`;
+    }
     const note = $('#joints-pending');
     if (note) {
       note.hidden = !pending;
       note.textContent = pending === 1
-        ? '1 change applies on the next Generate.'
-        : `${pending} changes apply on the next Generate.`;
+        ? '1 change is not built yet.'
+        : `${pending} changes are not built yet.`;
     }
   }
 
-  function countPendingJoints() {
-    return $$('#joint-list .joint-row.pending').length;
+  // Everything set here but not yet built: vetoed joints and switched-off
+  // chains alike, since one Regenerate applies both.
+  function countPending() {
+    return $$('#joint-list .joint-row.pending').length
+      + $$('#chain-list .chain-row.pending').length;
   }
 
   // Only one panel at a time: both are about the model on screen and side by
@@ -2798,7 +2877,7 @@
   function showJoints(on) {
     const panel = $('#joints-panel');
     if (!panel) return;
-    if (on && !jointsAvailable()) return;
+    if (on && !panelAvailable()) return;
     if (on) showStandSheet(false);
     panel.hidden = !on;
     document.body.classList.toggle('joints-open', on);
@@ -2813,6 +2892,105 @@
     document.body.classList.remove('joints-open');
     const btn = $('#joints-btn');
     if (btn) btn.classList.remove('on');
+  }
+
+  const CHAIN_KIND = { protein: 'protein', nucleic: 'DNA', ligand: 'ligand' };
+
+  // One row per chain the structure offered — including the ones switched off
+  // and the ones that failed to mesh. A chain that vanished from the list would
+  // be a chain nobody could switch back on, which is the same rule the vetoed
+  // joints follow.
+  function renderChains(parts) {
+    const box = $('#chain-list');
+    if (!box) return;
+    if (!Array.isArray(parts)) return;    // a failed build says nothing here
+    chainRows = parts;
+
+    // Forget exclusions for chains this structure does not have, so a list
+    // carried over from another file cannot quietly remove something.
+    const live = new Set(parts.map(p => p.index));
+    Array.from(excludedChains).forEach(i => {
+      if (!live.has(i)) excludedChains.delete(i);
+    });
+
+    box.textContent = '';
+    parts.forEach(p => {
+      const row = document.createElement('div');
+      row.className = 'chain-row';
+      row.dataset.chain = String(p.index);
+      row.dataset.built = p.built ? '1' : '';
+
+      const dot = document.createElement('span');
+      dot.className = 'chain-dot';
+      dot.style.background = p.color || 'transparent';
+
+      const who = document.createElement('div');
+      who.className = 'chain-who';
+      const name = document.createElement('span');
+      name.className = 'chain-name';
+      name.textContent = p.name || `Chain ${p.id}`;
+      const sub = document.createElement('span');
+      sub.className = 'chain-sub';
+      // The chain id only where the name is not already it: a chain the header
+      // did not name reads "Chain A", and "Chain A / DNA · chain A" says it
+      // twice.
+      const kind = CHAIN_KIND[p.kind] || p.kind;
+      sub.dataset.was = name.textContent === `Chain ${p.id}`
+        ? kind : `${kind} · chain ${p.id}`;
+      who.appendChild(name);
+      who.appendChild(sub);
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chain-btn';
+
+      row.appendChild(dot);
+      row.appendChild(who);
+      row.appendChild(btn);
+      box.appendChild(row);
+      paintChain(row);
+    });
+  }
+
+  // One chain row, from the exclusion currently held against what the build did.
+  function paintChain(row) {
+    const idx = parseInt(row.dataset.chain, 10);
+    const off = excludedChains.has(idx);
+    const built = !!row.dataset.built;
+    const sub = $('.chain-sub', row);
+    const base = sub.dataset.was;
+    // "Not built yet" is the control disagreeing with the model on screen: off
+    // but still in it, or on but missing from it.
+    const pending = off === built;
+    row.classList.toggle('off', off);
+    row.classList.toggle('pending', pending);
+    // A chain that is on and absent is not a pending change, it is a failure —
+    // the report says why, and offering "not built yet" would blame the user.
+    row.classList.toggle('failed', !off && !built);
+    sub.textContent = !off && !built ? `${base} · could not be built`
+      : off ? `${base} · off`
+      : base;
+    $('.chain-btn', row).textContent = off ? 'Add' : 'Remove';
+  }
+
+  $('#chain-list').addEventListener('click', e => {
+    const row = e.target.closest('.chain-row');
+    if (!row || !e.target.closest('button')) return;
+    const idx = parseInt(row.dataset.chain, 10);
+    // Never let the last one go: a build with no chains is an error the server
+    // would have to raise, and refusing the click is a better way to say it.
+    if (!excludedChains.has(idx)
+        && excludedChains.size >= chainRows.length - 1) return;
+    if (excludedChains.has(idx)) excludedChains.delete(idx);
+    else excludedChains.add(idx);
+    paintChain(row);
+    syncJointsPanel();
+  });
+
+  // Comma-separated source indices; empty means "build everything", which is
+  // what the server reads an absent list as.
+  function excludeChainsField() {
+    return Array.from(excludedChains).sort((a, b) => a - b).join(',');
   }
 
   // What the last build actually gave this pair, in three words.  The full
@@ -2931,6 +3109,20 @@
     showJoints($('#joints-panel').hidden);
   });
   $('#joints-close').addEventListener('click', () => showJoints(false));
+  // The same build the Generate button runs. This is not a second kind of
+  // build, only a second way to reach the one that is there — the panel is a
+  // window away from the button that applies what it sets.
+  $('#joints-go').addEventListener('click', () => generate());
+
+  // Not a Cancel. That is the Generate button's job, and it is the control the
+  // user reached for if they started the build from the form. This one only
+  // says plainly that a build is running, so a second press is not offered.
+  function setJointsGoBusy(busy) {
+    const go = $('#joints-go');
+    if (!go) return;
+    go.disabled = !!busy;
+    go.textContent = busy ? 'Building…' : 'Regenerate';
+  }
 
   // One line per vetoed pair, and nothing for the rest: absent means "follow
   // the global setting", which is what the server reads it as.
@@ -3023,6 +3215,7 @@
     fd.append('socket', $('#socket').checked);
     fd.append('socket_wall', sliders.socket_wall.value);
     fd.append('magnet_fit_clearance', sliders.magnet_fit_clearance.value);
+    fd.append('exclude_chains', excludeChainsField());
     fd.append('joint_overrides', jointOverridesField());
     fd.append('basepair_connect', $('#basepair_connect').checked);
     return fd;
@@ -3117,6 +3310,7 @@
       v.setAttribute('src', data.glb_url);
     }
     renderLegend(data.chains);
+    renderChains(data.parts);
     renderJoints(data.connections);
     setDownload($('#dl-3mf'), data.threemf_url);
     setDownload($('#dl-stl'), data.stl_url);
@@ -5072,6 +5266,7 @@
     ensureViewer();          // downloads while the build runs, not after it
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Building…';
+    setJointsGoBusy(true);
     setReport('Starting…', false);
     showProgress(0.02);
 
@@ -5089,6 +5284,7 @@
       setStandBtnBusy(false);
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
+      setJointsGoBusy(false);
       hideProgress();
     }
   }

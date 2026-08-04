@@ -53,6 +53,14 @@ class Chain:
 
     ``res_name``/``res_id`` are set for a ligand only, and identify the residue
     it was built from: the CCD chemical-component code and the residue number.
+
+    ``index`` is this chain's position in the *full* list :func:`split_chains`
+    found in the file, assigned before anything is dropped.  It is the only
+    stable name a chain has: chain ids are not unique (a homodimer repeats one,
+    and a ligand carries its host's), and a position in the built list moves the
+    moment a chain is excluded or fails to mesh.  Everything that has to point
+    at a particular chain from outside — the palette entry, a joint's two ends,
+    the exclusion list itself — points at this.
     """
 
     chain_id: str
@@ -61,6 +69,7 @@ class Chain:
     name: Optional[str] = None
     res_name: Optional[str] = None
     res_id: Optional[int] = None
+    index: Optional[int] = None
 
     @property
     def n_atoms(self) -> int:
@@ -295,4 +304,32 @@ def split_chains(atoms: struc.AtomArray, min_residues: int = 2,
         if struc.get_residue_count(filtered) < min_residues:
             continue
         chains.append(Chain(chain_id=str(cid), atoms=filtered, mtype=mtype))
-    return chains + ligands
+    # Numbered once, here, over the whole list: this is the position everything
+    # downstream points at, so it must be settled before anyone can drop a
+    # chain. Polymers first and ligands after, which is also the palette order.
+    out = chains + ligands
+    for i, chain in enumerate(out):
+        chain.index = i
+    return out
+
+
+def parse_excluded(raw: str) -> set:
+    """Parse a comma-separated list of chain indices into a set.
+
+    Best-effort, like every other free-text field that reaches the builder: a
+    malformed entry is skipped rather than raised on. An index naming a chain
+    that is not in this structure is kept and simply never matches, so a list
+    carried over from another file costs nothing.
+    """
+    out = set()
+    for part in (raw or "").replace("\n", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            i = int(part)
+        except ValueError:
+            continue
+        if i >= 0:
+            out.add(i)
+    return out

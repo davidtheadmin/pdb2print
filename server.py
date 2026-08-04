@@ -33,7 +33,7 @@ from pdb2print.config import (
     PrintParams, Representation, MinWallMode, BaseStyle, BackboneStyle,
     ConnectionParams, NoMagnetMethod, MagnetShape, StandParams, ColumnShape,
     PlaqueRelief, PlaqueFont,
-    MoleculeType, LigandStyle, color_for_index,
+    MoleculeType, LigandStyle, color_for_index, _palette_index,
 )
 from pdb2print.pipeline import build_all, BuildCancelled
 from pdb2print import export
@@ -757,6 +757,9 @@ def _map_params(fields: dict) -> PrintParams:
         # caller that says nothing about ligands gets the plain structure, which is
         # both the old behaviour and the conservative one.
         include_ligands=_bool(fields.get("include_ligands", False)),
+        # Capped like every other free-text field that reaches the builder. A
+        # few characters per chain, and a structure has tens at most.
+        exclude_chains=str(fields.get("exclude_chains", "") or "")[:2000],
         ligand_style=LigandStyle(fields.get("ligand_style", "ball_stick")),
         ligand_atom_mm=float(fields.get("ligand_atom", 2.2)),
         ligand_bond_mm=float(fields.get("ligand_bond", 1.2)),
@@ -1054,8 +1057,25 @@ def _run_and_export(source: str, params: PrintParams, progress,
 
     chains = [
         {"id": chain.chain_id, "name": chain.name,
-         "color": _rgb_to_hex(color_for_index(i))}
+         "color": _rgb_to_hex(color_for_index(_palette_index(chain, i)))}
         for i, (chain, _mesh) in enumerate(report.built)
+    ]
+
+    # Every chain the structure offered, whether or not it was built. The list
+    # the user picks from has to include the ones they switched off, or there is
+    # no way to switch them back on — and the ones that failed to mesh, because
+    # a chain that is missing from the model for a reason the report explains
+    # should not also be missing from the list that explains it.
+    _made = {id(chain) for chain, _m in report.built}
+    parts = [
+        {"index": int(chain.index if chain.index is not None else i),
+         "id": chain.chain_id,
+         "name": chain.display_name(),
+         "kind": getattr(chain.mtype, "value", str(chain.mtype)),
+         "built": id(chain) in _made,
+         "color": _rgb_to_hex(color_for_index(_palette_index(chain, i)))}
+        for i, chain in enumerate(getattr(report, "candidates", None) or
+                                  [c for c, _m in report.built])
     ]
 
     # Overall printed bounding box (mm) across every built chain, plus the scale
@@ -1129,6 +1149,7 @@ def _run_and_export(source: str, params: PrintParams, progress,
         "threemf_url": threemf_url,
         "stl_url": f"/files/{token}/{stem}_stl.zip",
         "chains": chains,
+        "parts": parts,
         "connections": report.connections,
         "size_mm": size_mm,
         "scale_used": params.scale_mm_per_angstrom,
@@ -1231,6 +1252,7 @@ async def generate(
     probe_radius: float = Form(1.4),
     surface_padding: float = Form(0.0),
     include_ligands: str = Form("false"),
+    exclude_chains: str = Form(""),
     ligand_style: str = Form("ball_stick"),
     ligand_atom: float = Form(2.2),
     ligand_bond: float = Form(1.2),
@@ -1324,6 +1346,7 @@ async def generate(
             "probe_radius": probe_radius,
             "surface_padding": surface_padding,
             "include_ligands": include_ligands,
+            "exclude_chains": exclude_chains,
             "ligand_style": ligand_style, "ligand_atom": ligand_atom,
             "ligand_bond": ligand_bond,
             "ligand_vdw_scale": ligand_vdw_scale,

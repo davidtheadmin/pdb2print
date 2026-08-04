@@ -27,8 +27,13 @@ BuiltChain = Tuple[Chain, trimesh.Trimesh]
 def object_colors(built: List[BuiltChain]) -> List[tuple]:
     """The colour for each built object, in palette order.
 
-    Chains and ligands take the next palette entry by position, which is what
-    keeps a protein the same colour whether or not a drug was added after it.
+    Chains and ligands take a palette entry by their position *in the
+    structure*, which is what keeps a protein the same colour whether or not a
+    drug was added after it — and now, whether or not a neighbouring chain was
+    left out of the build. Excluding one chain used to shift every chain after
+    it onto the next colour, which is a bad surprise for anyone who has already
+    printed half the model in matching filament.
+
     An object that carries its own ``color`` — the display-stand parts — keeps
     that instead, because a legend swatch is only useful if it is *the same
     colour as the chain it names*, and the palette index of a stand part has
@@ -37,7 +42,13 @@ def object_colors(built: List[BuiltChain]) -> List[tuple]:
     colors = []
     for i, (chain, _mesh) in enumerate(built):
         own = getattr(chain, "color", None)
-        colors.append(tuple(own) if own is not None else color_for_index(i))
+        if own is not None:
+            colors.append(tuple(own))
+            continue
+        # Falls back to the position for anything with no source index: a stand
+        # part, or a Chain assembled by hand in a test.
+        idx = getattr(chain, "index", None)
+        colors.append(color_for_index(i if idx is None else idx))
     return colors
 
 
