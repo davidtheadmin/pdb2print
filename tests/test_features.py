@@ -1566,3 +1566,20 @@ def test_bridge_halves_weld_rather_than_meet_on_a_plane():
     assert sum(shared.values()) < 0.05 * smallest
     # And a deliberate weld is not reported back as interference.
     assert not any("still share" in w for w in report.warnings)
+
+
+def test_share_table_matches_the_controls():
+    """The share code is positional, so the table has to stay an exact mirror.
+
+    Widen a slider or reorder a field and every link already in the wild decodes
+    to different numbers — silently, because a positional format has no way to
+    notice. This is the same failure ``presets.py`` had when it drifted from the
+    front end; the difference is that this one fails a test instead of a print.
+    """
+    import subprocess
+    import sys
+    root = os.path.dirname(HERE)
+    script = os.path.join(root, "scripts", "build_share_table.py")
+    got = subprocess.run([sys.executable, script, "--check"],
+                         capture_output=True, text=True)
+    assert got.returncode == 0, got.stdout + got.stderr

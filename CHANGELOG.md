@@ -33,6 +33,23 @@ older one carries no chain list and no joint indices for the new panel to read.
   invented for it — nothing grown, nothing cut, nothing bridged. Parts that only
   come close cannot be joined this way and are named in the report instead of
   being left quietly loose.
+- **Share links.** A square button beside the two downloads copies a link that
+  carries every setting: `pdb2print.org/#1bna.EcMIRdQi-JA6E4AGceAU`. Open one and
+  the sliders go back where they were and the model builds itself. About twenty
+  characters, because the code encodes only what you changed away from the
+  defaults, quantised against each control's own range.
+
+  The code is the settings, not a key into the cache. A key is a one-way hash of
+  an already-pruned parameter set — it could fetch files but never put a slider
+  back — and it would die every time `CACHE_VERSION` moves, which is every
+  release that changes geometry. This way the cache hit falls out of the ordinary
+  Generate path, and a link that misses rebuilds and warms the entry for whoever
+  clicks next. A link that has been cut off or altered is refused rather than
+  decoded into a different model.
+
+  The field table is generated from the markup by `scripts/build_share_table.py`
+  and a test fails if it drifts — a hand-written copy of every slider's range is
+  the `presets.py` bug wearing a different name.
 - **Select all** in the chains list, to put every chain back in one click.
 - **A Regenerate button in the panel**, because the panel is a window away from
   Generate. Nothing is rebuilt on a click; one Regenerate applies every chain
