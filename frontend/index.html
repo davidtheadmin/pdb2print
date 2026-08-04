@@ -1654,7 +1654,12 @@
                       <button data-value="5">5</button>
                     </div>
                     <span class="count-lbl">DNA–protein</span>
-                    <div class="seg" data-group="dna_magnet_count" title="A backbone is a narrow thing to seat a magnet on, so two is as many as fits. Zero leaves every DNA–protein interface unjoined; the parts still come apart to fit each other.">
+                    <!-- No title here, and none on any .seg. The help harvester
+                         turns a title into a real button and appends it *inside*
+                         the element carrying it, so on a segmented control the
+                         marker lands in the row of options and reads as a fourth
+                         one. Put a note on the field label above instead. -->
+                    <div class="seg" data-group="dna_magnet_count">
                       <button data-value="0">0</button>
                       <button data-value="1" class="active">1</button>
                       <button data-value="2">2</button>
