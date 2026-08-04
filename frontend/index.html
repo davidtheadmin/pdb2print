@@ -2810,6 +2810,17 @@
   const excludedChains = new Set();       // Chain.index
   let jointRowCount = 0;
   let chainRows = [];                     // last build's parts payload
+  // What the model currently on screen was built with, as opposed to what the
+  // panel is set to now. The display stand describes that model, not the form.
+  let builtExcludeChains = '';
+  let builtJointOverrides = '';
+  // ...and what the build now in flight was asked for, so the panel can be
+  // clicked while it runs without the snapshot picking up the change.
+  let sentExcludeChains = '';
+  let sentJointOverrides = '';
+  //: Which chains the last build actually produced, so a change to that set can
+  //: be noticed by the one thing still keyed on built position: the plaque.
+  let lastBuiltChainKey = null;
 
   // The button appears once there is a build to list. The joints half goes
   // while Inflate is selected — that mode skips the fit pass for the whole
@@ -2883,6 +2894,28 @@
     document.body.classList.toggle('joints-open', on);
     const btn = $('#joints-btn');
     if (btn) btn.classList.toggle('on', on);
+  }
+
+  // Which structure the two lists are about. Compared at the top of every build,
+  // because that is the one moment the answer is certain and it catches typing,
+  // an upload, a drop and an example button in one place.
+  let panelStructure = null;
+
+  function resetPanelIfStructureChanged() {
+    const who = structureLabel();
+    if (who === panelStructure) return;
+    panelStructure = who;
+    excludedChains.clear();
+    jointOverrides.clear();
+    builtExcludeChains = '';
+    builtJointOverrides = '';
+    lastBuiltChainKey = null;
+    chainRows = [];
+    jointRowCount = 0;
+    $('#chain-list').textContent = '';
+    $('#joint-list').textContent = '';
+    showJoints(false);
+    syncJointsPanel();
   }
 
   function closeJointsUI() {
@@ -2959,9 +2992,13 @@
     const built = !!row.dataset.built;
     const sub = $('.chain-sub', row);
     const base = sub.dataset.was;
-    // "Not built yet" is the control disagreeing with the model on screen: off
-    // but still in it, or on but missing from it.
-    const pending = off === built;
+    // "Not built yet" is the control disagreeing with what was *asked for* last
+    // time, not with what came back. Those differ for a chain that was asked
+    // for and could not be meshed: comparing against the result would mark it
+    // pending for ever, and no amount of pressing Regenerate would clear it.
+    const wasOff = builtExcludeChains
+      .split(',').filter(Boolean).map(Number).includes(idx);
+    const pending = off !== wasOff;
     row.classList.toggle('off', off);
     row.classList.toggle('pending', pending);
     // A chain that is on and absent is not a pending change, it is a failure —
@@ -3055,8 +3092,13 @@
       // when the control really disagrees with the model on screen. A pair the
       // global setting left unjoined by itself reports "none" here too, which
       // is right: picking None on it changes nothing and claims nothing.
-      was.dataset.built = (c.method === 'none' || c.method === 'join')
-        ? c.method : '';
+      // Only a choice made about *this* pair counts as a setting already in
+      // force. A row that came out unjoined because the global count is zero is
+      // what Default does there, so Default is what is selected — otherwise
+      // every row on such a build would read as changed-but-not-built against a
+      // panel nobody had touched.
+      was.dataset.built = (c.by_hand
+        && (c.method === 'none' || c.method === 'join')) ? c.method : '';
       who.appendChild(pair);
       who.appendChild(was);
 
@@ -3127,8 +3169,14 @@
   // One line per vetoed pair, and nothing for the rest: absent means "follow
   // the global setting", which is what the server reads it as.
   function jointOverridesField() {
+    // Sorted, so the same set of vetoes is the same string however it was
+    // arrived at — a Map keeps insertion order, and picking Default and then
+    // None again moved a row to the end, which is a different cache key for an
+    // identical model and a full rebuild for nothing.
     return Array.from(jointOverrides.entries())
-      .map(([k, mode]) => k.split(',').join('\t') + '\t' + mode)
+      .map(([k, mode]) => [k.split(',').map(Number), mode])
+      .sort((a, b) => a[0][0] - b[0][0] || a[0][1] - b[0][1])
+      .map(([pair, mode]) => pair.join('\t') + '\t' + mode)
       .join('\n');
   }
 
@@ -3151,7 +3199,15 @@
   $('#pdb-id').addEventListener('input', updateGenerateReady);
   updateGenerateReady();
 
-  function collectForm() {
+  // ``forStand`` means "describe the model on screen", not "describe the form".
+  // The two are the same until the chains and joints panel is set and not yet
+  // built — which is a state that panel exists to produce, and the stand button
+  // is one click away from it. Posting the pending values on a stand route
+  // builds a cache key for a model that has never been built: the sketch falls
+  // back to its generic drawing after a visible wait, and a real stand rebuilds
+  // from scratch *with the pending change applied*, standing up a model the
+  // viewer is not showing.
+  function collectForm(forStand) {
     const fd = new FormData();
     const id = $('#pdb-id').value.trim();
     if (fileInput.files.length) fd.append('file', fileInput.files[0]);
@@ -3215,8 +3271,14 @@
     fd.append('socket', $('#socket').checked);
     fd.append('socket_wall', sliders.socket_wall.value);
     fd.append('magnet_fit_clearance', sliders.magnet_fit_clearance.value);
-    fd.append('exclude_chains', excludeChainsField());
-    fd.append('joint_overrides', jointOverridesField());
+    if (!forStand) {
+      sentExcludeChains = excludeChainsField();
+      sentJointOverrides = jointOverridesField();
+    }
+    fd.append('exclude_chains',
+              forStand ? builtExcludeChains : sentExcludeChains);
+    fd.append('joint_overrides',
+              forStand ? builtJointOverrides : sentJointOverrides);
     fd.append('basepair_connect', $('#basepair_connect').checked);
     return fd;
   }
@@ -3310,6 +3372,30 @@
       v.setAttribute('src', data.glb_url);
     }
     renderLegend(data.chains);
+    if (Array.isArray(data.parts)) {
+      // The plaque's legend boxes are keyed on *built* position, which is the
+      // one index in the app that still moves — leave a chain out and every
+      // chain after it slides up one. The boxes always send a line each, so a
+      // set left over from before the change would relabel chain B with chain
+      // A's name and print it on the plaque. Drop them when the built set
+      // changes and let the next solve name them again; keep them when it has
+      // not, because a name someone typed should survive an ordinary rebuild.
+      const builtKey = data.parts.filter(p => p.built)
+                                 .map(p => p.index).join(',');
+      if (builtKey !== lastBuiltChainKey) {
+        lastBuiltChainKey = builtKey;
+        const box = document.querySelector('#sp-legend-edit');
+        if (box) { box.textContent = ''; box.dataset.keys = ''; }
+      }
+      // This model is now the one on screen, so what it was *sent* to build it
+      // is what the display stand has to ask for. Read from what went out
+      // rather than from the panel now, because the panel can be clicked while
+      // the build runs; and snapshotted rather than derived from the result,
+      // because a chain can also be missing because it failed to mesh, and
+      // reading the exclusion back off the result would call that a choice.
+      builtExcludeChains = sentExcludeChains;
+      builtJointOverrides = sentJointOverrides;
+    }
     renderChains(data.parts);
     renderJoints(data.connections);
     setDownload($('#dl-3mf'), data.threemf_url);
@@ -4804,7 +4890,7 @@
       el.hidden = false;
     }, 1000);
     $('#sk-busy').hidden = false;
-    const fd = collectForm();
+    const fd = collectForm(true);
     // The preview takes its structure from the build token or the PDB id and
     // throws any uploaded file away -- but collectForm attaches it, because
     // Generate needs it. On a 30 MB mmCIF that is the whole file back up the
@@ -5131,7 +5217,7 @@
     closeStandUI();                    // hands the camera back, leaves nothing open
     $('#stand-roll').value = '0';
     applyRoll(0);                      // the result arrives already rolled
-    const fd = collectForm();
+    const fd = collectForm(true);
     fd.append('orbit_roll', String(roll));
     fd.append('build_token', (standBuild && standBuild.token) || '');
     fd.append('orbit_theta', orbit.theta.toFixed(3));
@@ -5244,6 +5330,13 @@
       return;
     }
     showManual(false);                 // the model is what you want to see next
+    // Both lists in the chains-and-joints panel are about one structure, and
+    // both are indices. Carried to a different structure they do not fail
+    // loudly, they *match* — index 2 exists in almost everything — so a chain
+    // switched off in the last structure comes out of the next one and a join
+    // fuses two chains nobody chose. The panel is emptied whenever the
+    // structure changes; a rebuild of the same one keeps everything.
+    resetPanelIfStructureChanged();
     // A stand panel left open across a new build is a panel describing a model
     // that is about to be replaced: its locked view, its snapshot and its
     // solved column positions all belong to the old one.

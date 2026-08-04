@@ -1438,3 +1438,46 @@ def test_exclude_chains_reaches_the_cache_key():
         cache.key_for(BNA, dc.replace(p, exclude_chains="0"))
     # ...and an empty list is today's behaviour, so it has to be today's key.
     assert cache.key_for(BNA, dc.replace(p, exclude_chains="")) == plain
+
+
+def test_cache_version_is_part_of_every_key():
+    """Bumping it has to make every existing entry unreachable.
+
+    5 → 6 was not a geometry change but a payload one: an entry stores the
+    finished result dict verbatim, so an older one hands the front end a payload
+    with no ``parts`` and no ``ai``/``bi`` — the chains-and-joints panel reads
+    exactly those, and would simply not appear on the popular structures the
+    shipped entries exist for.
+    """
+    from pdb2print import cache
+    p = _params()
+    before = cache.key_for(BNA, p)
+    old = cache.CACHE_VERSION
+    try:
+        cache.CACHE_VERSION = old - 1
+        assert cache.key_for(BNA, p) != before
+    finally:
+        cache.CACHE_VERSION = old
+    assert cache.key_for(BNA, p) == before
+
+
+def test_a_cache_hit_keeps_the_colours_the_build_gave_it():
+    """A stand raised from a cache hit must not recolour the model.
+
+    The palette follows ``Chain.index``, which a reopened object only has if the
+    entry stored it. Without it the reopened objects fall back to their position
+    in the built list — so a build with a chain excluded came back one colour
+    off across the board, visibly, the moment the stand appeared.
+    """
+    import dataclasses
+    from pdb2print import cache, export
+
+    report = build_all(OVERLAP, dataclasses.replace(
+        _params(), exclude_chains="0"))
+    original = export.object_colors(report.built)
+
+    reopened = cache.objects_from_meta(
+        {"objects": cache.describe_objects(report.built)})
+    assert len(reopened) == len(report.built)
+    assert [o.index for o in reopened] == [c.index for c, _m in report.built]
+    assert export.object_colors([(o, None) for o in reopened]) == original

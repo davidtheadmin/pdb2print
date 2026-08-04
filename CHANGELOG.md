@@ -8,9 +8,10 @@ version are not interchangeable with new ones.
 
 ## [Unreleased]
 
-Not mesh-affecting on its own: with nothing switched off and no override set, a
-build hashes and comes out exactly as it did at 1.2.0, so `CACHE_VERSION` stays
-at 5. Bridge builds are the one exception — see below.
+Not mesh-affecting: with nothing switched off and no override set, a build
+meshes exactly as it did at 1.2.0. `CACHE_VERSION` goes 5 → 6 anyway, because
+the *payload* changed — an entry stores the finished result verbatim, and an
+older one carries no chain list and no joint indices for the new panel to read.
 
 ### Added
 
@@ -50,6 +51,24 @@ at 5. Bridge builds are the one exception — see below.
 - **The stand sheet no longer covers the button under it.** It was pinned to a
   top offset sized for exactly one viewer button; it sits in the button stack's
   flow instead, so it lands below however many there are.
+- **The display stand describes the model on screen, not the form.** The stand
+  routes posted whatever the settings said at the moment you clicked, which was
+  the same thing until the chains and joints panel arrived — a control meant to
+  be left set and unbuilt until the next Generate, one click from the stand
+  button. A pending veto built a cache key for a model that had never been
+  built: the sketch fell back to its generic drawing after a visible wait, and a
+  real stand rebuilt from scratch *with the pending change applied*, standing up
+  a model the viewer was not showing. The stand lookup now uses what the build
+  token recorded, which is what that token has always been for.
+- **A pending change no longer relabels the plaque.** The plaque's legend boxes
+  are keyed on built position — the one index left that still moves — and always
+  send a line each, so a set left over from before a chain was removed named
+  chain B with chain A's label and printed it. They are dropped when the built
+  set changes and named afresh; a name you typed still survives an ordinary
+  rebuild.
+- **Chains and joints do not travel between structures.** Both lists are
+  indices, and carried to a different structure they do not fail, they *match* —
+  so a chain switched off in the last structure came out of the next one.
 - **The bridge count reaches the cache key.** Both magnet counts were dropped
   from the key whenever magnets were off, which is right for inflate and wrong
   for the bridge: it reads exactly those two fields to decide how many rods to

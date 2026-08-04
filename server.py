@@ -1825,13 +1825,30 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None,
         # reported "not in memory", the preview fell back to its generic sketch,
         # and a real stand quietly paid for a full rebuild it did not need.
         import dataclasses as _dc
+        # ...and look it up with the parameters the model on screen was *built*
+        # from, not the ones the form is carrying now. The token records them
+        # for exactly this reason, and the in-memory branch above has always
+        # used them; this branch did not, so any control nudged between
+        # generating and standing produced a key nothing on disk could match.
+        #
+        # That used to need a mistake. It does not any more: the chains and
+        # joints panel is a control the user is *meant* to leave set and unbuilt
+        # until the next Generate, and it is one click from the stand button. A
+        # pending veto turned every cache-served model into "not in memory" —
+        # the sketch fell back to its generic drawing after a visible wait, and
+        # a real stand paid for a full rebuild. Worse, that rebuild applied the
+        # pending change, so the stand was raised around a model the viewer was
+        # not showing.
         base = params
-        if getattr(params, "stand", None) is not None:
-            base = _dc.replace(params,
-                               stand=_dc.replace(params.stand, enabled=False))
+        if entry is not None and entry.get("params") is not None:
+            base = entry["params"]
+        if getattr(base, "stand", None) is not None:
+            base = _dc.replace(base,
+                               stand=_dc.replace(base.stand, enabled=False))
         hit = cache.lookup(source, base)
     except Exception:
         hit = None
+        base = params
     if hit and declined_key is not None and hit.get("key") == declined_key:
         hit = None                    # same entry, already tried and declined
     if hit:
@@ -1839,8 +1856,13 @@ def _stand_meshes(source: str, params: PrintParams, token: str, progress=None,
             progress(0.20, "Reopening the cached model…")
         built = _built_from_cache(hit, source, require_watertight)
         if built is not None:
-            _remember_reopened(token, built, params, slot=built_key)
-            return built, params, "the cached build"
+            # Report the parameters the meshes really came from, so the stand is
+            # solved against the model it is standing up rather than the form.
+            found = entry["params"] if (entry is not None
+                                        and entry.get("params") is not None) \
+                else params
+            _remember_reopened(token, built, found, slot=built_key)
+            return built, found, "the cached build"
     return None, params, None
 
 

@@ -95,7 +95,19 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 #: model, which left material standing above anything it cut; it is a
 #: downward-only cut now, and the column is nudged off any splinter the cut
 #: would leave on its top. Same parameters, different mesh, in both cases.
-CACHE_VERSION = 5
+#: 6: not a geometry change. with nothing switched off and no override
+#: With nothing switched off and no override set a build meshes exactly as it
+#: did at 5 — but this is a *payload* change, which
+#: is the same problem wearing different clothes. An entry stores the finished
+#: result dict verbatim and ``_cached_result`` serves it back, so a hit on an
+#: older entry hands the front end a payload with no ``parts`` list and
+#: connections with no ``ai``/``bi``. The chains-and-joints panel reads exactly
+#: those, so on the popular structures the pre-generated entries exist for — the
+#: ones most likely to be tried first — the panel would simply never appear, and
+#: the stale chain list from the previous structure would be left on screen
+#: pointing at the wrong model. The entry also has no per-object ``index``, so a
+#: display stand raised from one would recolour the whole model.
+CACHE_VERSION = 6
 
 #: Artefact kinds an entry must hold to count as complete.  A half-written entry
 #: (a crash mid-export, a killed container) must never be served, so lookup
@@ -336,6 +348,11 @@ class CachedObject:
     name: Optional[str] = None
     res_name: Optional[str] = None
     res_id: Optional[int] = None
+    #: The chain's position in the structure, carried through the cache because
+    #: it is what the palette reads. Without it a stand raised from a cache hit
+    #: fell back to the built position and recoloured the whole model — visibly,
+    #: the moment the stand appeared, and in the exported 3MF.
+    index: Optional[int] = None
     _label: str = ""
 
     n_atoms: int = 0
@@ -376,6 +393,7 @@ def describe_objects(built) -> list:
             "name": getattr(chain, "name", None),
             "res_name": getattr(chain, "res_name", None),
             "res_id": getattr(chain, "res_id", None),
+            "index": getattr(chain, "index", None),
         })
     return out
 
@@ -394,6 +412,7 @@ def objects_from_meta(meta: dict) -> list:
             name=item.get("name"),
             res_name=item.get("res_name"),
             res_id=item.get("res_id"),
+            index=item.get("index"),
             _label=str(item.get("label", "")),
         ))
     return out

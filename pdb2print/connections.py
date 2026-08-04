@@ -122,13 +122,17 @@ class Connection:
     #: pair of chains without saying anything.
     ai: int = -1
     bi: int = -1
+    #: Whether this row is the way it is because the user said so about *this*
+    #: pair, as opposed to falling out of a global setting.  Only the first is
+    #: something the front end should show as a choice already made.
+    by_hand: bool = False
 
     def as_dict(self) -> dict:
         return {
             "a": self.a_id, "b": self.b_id, "kind": self.kind,
             "method": self.method, "gap_mm": round(float(self.gap_mm), 2),
             "count": self.count, "applied": self.applied, "note": self.note,
-            "ai": self.ai, "bi": self.bi,
+            "ai": self.ai, "bi": self.bi, "by_hand": self.by_hand,
         }
 
 
@@ -2000,7 +2004,12 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         if mode:
             return mode
         n = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
-        return "none" if n <= 0 else ""
+        # ``zero`` takes the same skip as ``none`` but is not the same claim:
+        # nobody said anything about *this* pair, the count says none of them.
+        # Reporting it as a hand veto would be a lie, and the front end would
+        # show every row as changed-but-not-built against a panel nobody has
+        # touched.
+        return "zero" if n <= 0 else ""
 
     # 1a) Inflate is the one mode that *wants* the parts to overlap — it grows
     #     neighbouring surfaces until they weld into one body — so the fit pass
@@ -2109,7 +2118,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         chains[i].chain_id, chains[j].chain_id,
                         _kind(chains[i], chains[j]), "join",
                         gap_mm=0.0, count=0, applied=True,
-                        ai=src[i], bi=src[j],
+                        ai=src[i], bi=src[j], by_hand=True,
                         note="left fused — set by hand"))
                 else:
                     # Nothing to skip carving, so the two simply stay where they
@@ -2120,7 +2129,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         chains[i].chain_id, chains[j].chain_id,
                         _kind(chains[i], chains[j]), "join",
                         gap_mm=_gap, count=0, applied=False,
-                        ai=src[i], bi=src[j],
+                        ai=src[i], bi=src[j], by_hand=True,
                         note="these two do not touch, so there is nothing "
                              "to fuse"))
             found = [o for o in found if (o.i, o.j) not in joined]
@@ -2178,7 +2187,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 if kind == "dna-dna":
                     continue
                 mode = _override(i, j, kind)
-                if mode == "none":
+                if mode in ("none", "zero"):
                     # Checked *after* the contact test, so the list only ever
                     # carries pairs the build would really have joined. The fit
                     # pass still ran for this pair, so the two parts are still
@@ -2196,8 +2205,10 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     applied.append(Connection(
                         chains[i].chain_id, chains[j].chain_id, kind, "none",
                         gap_mm=gap, count=0, applied=False,
-                        ai=src[i], bi=src[j],
-                        note="left unjoined — set by hand"))
+                        ai=src[i], bi=src[j], by_hand=(mode == "none"),
+                        note="left unjoined — set by hand" if mode == "none"
+                        else "left unjoined — the count for these interfaces "
+                             "is zero"))
                     continue
                 if mode == "join":
                     # Reported by the join pass above, which had to run before
