@@ -61,6 +61,14 @@ older one carries no chain list and no joint indices for the new panel to read.
 - **The stand sheet no longer covers the button under it.** It was pinned to a
   top offset sized for exactly one viewer button; it sits in the button stack's
   flow instead, so it lands below however many there are.
+- **Bridges weld rather than meet on a plane.** Both halves of a peg were built
+  against the shared mid-plane, which is right for a magnet — that joint comes
+  apart in the hand — and wrong for a bridge, which is a one-piece joint. Two
+  flat discs meeting exactly on a plane have no contact area for the slicer to
+  weld, and any sliver of numerical overlap between them was found by the
+  closing sweep and carved out with a fit clearance on top. Each half now runs a
+  short way past the plane; the overlap is entirely inside the peg's own
+  cylinder, so nothing about the shape changes.
 - **Base-pair rungs are welded again.** Each rung's two halves run past the
   midline on purpose, so the pair shares a real volume — two round ends that
   merely touch have nothing for the slicer to weld. That overlap is between two

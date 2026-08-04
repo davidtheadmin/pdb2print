@@ -1528,3 +1528,41 @@ def test_overlap_mode_fuses_what_touches_and_names_what_does_not():
     loose = [c for c in rows if not c["applied"]]
     if loose:
         assert any("come off the plate loose" in w for w in report.warnings)
+
+
+def test_bridge_halves_weld_rather_than_meet_on_a_plane():
+    """A bridge is a one-piece joint, so its two halves must share material.
+
+    Both collars used to be built against the shared mid-plane, which is right
+    for a magnet — that joint comes apart in the hand — and wrong for a bridge.
+    Two flat discs meeting exactly on a plane have no contact area for the
+    slicer to weld, and any sliver of numerical overlap between them was found
+    by the closing sweep and carved out with a fit clearance on top: a one-piece
+    model with a ring of air through the middle of every peg.
+
+    The weld is entirely inside the peg's own cylinder, so the shape does not
+    change — which is what the upper bound here is for.
+    """
+    from pdb2print import interference
+    from pdb2print.representations import _manifold
+    from pdb2print.config import NoMagnetMethod
+
+    report = build_all(COMPLEX, _params(
+        connect=True, no_magnet_method=NoMagnetMethod.BRIDGE,
+        contact_threshold_mm=3.5, connector_diameter_mm=3.0))
+    assert _all_watertight_single(report)
+    bridged = [c for c in report.connections
+               if c["method"] == "bridge" and c["applied"]]
+    assert bridged, "no bridge was built at all"
+
+    mans = [_manifold.from_trimesh(m) for _c, m in report.built]
+    shared = {(o.i, o.j): o.volume
+              for o in interference.pair_overlaps(mans, want_pieces=False)}
+    assert shared, "the two halves meet on a plane and share nothing"
+
+    # A weld, not a peg driven clean through its neighbour: the shared volume is
+    # a disc of the peg's own radius, so it cannot be much of the model.
+    smallest = min(m.volume for _c, m in report.built)
+    assert sum(shared.values()) < 0.05 * smallest
+    # And a deliberate weld is not reported back as interference.
+    assert not any("still share" in w for w in report.warnings)

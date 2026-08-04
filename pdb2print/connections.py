@@ -1121,7 +1121,8 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                 pocket: dict | None, socket_on: bool,
                 clearance: float = 0.3, cap_limit: float = 0.0,
                 extend_max: float = 0.0,
-                nose_scale: float = 1.0) -> Tuple[bool, str]:
+                nose_scale: float = 1.0,
+                weld: float = 0.0) -> Tuple[bool, str]:
     """Build one joint at ``seat`` on both parts, or leave both untouched.
 
     This is the single geometry path behind both joint types, in three steps per
@@ -1142,6 +1143,15 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
     and ``_commit`` rejects any length that would leave it floating.  Both parts
     are committed together — a joint that only half-builds is worse than none, so
     on failure neither side is modified.
+
+    ``weld`` runs each half that far *past* the shared plane, so the two share a
+    real volume instead of meeting on it.  Zero for a magnet joint, which has to
+    come apart in the hand.  Non-zero for a bridge, which does not: two flat
+    discs meeting exactly on a plane have no contact area for the slicer to weld,
+    and any sliver of numerical overlap between them is found by the closing
+    sweep and carved out with a fit clearance on top — a one-piece model with a
+    ring of air through the middle of every peg.  The overlap is entirely inside
+    the peg's own cylinder, so nothing about the shape changes.
     """
     if not socket_on and pocket is None:
         return False, "socket disabled and no pocket to cut"
@@ -1244,11 +1254,13 @@ def _build_seat(mans, i, j, seat: Seat, socket_r: float, embed: float,
                         body = length - nose_h
                     if nose_h > 1e-6:
                         grown = _commit(
-                            man, _collar_solid(seat.center, into, body,
+                            man, _collar_solid(seat.center - into * weld, into,
+                                               body + weld,
                                                socket_r, nose, nose_h),
                             add=True)
                 if grown is None:
-                    grown = _commit(man, _seat_solid(seat.center, into, length,
+                    grown = _commit(man, _seat_solid(seat.center - into * weld,
+                                                     into, length + weld,
                                                      socket_r), add=True)
                 man = grown
                 if man is None:
@@ -1434,16 +1446,20 @@ def _apply_bridge(mans, i, j, mesh_a, mesh_b, count: int, cp: ConnectionParams,
         # verifying it against anything else under-delivers the correction.
         # A pin has no bore to protect, so it may pull back further.
         _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
+        # Same weld the base-pair rungs use, and for the same reason: a bridge
+        # is a one-piece joint, so its two halves have to share material rather
+        # than meet on a plane. Kept small and wholly inside the peg.
+        weld = max(0.2, 0.2 * r)
         ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
                               None, True, cp.path_clearance_mm,
                               cp.socket_cap_exposed_max, cp.socket_extend_max,
-                              cp.socket_nose_scale)
+                              cp.socket_nose_scale, weld=weld)
         if not ok and _unbalance(seat):
             _resolve_back_faces(seat, embed + seat.gap / 2.0, r, cp, min_mult=0.5)
             ok, why = _build_seat(mans, i, j, seat, r, embed + seat.gap / 2.0,
                                   None, True, cp.path_clearance_mm,
                                   cp.socket_cap_exposed_max, cp.socket_extend_max,
-                                  cp.socket_nose_scale)
+                                  cp.socket_nose_scale, weld=weld)
         if ok:
             placed += 1
         else:
@@ -2300,6 +2316,12 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                     ok, note, placed = _apply_bridge(
                         mans, i, j, meshes[i], meshes[j], n_joints, cp, params,
                         overlap=overlap)
+                # A bridge welds its two halves together, so the pair shares
+                # space on purpose from here on and the closing sweep must not
+                # read that as interference. A magnet joint is the opposite —
+                # it has to come apart — so it is left to the sweep as before.
+                if ok and method == "bridge":
+                    fused.add((i, j))
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id, kind, method,
                     gap_mm=gap, count=placed, applied=ok, note=note,
