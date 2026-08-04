@@ -127,7 +127,7 @@ def _bounded(fields: dict, name: str) -> float:
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = '2026-08-02.1'
+CODE_STAMP = '2026-08-04.1'
 
 #: When this process started, for /api/health.
 _STARTED = time.time()
