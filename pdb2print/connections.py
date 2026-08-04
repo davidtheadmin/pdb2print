@@ -1972,6 +1972,14 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         fit_notes.append(_scale_note)
     inflate = cp.connect and not cp.use_magnets \
         and cp.no_magnet_method == NoMagnetMethod.INFLATE
+    # One piece by leaving well alone. The chains are built overlapping wherever
+    # they touch and the fit pass is the only thing that pulls them apart, so
+    # not running it is a fused model with nothing invented for it. Skips the
+    # joint loop too: there is no gap left to put a magnet or a bridge across.
+    overlap_only = cp.connect and not cp.use_magnets \
+        and cp.no_magnet_method == NoMagnetMethod.OVERLAP
+    if overlap_only:
+        do_fit = False
 
     # What the user vetoed by hand, keyed on the pair of *source* indices —
     # where each chain sits in the structure, not where it sits in this build.
@@ -2083,6 +2091,48 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
 
     mans = [_manifold.from_trimesh(m) for m in meshes]
 
+    if overlap_only:
+        step(0.4, "Checking which parts already touch…")
+        shared = {(o.i, o.j) for o
+                  in interference.pair_overlaps(mans, want_pieces=False)}
+        apart = []
+        n = len(built)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if not _joinable(chains[i], chains[j]):
+                    continue
+                if (cp.basepair_connect
+                        and chains[i].mtype == MoleculeType.NUCLEIC
+                        and chains[j].mtype == MoleculeType.NUCLEIC):
+                    continue
+                if (i, j) in shared:
+                    applied.append(Connection(
+                        chains[i].chain_id, chains[j].chain_id,
+                        _kind(chains[i], chains[j]), "overlap",
+                        gap_mm=0.0, count=0, applied=True,
+                        ai=src[i], bi=src[j],
+                        note="already overlapping, left fused"))
+                    continue
+                _pa, _pb, gap = _nearest(meshes[i], meshes[j])
+                if gap > cp.contact_threshold_mm:
+                    continue          # not neighbours at all; nothing to say
+                applied.append(Connection(
+                    chains[i].chain_id, chains[j].chain_id,
+                    _kind(chains[i], chains[j]), "overlap",
+                    gap_mm=gap, count=0, applied=False,
+                    ai=src[i], bi=src[j],
+                    note="close but not overlapping, so nothing joins these two"))
+                apart.append(f"{chains[i].display_name()} and "
+                             f"{chains[j].display_name()}")
+        # Said once, in the warnings, because it is the one thing this mode
+        # cannot do and the user has to decide what to do about it.
+        if apart:
+            fit_notes.append(
+                "Nothing was carved and nothing was added, so parts are joined "
+                "only where they already overlap. These do not, and will come "
+                "off the plate loose: " + "; ".join(apart)
+                + ". Magnets or bridges would join them.")
+
     # 1c) Make the solids physically disjoint, and remember where they were not.
     overlaps = {}
     #: Pairs the user asked to keep fused.  Held for the whole pass: the carve
@@ -2090,6 +2140,10 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     #: — that second ``resolve`` runs its own full sweep, so a pair joined here
     #: is carved straight back apart unless it is excluded there too.
     joined: set = set()
+    #: Everything the closing sweep must not touch: pairs the user asked to keep
+    #: fused, and pairs whose base-pair rungs are deliberately welded together.
+    #: Both share space on purpose, and both look exactly like interference.
+    fused: set = set()
     if do_fit and not inflate:
         step(0.05, "Checking how the parts fit together…")
         found = interference.pair_overlaps(mans)
@@ -2133,6 +2187,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                         note="these two do not touch, so there is nothing "
                              "to fuse"))
             found = [o for o in found if (o.i, o.j) not in joined]
+            fused |= joined
 
         if found:
             step(0.15, f"Carving {len(found)} overlapping interface(s) apart…")
@@ -2158,7 +2213,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     # 1d) Detect contacts on the *resolved* geometry, and always include any
     #     pair that was interpenetrating — those are in contact by definition,
     #     however the surviving surface gap happens to measure.
-    if cp.connect and not inflate:
+    if cp.connect and not inflate and not overlap_only:
         n = len(built)
         todo = [(i, j) for i in range(n) for j in range(i + 1, n)
                 if _joinable(chains[i], chains[j])
@@ -2255,6 +2310,17 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         for i, j in _nucleic_strand_pairs(built):
             mans[i], mans[j], n_links = _apply_basepairs(
                 mans[i], mans[j], chains[i], chains[j], params)
+            # Each rung's two halves are built to run *past* the midline so the
+            # pair shares a real volume — two round ends that merely touch have
+            # nothing for the slicer to weld. That overlap is between two
+            # objects, so the closing sweep below found it and carved it out,
+            # with a fit clearance on top: the deliberate weld came out as a
+            # gap of air in the middle of every rung. The comment in
+            # ``_apply_basepairs`` said the fit pass had already run and nothing
+            # would carve this back; that was true of the first pass and not of
+            # the second.
+            if n_links:
+                fused.add((min(i, j), max(i, j)))
             applied.append(Connection(
                 chains[i].chain_id, chains[j].chain_id, "dna-basepair", "basepair",
                 count=n_links, applied=n_links > 0, ai=src[i], bi=src[j],
@@ -2272,7 +2338,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     #     material: a vetoed pair leaves nothing behind to re-check, and a
     #     joined one is the thing this sweep must not touch. Letting either
     #     trigger it would buy a full O(n²) sweep to confirm a known negative.
-    _added = any(c.applied and c.method not in ("none", "join")
+    _added = any(c.applied and c.method not in ("none", "join", "overlap")
                  for c in applied)
     if do_fit and not inflate and _added:
         step(0.93, "Re-checking the fit after connecting…")
@@ -2282,10 +2348,10 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         # anything is joined the sweep is run here, with the same flags, and the
         # joined pairs are dropped before ``resolve`` ever sees them.
         _late = None
-        if joined:
+        if fused:
             _late = [o for o in interference.pair_overlaps(
                          mans, want_pieces=False, want_boxes=True)
-                     if (o.i, o.j) not in joined]
+                     if (o.i, o.j) not in fused]
         mans, _again, late = interference.resolve(mans, chains, params, _late,
                                                   allow_split=False,
                                                   want_pieces=False,
@@ -2302,7 +2368,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         # is the normal one, that was a third of the interference stage spent
         # confirming a known negative.
         if _again:
-            fit_notes.extend(interference.audit(mans, chains, ignore=joined))
+            fit_notes.extend(interference.audit(mans, chains, ignore=fused))
 
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
     step(0.97, "Rebuilding meshes…")

@@ -553,6 +553,18 @@
     letter-spacing: -0.01em;
   }
   .sp-sect + div { margin-top: 2px; }
+  .sp-sect-row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; margin-top: 4px;
+  }
+  .sp-sect-row .sp-sect { margin: 0; }
+  .sp-sect-row + div { margin-top: 2px; }
+  .sp-link {
+    border: none; background: none; padding: 0; cursor: pointer;
+    font: 500 10.5px/1 inherit; font-family: inherit; color: var(--accent);
+    text-decoration: underline;
+  }
+  .sp-link[hidden] { display: none; }
   .sp-foot {
     flex: none; padding: 11px 13px 13px; border-top: 1px solid var(--border);
     background: var(--s1);
@@ -1579,6 +1591,7 @@
                 <div class="seg" data-group="no_magnet_method">
                   <button data-value="inflate" class="active" title="Grows the chains until the gap closes. Nothing to set.">Inflate</button>
                   <button data-value="bridge" title="Puts a rod of a size you choose across the gap.">Bridges</button>
+                  <button data-value="overlap" title="Leaves the chains exactly where the structure puts them. Nothing is grown and nothing is cut, so the parts that already overlap come out fused. Parts that only come close are listed in the report and will be loose.">Overlap</button>
                 </div>
               </div>
             </div>
@@ -1620,13 +1633,13 @@
                       <button data-value="2">2</button>
                       <button data-value="3">3</button>
                       <button data-value="4">4</button>
+                      <button data-value="5">5</button>
                     </div>
                     <span class="count-lbl">DNA–protein</span>
-                    <div class="seg" data-group="dna_magnet_count">
+                    <div class="seg" data-group="dna_magnet_count" title="A backbone is a narrow thing to seat a magnet on, so two is as many as fits. Zero leaves every DNA–protein interface unjoined; the parts still come apart to fit each other.">
+                      <button data-value="0">0</button>
                       <button data-value="1" class="active">1</button>
                       <button data-value="2">2</button>
-                      <button data-value="3">3</button>
-                      <button data-value="4">4</button>
                     </div>
                   </div>
                 </div>
@@ -1813,7 +1826,10 @@
       <div class="sp-body">
         <!-- Chains first: what to build at all comes before how the built
              things are joined, and switching one off removes joints below. -->
-        <p class="sp-sect" title="A chain switched off is not built at all — not meshed, not exported, and not there for the others to be carved to fit. Switch one back on to get it back.">Build these chains</p>
+        <div class="sp-sect-row">
+          <p class="sp-sect" title="A chain switched off is not built at all — not meshed, not exported, and not there for the others to be carved to fit. Switch one back on to get it back.">Build these chains</p>
+          <button id="chains-all" class="sp-link" type="button" hidden>Select all</button>
+        </div>
         <div id="chain-list"></div>
 
         <p class="sp-sect" id="joints-head" title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic.">Joints</p>
@@ -2574,9 +2590,11 @@
     const diaField = $('#conn-diameter');
     const home = magnets ? $('#magnet-size') : $('#bridge-slot');
     if (diaField && home && diaField.parentElement !== home) home.prepend(diaField);
-    // inflate sizes itself from the gap, so hide the slider when inflating.
-    const inflate = !magnets && groups.no_magnet_method() === 'inflate';
-    diaField.hidden = inflate;
+    // Inflate sizes itself from the gap and Overlap builds nothing at all, so
+    // neither has a diameter to set.
+    const how = groups.no_magnet_method();
+    const noDia = !magnets && (how === 'inflate' || how === 'overlap');
+    diaField.hidden = noDia;
     $('#diameter-label').textContent = magnets ? 'Ø (mm)' : 'Bridge Ø (mm)';
     // The socket is the shared magnet/bridge joint geometry; inflate has no
     // joint to put a collar on, so it drops out entirely there.
@@ -2748,6 +2766,36 @@
   }
 
   // ---- downloads / legend helpers ----
+  // Grey both downloads for the length of a build, and put them back only when
+  // a result actually lands.
+  //
+  // They used to stay green and keep the *previous* build's URLs the whole way
+  // through, which is at its worst exactly when it is most tempting: the early
+  // preview swaps the new model into the viewer well before its files are
+  // written, so the model on screen is the new one and the button under it
+  // hands you the old one. Nothing about that says anything is wrong.
+  //
+  // The href is kept, not cleared: a build that is cancelled or that never
+  // reaches the server leaves the old model on screen, and its files are still
+  // there, so the buttons go back to what they were rather than to nothing.
+  let downloadsHeld = false;
+  function holdDownloads(on) {
+    downloadsHeld = !!on;
+    [$('#dl-3mf'), $('#dl-stl')].forEach(el => {
+      if (!el) return;
+      if (on) {
+        if (el.getAttribute('aria-disabled') === 'false') el.dataset.wasReady = '1';
+        el.setAttribute('aria-disabled', 'true');
+        el.classList.remove('just-ready');
+      } else if (el.dataset.wasReady && el.getAttribute('href')) {
+        el.setAttribute('aria-disabled', 'false');
+        delete el.dataset.wasReady;
+      } else {
+        delete el.dataset.wasReady;
+      }
+    });
+  }
+
   function setDownload(el, url) {
     const wasReady = el.getAttribute('aria-disabled') === 'false';
     if (url) {
@@ -2827,9 +2875,13 @@
   // model, so a veto would do nothing at all — but the chains half still
   // applies, so the panel stays. The vetoes are kept either way, so switching
   // away and back does not lose them.
+  // Inflate fuses the whole model and Overlap carves nothing, so in both there
+  // is no per-pair joint to veto — the rows would be a control that does
+  // nothing. The chain list still applies in either, so the panel stays.
   function jointsApply() {
-    return !(groups.assembly() === 'one_piece'
-             && groups.no_magnet_method() === 'inflate');
+    if (groups.assembly() !== 'one_piece') return true;
+    const how = groups.no_magnet_method();
+    return how !== 'inflate' && how !== 'overlap';
   }
 
   function panelAvailable() {
@@ -2852,11 +2904,16 @@
     none.hidden = showJoin || !chainRows.length;
     none.textContent = jointRowCount === 0
       ? 'No joints in this build.'
-      : 'Inflate fuses the whole model, so there are no joints to set here.';
+      : (groups.no_magnet_method() === 'overlap'
+         ? 'Overlap carves nothing, so there is no joint here to take away.'
+         : 'Inflate fuses the whole model, so there are no joints to set here.');
 
     const pending = countPending();
     $('#joints-count').textContent = pending ? String(pending) : '';
     btn.classList.toggle('on', !$('#joints-panel').hidden);
+
+    const all = $('#chains-all');
+    if (all) all.hidden = excludedChains.size === 0;
 
     const sub = $('#joints-sub');
     if (sub) {
@@ -3147,6 +3204,15 @@
     syncJointsPanel();          // the count on the button, and the note below
   });
 
+  // One click back to a whole structure. Only there when something is off —
+  // a control that cannot do anything is worse than no control.
+  $('#chains-all').addEventListener('click', () => {
+    if (!excludedChains.size) return;
+    excludedChains.clear();
+    $$('#chain-list .chain-row').forEach(paintChain);
+    syncJointsPanel();
+  });
+
   $('#joints-btn').addEventListener('click', () => {
     showJoints($('#joints-panel').hidden);
   });
@@ -3398,6 +3464,8 @@
     }
     renderChains(data.parts);
     renderJoints(data.connections);
+    downloadsHeld = false;
+    $$('.dl-top').forEach(el => delete el.dataset.wasReady);
     setDownload($('#dl-3mf'), data.threemf_url);
     setDownload($('#dl-stl'), data.stl_url);
     if (data.ok) standReady(data);
@@ -5230,6 +5298,7 @@
     inflightKind = 'stand';
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Standing…';
+    holdDownloads(true);
     const standLabel = standBtn.querySelector('span');
     standLabel.textContent = 'Cancel';
     setReport('Building the display stand…', false);
@@ -5249,6 +5318,7 @@
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
       standLabel.textContent = 'Create display stand';
+      if (downloadsHeld) holdDownloads(false);
       hideProgress();
     }
   }
@@ -5360,6 +5430,7 @@
     genBtn.classList.add('busy');
     btnLabel.textContent = 'Building…';
     setJointsGoBusy(true);
+    holdDownloads(true);
     setReport('Starting…', false);
     showProgress(0.02);
 
@@ -5378,6 +5449,7 @@
       genBtn.classList.remove('busy');
       btnLabel.textContent = 'Generate';
       setJointsGoBusy(false);
+      if (downloadsHeld) holdDownloads(false);   // cancelled, or never answered
       hideProgress();
     }
   }
@@ -5660,7 +5732,10 @@
   function assemblyPhrase() {
     const asm = groups.assembly();
     if (asm === 'one_piece') {
-      return groups.no_magnet_method() === 'bridge' ? 'one piece, bridged' : 'one piece, inflated';
+      const how = groups.no_magnet_method();
+      if (how === 'bridge') return 'one piece, bridged';
+      if (how === 'overlap') return 'one piece, overlapping';
+      return 'one piece, inflated';
     }
     return $('#magnets').checked ? 'takes apart, magnets' : 'takes apart, loose';
   }

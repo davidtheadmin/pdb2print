@@ -26,12 +26,22 @@ older one carries no chain list and no joint indices for the new panel to read.
   apart with nothing joining it. Join leaves the pair fused: its overlap is kept
   out of the carve, so the two parts stay welded without any new geometry. A
   pair with no override follows the Assembly setting.
+- **One piece, Overlap.** A third way to fuse a model, beside Inflate and
+  Bridges: leave the chains where the structure puts them and carve nothing.
+  They are built overlapping wherever they touch and the fit pass is the only
+  thing that pulls them apart, so skipping it is a one-piece model with nothing
+  invented for it — nothing grown, nothing cut, nothing bridged. Parts that only
+  come close cannot be joined this way and are named in the report instead of
+  being left quietly loose.
+- **Select all** in the chains list, to put every chain back in one click.
 - **A Regenerate button in the panel**, because the panel is a window away from
   Generate. Nothing is rebuilt on a click; one Regenerate applies every chain
   and every joint you have changed. The panel and the stand panel share the
   right-hand column, and opening one closes the other.
 - **Zero magnets per interface is a real answer.** Setting either count to zero
   now vetoes every interface of that kind instead of silently placing one.
+  Protein–protein offers 1–5 and DNA–protein 0–2: a backbone is a narrow thing
+  to seat a magnet on, and nobody was asking for four of them.
 - **A joint reports how many connectors went in.** `count` was left at its
   default of 1 however many magnets were seated; the real number was only ever
   in the free-text note.
@@ -51,6 +61,17 @@ older one carries no chain list and no joint indices for the new panel to read.
 - **The stand sheet no longer covers the button under it.** It was pinned to a
   top offset sized for exactly one viewer button; it sits in the button stack's
   flow instead, so it lands below however many there are.
+- **Base-pair rungs are welded again.** Each rung's two halves run past the
+  midline on purpose, so the pair shares a real volume — two round ends that
+  merely touch have nothing for the slicer to weld. That overlap is between two
+  objects, so the closing sweep after connecting found it, carved it out and
+  added a fit clearance on top: the deliberate weld came out of every build as a
+  gap of air in the middle of every rung.
+- **The download buttons grey out while a build runs.** They kept the previous
+  build's URLs the whole way through, which is worst exactly when it is most
+  tempting: the early preview swaps the new model into the viewer well before
+  its files are written, so the model on screen was the new one and the button
+  under it handed you the old one, with nothing saying so.
 - **The display stand describes the model on screen, not the form.** The stand
   routes posted whatever the settings said at the moment you clicked, which was
   the same thing until the chains and joints panel arrived — a control meant to

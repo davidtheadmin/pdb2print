@@ -1070,18 +1070,31 @@ def test_magnets_seat_on_an_interface_that_was_interpenetrating():
     mans = [_manifold.from_trimesh(m) for _c, m in report.built]
     assert interference.residual_overlap(mans) < 1.0
 
-def test_basepair_rungs_meet_without_sharing_space():
-    """Opposing rungs must read as one bar and still come apart.
+def test_basepair_rungs_weld_and_survive_the_closing_sweep():
+    """Opposing rungs must share a real volume, and still share it at the end.
 
-    A capsule's solid runs a full radius past its end point, so a link aimed at
-    the midline used to cross it by ``2r`` — invisible on screen, a collision in
-    the print, and added *after* the fit pass had already run.
+    Each half runs a short way past the midline on purpose: two round ends that
+    merely touch share a single tangent point, which is nothing for the slicer
+    to weld. That overlap is between two *objects*, so the closing sweep after
+    connecting found it, carved it out, and added a fit clearance on top — the
+    deliberate weld came out of the build as a gap of air in the middle of every
+    rung, which is exactly "the helix does not hold together".
+
+    Pinned from both sides. The weld has to exist, and it has to be a weld
+    rather than the ``2r`` crossing an unclamped capsule used to produce: a
+    link aimed at the midline once overshot it by a full radius, invisible on
+    screen and a collision in the print.
     """
     report = build_all(BNA, _params(basepair_connect=True))
     assert _all_watertight_single(report)
     assert report.connections[0]["count"] > 0
     mans = [_manifold.from_trimesh(m) for _c, m in report.built]
-    assert _shared(mans) == pytest.approx(0.0, abs=1e-3)
+    shared = _shared(mans)
+    assert shared > 0.0, "the rungs were carved apart again"
+    smallest = min(m.volume for _c, m in report.built)
+    assert shared < 0.05 * smallest, f"{shared:.1f} mm3 is a bulge, not a weld"
+    # And nothing reports the weld as interference, because it is not.
+    assert not any("still share" in w for w in report.warnings)
 
 
 # --------------------------------------------------------------------------
@@ -1481,3 +1494,37 @@ def test_a_cache_hit_keeps_the_colours_the_build_gave_it():
     assert len(reopened) == len(report.built)
     assert [o.index for o in reopened] == [c.index for c, _m in report.built]
     assert export.object_colors([(o, None) for o in reopened]) == original
+
+
+
+def test_overlap_mode_fuses_what_touches_and_names_what_does_not():
+    """One piece by leaving well alone: nothing grown, nothing cut, nothing added.
+
+    The chains are built overlapping wherever they touch and the fit pass is the
+    only thing that pulls them apart, so not running it is a fused model with no
+    geometry invented for it. What it cannot do is join two parts that only come
+    close — there is no overlap to keep — so those are reported rather than
+    quietly left loose.
+    """
+    from pdb2print.config import NoMagnetMethod
+    from pdb2print import interference
+    from pdb2print.representations import _manifold
+
+    report = build_all(OVERLAP, _params(
+        connect=True, no_magnet_method=NoMagnetMethod.OVERLAP))
+    assert all(m.is_watertight for _c, m in report.built)
+
+    rows = [c for c in report.connections if c["method"] == "overlap"]
+    assert rows, "nothing was reported at all"
+    assert any(c["applied"] for c in rows), "nothing came out fused"
+
+    # Fused means still sharing space at the end of the pass.
+    mans = [_manifold.from_trimesh(m) for _c, m in report.built]
+    shared = {(o.i, o.j) for o in interference.pair_overlaps(mans,
+                                                             want_pieces=False)}
+    assert shared, "the carve ran after all"
+
+    # A pair that only comes close is named, not silently left loose.
+    loose = [c for c in rows if not c["applied"]]
+    if loose:
+        assert any("come off the plate loose" in w for w in report.warnings)

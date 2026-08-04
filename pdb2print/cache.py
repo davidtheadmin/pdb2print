@@ -95,10 +95,9 @@ MIN_FREE_BYTES = 2 * 1024 ** 3
 #: model, which left material standing above anything it cut; it is a
 #: downward-only cut now, and the column is nudged off any splinter the cut
 #: would leave on its top. Same parameters, different mesh, in both cases.
-#: 6: not a geometry change. with nothing switched off and no override
-#: With nothing switched off and no override set a build meshes exactly as it
-#: did at 5 — but this is a *payload* change, which
-#: is the same problem wearing different clothes. An entry stores the finished
+#: 6: not a geometry change — with nothing switched off and no override set a
+#: build meshes exactly as it did at 5. It is a *payload* change, which is the
+#: same problem wearing different clothes. An entry stores the finished
 #: result dict verbatim and ``_cached_result`` serves it back, so a hit on an
 #: older entry hands the front end a payload with no ``parts`` list and
 #: connections with no ``ai``/``bi``. The chains-and-joints panel reads exactly
@@ -296,8 +295,9 @@ def canonical_params(params: PrintParams) -> dict:
                   "magnet_depth_clearance_mm", "magnet_chamfer_mm"):
             conn.pop(k, None)
         # "inflate" grows the surfaces together and never reads a diameter or
-        # builds a collar; "bridge" reads both.
-        if conn.get("no_magnet_method") == "inflate":
+        # builds a collar, and "overlap" builds nothing at all; "bridge" reads
+        # both.
+        if conn.get("no_magnet_method") in ("inflate", "overlap"):
             for k in ("connector_diameter_mm", "socket", "socket_wall_mm",
                       "path_clearance_mm",
                       # Inflate never runs the seat search, so the two counts

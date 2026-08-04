@@ -96,6 +96,15 @@ class NoMagnetMethod(str, Enum):
 
     INFLATE = "inflate"   # grow both surfaces at the contact until they merge
     BRIDGE = "bridge"     # a short cylinder spanning the gap (peg/strut)
+    #: Leave the chains where the structure put them and carve nothing.  The
+    #: chains are built overlapping wherever they touch, and the fit pass is the
+    #: only thing that pulls them apart — so skipping it is a one-piece model
+    #: with no geometry invented for it: nothing grown, nothing cut, nothing
+    #: bridged.  It is the whole-model version of a per-pair ``join``.
+    #:
+    #: A pair that does not already touch is not joined by this and cannot be:
+    #: there is no overlap to keep.  Those are reported rather than fixed.
+    OVERLAP = "overlap"
 
 
 class LigandStyle(str, Enum):
