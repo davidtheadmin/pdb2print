@@ -2678,7 +2678,12 @@
     groups[name] = () => ($('button.active', seg) || {}).dataset?.value;
     seg.addEventListener('click', e => {
       const btn = e.target.closest('button');
-      if (!btn) return;
+      // The help-marker harvester appends its own button to anything carrying a
+      // title, including a .seg itself — and that button has no data-value, so
+      // selecting it would leave the group with no option chosen and
+      // groups.<name>() returning undefined. Same family as the marker nested
+      // in a <label> that used to swallow a switch's toggle.
+      if (!btn || btn.classList.contains('hx')) return;
       $$('button', seg).forEach(b => b.classList.toggle('active', b === btn));
       applyAutoDefaults();
       if (name === 'base_style' || name === 'backbone_style') updateDnaDims();
@@ -6237,6 +6242,10 @@
   // Last, so every control and every derived function above is in place before
   // a link is allowed to drive them.
   openSharedLink();
+  // Pasting a link into the address bar of a tab that already has the site open
+  // is a *fragment* navigation: the document is not reloaded and init never runs
+  // again, so without this the link would quietly do nothing at all.
+  window.addEventListener('hashchange', openSharedLink);
 })();
 </script>
 </body>
