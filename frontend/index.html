@@ -1344,6 +1344,30 @@
 
     /* 7. The example grid is two columns of long names at this width. */
     .ex-grid { grid-template-columns: 1fr 1fr; }
+
+    /* 8. The two overlay groups sit in opposite top corners of the viewer:
+          the three downloads top-left, Create display stand and Chains &
+          joints top-right. Opposite corners are only opposite while the viewer
+          is wide -- at this width the two groups meet in the middle and print
+          on top of each other.
+
+          Both move to the left edge and the actions drop below the downloads.
+          The offset is the download row's own height, which CSS cannot ask a
+          sibling element for, so it is stated once here as a variable: change
+          the size of a .dl-top button and this has to change with it. Anything
+          less coupled than that means wrapping the two groups in a shared flow
+          container, which is a markup change to fix a phone.
+
+          `flex-wrap` on the downloads is the guard for the narrowest phones,
+          where three buttons may not make one row -- they wrap downward, into
+          the gap, rather than pushing sideways off the viewer. */
+    .viewer-wrap { --dl-row-h: 51px; }   /* 15px text + 28px padding + 2px border */
+    .dl-group { right: 14px; flex-wrap: wrap; }
+    .stand-group {
+      top: calc(14px + var(--dl-row-h) + 10px);
+      left: 14px; right: 14px;
+      align-items: flex-start;
+    }
   }
 </style>
 </head>
