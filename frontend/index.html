@@ -1281,6 +1281,70 @@
     font: 400 20px/1 inherit; font-family: inherit; cursor: pointer;
   }
   .wel-close:hover { color: var(--text); }
+  /* ==================================================================
+     NARROW SCREENS — the whole left-to-right layout becomes top-to-bottom.
+     ==================================================================
+
+     Everything mobile lives inside this one query and nothing outside it
+     changed, so the desktop layout is byte-for-byte what it was.
+
+     The hard part is not the grid, it is that this page is an *app shell*:
+     `html, body { height: 100% }` with `body { overflow: hidden }`, and the
+     settings column does its own scrolling inside a viewport-height frame.
+     That is right for a two-column desktop tool and impossible on a phone --
+     three stacked sections cannot share one screen height. So below this
+     width the shell is dismantled: the page grows to its content and the
+     document scrolls, the way a page normally does.
+
+     Nothing is hidden. Every control that exists on desktop exists here.
+     ------------------------------------------------------------------ */
+  @media (max-width: 820px) {
+
+    /* 1. Undo the fixed-height shell so the document itself scrolls. */
+    html, body { height: auto; }
+    body { overflow: visible; }
+
+    /* 2. One column. The `body.*-open` pair has no media guard of its own,
+          so without repeating it here a stand or joints panel would put
+          772px of fixed columns back on a 390px screen. */
+    .split,
+    body.stand-open .split,
+    body.joints-open .split {
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    /* 3. The settings column stops being its own scroll region. A scroller
+          inside a scroller is unusable on touch: the inner one swallows the
+          gesture and the page underneath refuses to move. */
+    .settings { overflow: visible; padding-right: 0; }
+
+    /* 4. The viewer has no height of its own -- it is `flex: 1` of a cell
+          that used to be a full-height column. Stacked, that cell is only as
+          tall as its content and the model collapses to nothing.
+          `dvh` tracks the browser chrome sliding in and out; the `vh` line
+          before it is the fallback for anything that does not know `dvh`. */
+    .hero { min-height: 0; }
+    .viewer-wrap { height: 52vh; height: 52dvh; flex: none; }
+
+    /* 5. Same for a panel: it is a flex column with `min-height: 0`, which
+          collapses to zero once nothing is stretching it. Capped rather than
+          fixed, so a short panel stays short. */
+    .stand-panel { max-height: 80vh; max-height: 80dvh; }
+
+    /* 6. Touch targets. A 26px control is a mouse target; a finger needs
+          about 44px. Only the height moves -- the widths are already fluid,
+          and the type stays put so nothing reflows. */
+    .seg button { padding: 12px 7px; }
+    .icon-btn { width: 40px; height: 40px; }
+    .icon-btn svg { width: 17px; height: 17px; }
+    .ex { padding: 10px 10px; }
+    .dl-top { padding: 14px 18px; }
+
+    /* 7. The example grid is two columns of long names at this width. */
+    .ex-grid { grid-template-columns: 1fr 1fr; }
+  }
 </style>
 </head>
 <body>
@@ -2799,6 +2863,28 @@
     return /^pdb_/i.test(id) ? id.toLowerCase() : id.toUpperCase();
   }
 
+  // Stacked, the viewer and the panels sit *below* the settings instead of
+  // beside them, so the thing that just happened is off the bottom of the
+  // screen. Generate appears to do nothing; opening the stand panel appears to
+  // do nothing. Bring the result into view instead.
+  //
+  // Guarded on the same 820px the stylesheet uses, so on a desktop this is not
+  // merely a no-op, it never runs at all -- the scroll position there is
+  // already correct and moving it would be the bug.
+  const NARROW = '(max-width: 820px)';
+  function revealOnNarrow(el) {
+    if (!el || !window.matchMedia || !window.matchMedia(NARROW).matches) return;
+    // After layout, not during: the panel that triggered this may not have
+    // been given its height yet.
+    requestAnimationFrame(() => {
+      try {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) {
+        el.scrollIntoView(true);   // older Safari takes no options object
+      }
+    });
+  }
+
   // setSeg outlived the presets that introduced it — moving a segmented
   // control from code is still needed when one choice implies another.
   function setSeg(name, value) {
@@ -3232,6 +3318,7 @@
     if (on) showStandSheet(false);
     panel.hidden = !on;
     document.body.classList.toggle('joints-open', on);
+    if (on) revealOnNarrow($('#joints-panel'));
     const btn = $('#joints-btn');
     if (btn) btn.classList.toggle('on', on);
   }
@@ -3857,6 +3944,7 @@
   }
 
   function applyResult(data) {
+    revealOnNarrow($('.viewer-wrap'));
     if (data.glb_url) {
       const v = $('#viewer');
       v.style.display = 'block';
@@ -5676,6 +5764,7 @@
     standSheet.hidden = on;
     standPanel.hidden = !on;
     document.body.classList.toggle('stand-open', on);
+    if (on) revealOnNarrow($('#stand-panel'));
     if (on) closeJointsUI();
     if (on) {
       prefillTitle();
