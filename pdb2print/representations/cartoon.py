@@ -78,12 +78,22 @@ _MIN_STRAND_LEN = 3
 # This is that default; strands are smoothed at full strength and helices only
 # lightly (see :func:`_smooth_control_points`).
 _SMOOTH = 0.7
-# Circular tessellation of a hydrogen-bond strut.  Lower than ``_SECTION_VERTS``
-# on purpose and only here: a strut is about 1.2 mm across, so twelve facets put
-# 0.31 mm between them -- under what a 0.4 mm nozzle resolves -- and there are up
-# to a hundred of them per chain, each one a boolean against a 78k-triangle
-# ribbon.  Twenty segments cost a third more time for a facet nobody can see.
-_STRUT_SEGMENTS = 12
+# Cross-section vertex count for a hydrogen-bond strut.  Lower than
+# ``_SECTION_VERTS`` on purpose and only here: a strut is about 1.2 mm across,
+# so twelve facets put 0.31 mm between them -- under what a 0.4 mm nozzle
+# resolves -- and there are up to a hundred struts per chain.
+_STRUT_SECTION_VERTS = 12
+# Rings drawn inside each end blend.  Three is enough for a blend under a
+# millimetre long; more is triangles in a boolean that already carries the whole
+# ribbon.
+_STRUT_BLEND_RINGS = 3
+# How far the end blend reaches along the strut, in shaft radii.  It has to be
+# longer than the strut is buried or the whole blend hides inside the ribbon:
+# an end sits on the centre-line, which is one ribbon half-thickness in.
+_STRUT_BLEND_REACH = 2.0
+# How wide a strut spreads where it lands, as a fraction of the ribbon's own
+# half-width.  1.0 would make the root span the full width of the ribbon.
+_STRUT_END_WIDTH = 0.55
 # A strut never runs thinner than this, whatever the sliders say (mm radius).
 # ``min_wall_mm`` is normally what floors it; this is the backstop for a build
 # that has switched the minimum wall off entirely.
@@ -517,7 +527,126 @@ def _hbond_pairs(chain, sse, mode: HBondMode):
             if sse[i] in wanted or sse[j] in wanted]
 
 
-def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
+def _residue_normals(tan, width):
+    """Per-residue ribbon **normal** unit vectors — the ribbon's thin direction.
+
+    The same ``cross(tangent, width)`` the sweep uses for its own frame, so a
+    strut lands square against the faces the ribbon was actually built with.
+    """
+    n = np.cross(tan, width)
+    norms = np.linalg.norm(n, axis=1)
+    safe = norms > 1e-9
+    out = np.zeros_like(n)
+    out[safe] = n[safe] / norms[safe, None]
+    for i in np.nonzero(~safe)[0]:
+        out[i] = _perp(tan[i])
+    return out
+
+
+def _strut_end(direction, normal, hw, ht, radius):
+    """Section shape and orientation where a strut lands on the ribbon.
+
+    Returns ``(thin_axis, half_wide, half_thin)``.  The strut's section is
+    flattened along the **ribbon's** normal, so its end takes the shape of the
+    thing it is joining: a flat-sided oval lying in the plane of a sheet, and a
+    circle on a round coil tube, without either case being special-cased.
+
+    The amount of flattening is ``sin`` of the angle between the strut and the
+    ribbon normal, and that factor is doing real work at both ends of its range.
+    A strut running *along* the normal leaves through the face — there is
+    nothing to lie flat against and a round root is the right shape, which is
+    what the factor gives at zero.  A strut running *in* the ribbon's plane is
+    the case that looked wrong: a round rod there bulges out of both faces,
+    while a section squashed to the ribbon's own half-thickness sits flush with
+    them and the two read as one piece.  Everything between is a blend.
+    """
+    perp = normal - direction * float(normal @ direction)
+    flat = float(np.linalg.norm(perp))
+    if flat < 1e-6:
+        return _perp(direction), radius, radius
+    thin = perp / flat
+    # The thin half-size is the ribbon's own, so the end sits exactly flush with
+    # both faces rather than standing proud of either.
+    thin_target = max(radius, ht)
+    # ``max`` against the thin size, not just the shaft: on a round coil tube
+    # ``hw`` equals ``ht``, and a fraction of it would give an end taller than it
+    # is wide -- an oval standing on end, which is the opposite of lying flat.
+    # Held at the thin size it comes out circular and the same width as the tube,
+    # which is what "the shape of the thing it lands on" means for a tube.
+    wide_target = max(thin_target, _STRUT_END_WIDTH * hw)
+    return (thin,
+            radius + flat * (wide_target - radius),
+            radius + flat * (thin_target - radius))
+
+
+def _strut_solid(a, b, end_a, end_b, radius):
+    """One strut, as a swept section that morphs from ribbon-shaped to round.
+
+    Built with the same :func:`_section` and :func:`_loft` the ribbon itself is
+    built with, so a strut is a short piece of the same kind of object rather
+    than a primitive bolted on.  The section is the ribbon's own profile at each
+    landing, eased into a plain circle over :data:`_STRUT_BLEND_REACH` shaft
+    radii, so the middle of the strut is a round rod and only the ends know
+    what they are attached to.
+
+    The ends stay exactly on ``a`` and ``b`` — the centre-line points — so they
+    are buried in the ribbon and the flat end caps can never surface.
+    """
+    span = b - a
+    length = float(np.linalg.norm(span))
+    if length < 1e-9:
+        return None
+    direction = span / length
+    reach = min(_STRUT_BLEND_REACH * radius, 0.45 * length)
+
+    thin_a, wide_a, deep_a = end_a
+    thin_b, wide_b, deep_b = end_b
+    # A section is symmetric under a half turn, so the nearer of the two
+    # orientations is the one that twists least between the ends.
+    if float(thin_a @ thin_b) < 0.0:
+        thin_b = -thin_b
+
+    rings = max(1, int(_STRUT_BLEND_RINGS))
+    plan = []                       # (distance along the strut, half_wide, half_thin)
+    for k in range(rings + 1):
+        u = k / rings
+        ease = (1.0 - u) ** 2
+        plan.append((u * reach,
+                     radius + ease * (wide_a - radius),
+                     radius + ease * (deep_a - radius)))
+    for k in range(rings, -1, -1):
+        u = k / rings
+        ease = (1.0 - u) ** 2
+        plan.append((length - u * reach,
+                     radius + ease * (wide_b - radius),
+                     radius + ease * (deep_b - radius)))
+
+    centers, w_hats, n_hats, sections = [], [], [], []
+    previous = -1.0
+    for dist, half_wide, half_thin in plan:
+        # ``reach`` clamped to 0.45 * length can put two rings on top of each
+        # other on a very short strut; a zero-length band is a degenerate face.
+        if centers and dist - previous < 1e-9:
+            continue
+        previous = dist
+        t = dist / length
+        thin = _slerp(thin_a, thin_b, t)
+        thin = thin - direction * float(thin @ direction)
+        norm = float(np.linalg.norm(thin))
+        thin = thin / norm if norm > 1e-9 else _perp(direction)
+        centers.append(a + direction * dist)
+        w_hats.append(np.cross(direction, thin))
+        n_hats.append(thin)
+        sections.append(_section_uncached(half_wide, half_thin,
+                                          _STRUT_SECTION_VERTS))
+    if len(centers) < 2:
+        return None
+    return _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
+                 sections)
+
+
+def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims,
+                      normals, hw_res, ht_res):
     """Fuse a strut across each selected hydrogen bond into ``mesh``.
 
     The struts run **centre-line to centre-line**, ``ctrl[i]`` to ``ctrl[j]``,
@@ -528,12 +657,18 @@ def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
     is buried inside the ribbon by construction and can never poke out of the
     far face.
 
-    Each strut is flared into a fillet where it meets the ribbon
-    (:func:`_manifold.flared_strut`).  A bare cylinder arrives at full width and
-    stops, which reads as a rod pushed through a plate and is the weakest root
-    a printed part can have; widening it into the surface is what makes the two
-    look like one object.  It is still a single primitive, so it costs the same
-    boolean a plain cylinder would have.
+    Each strut's ends take the shape of what they land on — see
+    :func:`_strut_solid`.  Two earlier shapes were wrong in instructive ways: a
+    bare cylinder stops at full width and reads as a rod pushed through a plate,
+    and a round flare is worse, because a fillet turned about the strut's own
+    axis bulges out of both faces of a ribbon it is running alongside.  Only the
+    ribbon's own section fits the ribbon.
+
+    All the struts are lofted, concatenated and fused in **one** boolean rather
+    than handed over as a hundred separate solids.  ``fix_normals`` then runs
+    once on a 20k-face batch instead of a hundred times, and ``_loft`` needs it:
+    its end caps are wound against its bands, and ``from_trimesh`` on a mesh
+    wound inside out yields the complement of the solid you meant.
 
     A failure here costs the struts, not the chain: the ribbon is returned as it
     was with a note, which ``pipeline._accept_mesh`` turns into a warning the
@@ -545,24 +680,38 @@ def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
     if not pairs:
         return mesh
 
+    import trimesh
     import manifold3d as m3d
     from manifold3d import Manifold
     from . import _manifold
 
     radius = _strut_radius(params, dims)
-    struts = []
+    solids = []
     for i, j in pairs:
         a, b = ctrl[i], ctrl[j]
-        if float(np.linalg.norm(b - a)) < 1e-6:
+        direction = b - a
+        span = float(np.linalg.norm(direction))
+        if span < 1e-6:
             continue
-        struts.append(_manifold.flared_strut(a, b, radius, _STRUT_SEGMENTS))
-    if not struts:
+        direction = direction / span
+        solid = _strut_solid(
+            a, b,
+            _strut_end(direction, normals[i], hw_res[i], ht_res[i], radius),
+            _strut_end(-direction, normals[j], hw_res[j], ht_res[j], radius),
+            radius)
+        if solid is not None:
+            solids.append(solid)
+    if not solids:
         return mesh
 
     notes = list(mesh.metadata.get("notes", ()))
     try:
+        struts = (solids[0] if len(solids) == 1
+                  else trimesh.util.concatenate(solids))
+        struts.fix_normals()
         fused = Manifold.batch_boolean(
-            [_manifold.from_trimesh(mesh)] + struts, m3d.OpType.Add)
+            [_manifold.from_trimesh(mesh), _manifold.from_trimesh(struts)],
+            m3d.OpType.Add)
         out = _manifold.to_trimesh(fused)
     except Exception as exc:
         notes.append(
@@ -694,4 +843,5 @@ def build(chain, params: PrintParams):
 
     mesh = _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
                  sections)
-    return _add_hbond_struts(mesh, chain, params, sse, ctrl, dims)
+    return _add_hbond_struts(mesh, chain, params, sse, ctrl, dims,
+                             _residue_normals(tan_raw, width), hw_res, ht_res)

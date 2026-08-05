@@ -1711,19 +1711,45 @@ def test_cartoon_hbonds_on_stays_watertight_and_adds_material():
     assert cartoon._strut_radius(base, dims) >= base.min_wall_mm / 2.0
 
 
-def test_flared_strut_is_wider_at_its_ends_than_in_the_middle():
-    """The fillet is the whole point: a strut has to arrive wider than its shaft
-    or the joint reads as a rod pushed through a plate."""
+def test_strut_end_lies_flat_against_the_ribbon_it_lands_on():
+    """A strut running in the plane of a ribbon must be squashed to the ribbon's
+    own half-thickness, and one leaving through the face must stay round."""
     import numpy as np
-    from pdb2print.representations import _manifold
+    from pdb2print.representations import cartoon
+    hw, ht, r = 2.0, 0.6, 0.5
+    normal = np.array([0.0, 0.0, 1.0])
+
+    # In the ribbon's plane: fully flattened, so it cannot bulge out of a face.
+    thin, wide, deep = cartoon._strut_end(
+        np.array([1.0, 0.0, 0.0]), normal, hw, ht, r)
+    assert abs(deep - ht) < 1e-9
+    assert abs(wide - cartoon._STRUT_END_WIDTH * hw) < 1e-9
+    assert abs(abs(float(thin @ normal)) - 1.0) < 1e-9
+    assert wide > deep, "the end has to be wider than it is thick"
+
+    # Straight out through the face: nothing to lie against, so it stays round.
+    thin, wide, deep = cartoon._strut_end(normal, normal, hw, ht, r)
+    assert abs(wide - r) < 1e-9 and abs(deep - r) < 1e-9
+
+    # A round coil tube has no flat to lie against: its end must come out
+    # circular, and the same size as the tube, not as an oval standing on end.
+    _thin, wide, deep = cartoon._strut_end(
+        np.array([1.0, 0.0, 0.0]), normal, 0.9, 0.9, r)
+    assert abs(wide - deep) < 1e-9, (wide, deep)
+    assert abs(wide - 0.9) < 1e-9
+
+
+def test_strut_solid_is_closed_and_stays_between_its_ends():
+    """The ends sit on the centre-line points; nothing may reach past them."""
+    import numpy as np
+    from pdb2print.representations import cartoon
     a, b, r = np.zeros(3), np.array([0.0, 0.0, 10.0]), 0.5
-    strut = _manifold.flared_strut(a, b, r, 16)
-    plain = _manifold.frustum(a, b, r, r, 16)
-    assert _manifold.volume(strut) > _manifold.volume(plain)
-    # It must not grow *longer*, only wider: the ends stay on the centre-line
-    # points, which is what keeps them buried inside the ribbon.
-    box = strut.bounding_box()
-    assert box[2] >= -1e-6 and box[5] <= 10.0 + 1e-6
-    assert max(abs(box[0]), abs(box[3])) <= r * _manifold._FLARE_RADIUS + 1e-6
-    # A degenerate pair must not raise.
-    assert _manifold.volume(_manifold.flared_strut(a, a, r, 16)) > 0
+    normal = np.array([1.0, 0.0, 0.0])
+    d = np.array([0.0, 0.0, 1.0])
+    end = cartoon._strut_end(d, normal, 2.0, 0.6, r)
+    solid = cartoon._strut_solid(a, b, end, cartoon._strut_end(-d, normal, 2.0, 0.6, r), r)
+    solid.fix_normals()
+    assert solid.is_watertight and solid.body_count == 1
+    assert solid.bounds[0][2] >= -1e-6 and solid.bounds[1][2] <= 10.0 + 1e-6
+    # A zero-length strut is dropped rather than lofted into a degenerate band.
+    assert cartoon._strut_solid(a, a, end, end, r) is None
