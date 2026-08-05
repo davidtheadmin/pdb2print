@@ -1784,3 +1784,88 @@ def test_strut_solid_is_closed_and_stays_between_its_ends():
     assert solid.bounds[0][2] >= -1e-6 and solid.bounds[1][2] <= 10.0 + 1e-6
     # A zero-length strut is dropped rather than lofted into a degenerate band.
     assert cartoon._strut_solid(a, a, end, end, r) is None
+
+
+# --------------------------------------------------------------------------
+# Extended PDB IDs (pdb_00001ubq) alongside the 4-character ones
+# --------------------------------------------------------------------------
+def test_pdb_ids_are_accepted_in_both_formats():
+    """Both spellings are valid PDB IDs and always will be. The 4-character form
+    is the one that comes out, because an entry that has one keeps it."""
+    from pdb2print.io import canonical_pdb_id, looks_like_pdb_id
+
+    # 4-character, however it was typed.
+    assert canonical_pdb_id("1ubq") == "1UBQ"
+    assert canonical_pdb_id("  6UV8 ") == "6UV8"
+
+    # Extended, collapsed back to the entry's real name. The pdb_0000 block is
+    # reserved for exactly this, so nothing is guessed.
+    assert canonical_pdb_id("pdb_00001ubq") == "1UBQ"
+    assert canonical_pdb_id("PDB_00001UBQ") == "1UBQ"
+    assert canonical_pdb_id("pdb_00006UV8") == "6UV8"
+
+    # An ID from the new block has no 4-character name, so it keeps its own —
+    # and the prefix comes out lowercase, which is how the wwPDB specifies it.
+    assert canonical_pdb_id("pdb_1000axyz") == "pdb_1000axyz"
+    assert canonical_pdb_id("PDB_1000AXYZ") == "pdb_1000axyz"
+
+    # Inside the reserved block but not shaped like a 4-character ID (those
+    # start with a digit): left alone rather than silently truncated.
+    assert canonical_pdb_id("pdb_0000zzzz") == "pdb_0000zzzz"
+
+    for junk in ("", "   ", "x", "12345", "ubq1", "pdb_123", "pdb_00001ub",
+                 "1ubq.pdb", "pdb-00001ubq", None):
+        assert canonical_pdb_id(junk) is None, junk
+        assert not looks_like_pdb_id(junk or "")
+
+    # cache.is_cacheable rides on this: an upload must never look like an ID.
+    from pdb2print.cache import is_cacheable
+    assert is_cacheable("1UBQ") and is_cacheable("pdb_1000axyz")
+    assert not is_cacheable("/tmp/something/mystructure.pdb")
+
+
+def test_both_spellings_of_an_entry_share_one_cache_key():
+    """Otherwise the same model is built twice, stored twice, and neither copy
+    is ever served to someone who spelled it the other way."""
+    from pdb2print.cache import key_for
+    from pdb2print.config import Representation
+    p = PrintParams(protein_representation=Representation.CARTOON)
+
+    same = {key_for(s, p) for s in ("1UBQ", "1ubq", "pdb_00001ubq",
+                                    "PDB_00001UBQ", "  pdb_00001UBQ  ")}
+    assert len(same) == 1, same
+
+    # A different entry is still a different key, extended or not.
+    assert key_for("6UV8", p) not in same
+    assert key_for("pdb_1000axyz", p) not in same
+
+
+def test_existing_cache_keys_do_not_move():
+    """The 2.2 GB of pre-generated entries were keyed on the upper-cased source.
+    Canonicalising must reproduce that byte for byte, or accepting a new ID
+    format would silently orphan every build the project has ever cached."""
+    import hashlib
+    import json
+    from pdb2print.cache import key_for, canonical_params, CACHE_VERSION
+    from pdb2print.config import Representation
+
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    # The expression key_for used before extended IDs existed.
+    payload = {
+        "v": CACHE_VERSION,
+        "source": "1UBQ".strip().upper(),
+        "params": canonical_params(p),
+    }
+    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                      default=str).encode("utf-8")
+    assert key_for("1UBQ", p) == hashlib.sha256(blob).hexdigest()[:20]
+
+
+def test_a_bad_id_says_what_a_good_one_looks_like():
+    """The error is the only place a user finds out the extended form is
+    accepted, so it has to name both."""
+    import pytest as _pytest
+    with _pytest.raises(ValueError) as err:
+        io.resolve_source("not-an-id")
+    text = str(err.value)
+    assert "1UBQ" in text and "pdb_00001ubq" in text

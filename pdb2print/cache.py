@@ -40,7 +40,7 @@ from .config import (
     PrintParams, Representation, BaseStyle, BackboneStyle, MoleculeType,
     LigandStyle, HBondMode,
 )
-from .io import looks_like_pdb_id
+from .io import looks_like_pdb_id, canonical_pdb_id
 
 #: Where the shipped cache lives.  A directory inside the repo (rather than a
 #: temp dir) is the whole point: a free Space's filesystem resets on restart, so
@@ -475,10 +475,18 @@ def key_for(source: str, params: PrintParams) -> str:
     Deterministic across processes and machines: ``sort_keys`` removes dict
     ordering, and the normalisation above removes irrelevant fields, so the same
     request always lands on the same key.
+
+    The source is **canonicalised, not just upper-cased**.  A PDB entry has two
+    names now — ``1UBQ`` and ``pdb_00001ubq`` are the same structure — and
+    hashing them separately would build the same model twice, store it twice and
+    serve neither to the other.  ``canonical_pdb_id`` collapses to the
+    4-character form wherever an entry has one, so every key written before
+    extended IDs existed is still exactly the key this produces; the fallback is
+    the old expression, for the uploads and oddities that are not IDs at all.
     """
     payload = {
         "v": CACHE_VERSION,
-        "source": source.strip().upper(),
+        "source": canonical_pdb_id(source) or source.strip().upper(),
         "params": canonical_params(params),
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"),
@@ -704,7 +712,7 @@ class Cache:
             payload = dict(meta or {})
             payload.update({
                 "key": key,
-                "source": source.strip().upper(),
+                "source": canonical_pdb_id(source) or source.strip().upper(),
                 "cache_version": CACHE_VERSION,
                 "files": names,
                 "params": canonical_params(params),
