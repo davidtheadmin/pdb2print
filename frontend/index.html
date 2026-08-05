@@ -1414,6 +1414,20 @@
                       <div class="slider-row"><span class="name" title="Thickness of the round tube used for the loops between the ribbons.">Tube thickness (mm)</span><span class="val"></span></div>
                       <input type="range" min="0.6" max="6.0" step="0.1" value="1.8">
                     </div>
+                    <!-- No title on the .seg itself: the help harvester appends a
+                         real button to whatever carries one, and on a segmented
+                         group that is a sixth option nobody asked for. It goes on
+                         the label, the same as every slider's .name. -->
+                    <div class="sub-grp">
+                      <p class="lbl" title="Adds a rung across each hydrogen bond in the backbone, so the print comes out stiffer. None, then the helices only, the sheets only, both, or every bond in the chain. Loops have no hydrogen bonds, so they never change. The build takes about twice as long.">Hydrogen bonds</p>
+                      <div class="seg" data-group="cartoon_hbonds">
+                        <button data-value="none" class="active">None</button>
+                        <button data-value="helix">Helices</button>
+                        <button data-value="sheet">Sheets</button>
+                        <button data-value="both">Both</button>
+                        <button data-value="all">All</button>
+                      </div>
+                    </div>
                   </div>
                   <div class="field" data-slider="surface_padding">
                     <div class="slider-row"><span class="name" title="Fattens every atom before the surface is built, so thin parts come out thick enough to print.">Surface padding (Å)</span><span class="val"></span></div>
@@ -2446,6 +2460,7 @@
     {"k":"magnet_fit_clearance","t":"s","lo":0.0,"st":0.05,"n":13,"d":4},
     {"k":"socket_wall","t":"s","lo":0.4,"st":0.1,"n":37,"d":11},
     {"k":"connector_diameter","t":"s","lo":1.5,"st":0.5,"n":22,"d":5},
+    {"k":"cartoon_hbonds","t":"g","v":["none","helix","sheet","both","all"],"d":0},
   ];
   /* SHARE-TABLE-END */
 
@@ -3691,6 +3706,7 @@
     fd.append('cartoon_strand_width', sliders.cartoon_strand_width.value);
     // "Tube thickness" is a diameter for the user; the builder wants a radius.
     fd.append('cartoon_coil_radius', (parseFloat(sliders.cartoon_tube.value) / 2).toFixed(3));
+    fd.append('cartoon_hbonds', groups.cartoon_hbonds());
     fd.append('connector_radius', sliders.connector_radius.value);
     fd.append('atom_radius', sliders.atom_radius.value);
     fd.append('bond_radius', sliders.bond_radius.value);
@@ -4471,7 +4487,7 @@
   // the real one taken at the moment the view was locked, so what is standing on
   // the columns is the structure, in the pose it will be built for.
   // Must match server.CODE_STAMP. See the comment there for why this exists.
-  const CODE_STAMP = '2026-08-04.1';
+  const CODE_STAMP = '2026-08-05.1';
 
   const sk = { az: -0.40, el: 0.52, drag: null, sprite: null, hover: null };
   let standLayout = null;                     // last /api/stand/preview payload

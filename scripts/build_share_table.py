@@ -49,6 +49,21 @@ SEG_FIELDS = [
     "magnet_count", "dna_magnet_count",
 ]
 
+#: Segmented groups added *after* the sliders were already in the table, which
+#: is why they are not in ``SEG_FIELDS`` above.
+#:
+#: A share code stores a 6-bit **field index**, so what a code means depends
+#: entirely on a field's position in this list.  Appending is safe; inserting is
+#: not.  Adding ``cartoon_hbonds`` to ``SEG_FIELDS`` would have pushed all four
+#: checkboxes and all twenty-five sliders down one place, and every link anyone
+#: had already shared would have decoded to a different scale, a different wall
+#: thickness and a different set of magnets — silently, because the code would
+#: still be structurally valid.  That is why these go on the end instead.
+#:
+#: Anything added from here on belongs in one of the LATE_ lists, never in the
+#: original three.
+LATE_SEG_FIELDS = ["cartoon_hbonds"]
+
 #: Checkboxes that reach the payload.  ``connect`` is absent for the same reason
 #: as ``use_magnets`` — it is driven, not chosen.
 BOOL_FIELDS = ["include_ligands", "magnets", "socket", "basepair_connect"]
@@ -80,9 +95,9 @@ def _sliders(html: str) -> list:
     return out
 
 
-def _segs(html: str) -> list:
+def _segs(html: str, names=None) -> list:
     out = []
-    for name in SEG_FIELDS:
+    for name in (SEG_FIELDS if names is None else names):
         # Anchored on the element, not on the attribute: the same string
         # appears in the script below as a selector, and matching that would
         # read the options out of nothing.
@@ -120,8 +135,14 @@ def _bools(html: str) -> list:
 
 
 def table(html: str) -> list:
-    """Field order is the format. Appending is safe; reordering is not."""
-    return _segs(html) + _bools(html) + _sliders(html)
+    """Field order is the format. Appending is safe; reordering is not.
+
+    New controls go on the **end**, after the sliders, whatever kind they are —
+    see ``LATE_SEG_FIELDS``.  The original three groups are frozen in this order
+    because every share code ever minted decodes against it.
+    """
+    return (_segs(html) + _bools(html) + _sliders(html)
+            + _segs(html, LATE_SEG_FIELDS))
 
 
 def render(fields: list) -> str:

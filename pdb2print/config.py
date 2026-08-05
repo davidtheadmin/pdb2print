@@ -63,6 +63,36 @@ class BackboneStyle(str, Enum):
     MOLECULE = "molecule"  # ball-and-stick of the backbone/sugar atoms
 
 
+class HBondMode(str, Enum):
+    """Which backbone hydrogen bonds get a printed strut across them.
+
+    A cartoon ribbon has no thickness knob of its own — thickness is locked to
+    width by ``cartoon._RIBBON_ASPECT``, which is why
+    ``connections._inflate_growth`` returns ``None`` for it — so a strut across
+    each hydrogen bond is the only way to stiffen one short of printing it
+    bigger.  The modes exist for the *look*, not the physics: every bond at once
+    turns the fold into a lattice, and on most structures that is too much.
+
+    The two middle modes classify by the secondary structure the ribbon is
+    actually drawn with (``cartoon._clean_sse``), not by what a bond's sequence
+    separation implies — so what a mode promises and what you can see on the
+    model agree.
+
+    **One end is enough.**  ``SHEET`` takes every bond that *touches* a strand,
+    the ones running out of the sheet into a loop or a helix included.  Those
+    are what hold a sheet onto the rest of the fold; requiring both ends gave a
+    sheet that was rigid in itself and still hinged everywhere it joined
+    anything else.  ``HELIX`` and ``SHEET`` therefore overlap, and a
+    helix-to-strand bond belongs to both.
+    """
+
+    NONE = "none"      # nothing added; the ribbon is exactly what it was
+    HELIX = "helix"    # every bond with an end in a helix
+    SHEET = "sheet"    # every bond with an end in a strand
+    BOTH = "both"      # every bond touching either
+    ALL = "all"        # every backbone hydrogen bond the chain has
+
+
 class MoleculeType(str, Enum):
     PROTEIN = "protein"
     NUCLEIC = "nucleic"
@@ -810,6 +840,15 @@ class PrintParams:
     cartoon_arrow_residues: float = 1.5
     #: Spline samples per residue for the cartoon sweep (higher = smoother twist).
     cartoon_samples_per_residue: int = 10
+    #: **Hydrogen bonds** — which backbone H-bonds get a strut across them.  See
+    #: :class:`HBondMode`.
+    #:
+    #: ``NONE`` is the shipped default and returns the ribbon untouched — the
+    #: same vertices and faces the build produced before this existed.  That is
+    #: load-bearing: it is what lets ``cache.canonical_params`` drop the field
+    #: when it is off, so every entry already in ``cache/`` stays reachable and
+    #: ``CACHE_VERSION`` did not have to move for this feature.
+    cartoon_hbonds: HBondMode = HBondMode.NONE
     slab_thickness_mm: float = 1.2       # base-slab (or rod) thickness
     slab_scale: float = 1.0              # scale factor on the in-plane base size
     connector_radius_mm: float = 0.6     # strut fusing each base to the backbone

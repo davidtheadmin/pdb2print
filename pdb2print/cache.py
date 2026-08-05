@@ -38,7 +38,7 @@ from typing import Dict, List, Optional
 
 from .config import (
     PrintParams, Representation, BaseStyle, BackboneStyle, MoleculeType,
-    LigandStyle,
+    LigandStyle, HBondMode,
 )
 from .io import looks_like_pdb_id
 
@@ -217,7 +217,20 @@ def canonical_params(params: PrintParams) -> dict:
     if Representation.CARTOON.value not in reps:
         drop("cartoon_helix_width_mm", "cartoon_strand_width_mm",
              "cartoon_coil_radius_mm", "cartoon_arrow_width_factor",
-             "cartoon_arrow_residues", "cartoon_samples_per_residue")
+             "cartoon_arrow_residues", "cartoon_samples_per_residue",
+             "cartoon_hbonds")
+
+    # Hydrogen-bond struts, off, are dropped even when the cartoon *is* built —
+    # the same rule as an empty ``joint_overrides`` two blocks down, and for the
+    # same reason.  Off means the ribbon comes out with the identical vertices
+    # and faces it had before the field existed, so off has to mean the
+    # identical *key* as well.  Leaving it in would change the canonical dict
+    # for every ordinary cartoon build and orphan every cartoon entry in
+    # ``cache/`` — including the pre-generated ones shipped in the repo — to
+    # record a setting that changed nothing.  That is what a ``CACHE_VERSION``
+    # bump would have cost, and this is why the feature did not need one.
+    if data.get("cartoon_hbonds") in (None, HBondMode.NONE.value):
+        data.pop("cartoon_hbonds", None)
 
     # Surface tuning is read only when something is meshed as a surface.
     if Representation.SURFACE.value not in reps:

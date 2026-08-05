@@ -32,6 +32,12 @@ the ribbon minor axis and the arrow tip are the thin, fragile features — so th
 solid is printable without the voxel min-wall pass.  ``Representation.CARTOON``
 therefore stays in :data:`pdb2print.config.MIN_WALL_EXEMPT`.
 
+Optionally a strut is fused across each backbone hydrogen bond
+(:class:`pdb2print.config.HBondMode`), which is the only way to stiffen a
+cartoon short of printing it bigger — its thickness is locked to its width by
+:data:`_RIBBON_ASPECT`, so there is nothing to inflate.  Off, which is the
+default, ``build`` returns the bare loft and nothing below this line runs.
+
 The sweep is watertight by construction: a regular ``M × K`` grid of ring
 vertices closed with two end-cap fans, so every edge is shared by exactly two
 faces.  Self-intersection where a helix ribbon twists tightly does not affect
@@ -44,7 +50,8 @@ from __future__ import annotations
 import numpy as np
 from functools import lru_cache as _lru_cache
 
-from ..config import PrintParams
+from ..config import PrintParams, HBondMode
+from . import hbonds as _hbonds
 from ._common import _catmull_pos_tan  # analytic Catmull-Rom position + tangent
 from .tube_slab import _residue_iter, _atom_coord
 
@@ -71,6 +78,34 @@ _MIN_STRAND_LEN = 3
 # This is that default; strands are smoothed at full strength and helices only
 # lightly (see :func:`_smooth_control_points`).
 _SMOOTH = 0.7
+# Cross-section vertex count for a hydrogen-bond strut.  Lower than
+# ``_SECTION_VERTS`` on purpose and only here: a strut is about 1.2 mm across,
+# so twelve facets put 0.31 mm between them -- under what a 0.4 mm nozzle
+# resolves -- and there are up to a hundred struts per chain.
+_STRUT_SECTION_VERTS = 12
+# Rings drawn inside each end blend.  Three is enough for a blend under a
+# millimetre long; more is triangles in a boolean that already carries the whole
+# ribbon.
+_STRUT_BLEND_RINGS = 3
+# How far the end blend reaches along the strut, in shaft radii.  It has to be
+# longer than the strut is buried or the whole blend hides inside the ribbon:
+# an end sits on the centre-line, which is one ribbon half-thickness in.
+_STRUT_BLEND_REACH = 2.0
+# How wide a strut spreads where it lands, as a fraction of the ribbon's own
+# half-width.  1.0 would make the root span the full width of the ribbon.
+_STRUT_END_WIDTH = 0.55
+# A strut never runs thinner than this, whatever the sliders say (mm radius).
+# ``min_wall_mm`` is normally what floors it; this is the backstop for a build
+# that has switched the minimum wall off entirely.
+_MIN_STRUT_RADIUS_MM = 0.25
+# Which drawn secondary structures each mode braces.  ``_clean_sse`` labels, so
+# these are the letters the *ribbon* was built from -- see ``_hbond_pairs``.
+# One end is enough to qualify: see the note there.
+_HBOND_STRUCTURES = {
+    HBondMode.HELIX: ("a",),
+    HBondMode.SHEET: ("b",),
+    HBondMode.BOTH: ("a", "b"),
+}
 
 
 def _ca_backbone(chain):
@@ -445,6 +480,296 @@ def _dims(params: PrintParams):
     }
 
 
+def _strut_radius(params: PrintParams, dims) -> float:
+    """Radius of a hydrogen-bond strut (mm).
+
+    The ribbon's own half-thickness, so a strut comes out exactly as thick as
+    the thing it braces and reads as part of the same object rather than as
+    scaffolding bolted on.  It follows the Helix size and Sheet size sliders for
+    free, which is why this is not a control of its own.
+
+    Floored at half the minimum wall, the same as every dimension in
+    :func:`_dims`.  That is what keeps ``Representation.CARTOON`` honest in
+    ``config.MIN_WALL_EXEMPT``: the exemption is a promise that the builder
+    owns its own wall thicknesses, and a strut is a wall thickness.
+    """
+    half_wall = params.min_wall_mm / 2.0 if params.min_wall_mm > 0 else 0.0
+    return max(min(dims["helix_ht"], dims["strand_ht"]),
+               half_wall, _MIN_STRUT_RADIUS_MM)
+
+
+def _hbond_pairs(chain, sse, mode: HBondMode):
+    """Residue pairs to brace, filtered to what ``mode`` asks for.
+
+    **One end is enough.**  A mode names the thing being braced, not a pair of
+    matching labels, so "Sheets" takes every bond that touches a strand —
+    including the ones running out of the sheet into a loop or a helix.  Those
+    are the bonds that hold a sheet onto the rest of the fold, and leaving them
+    out gave a sheet that was rigid in itself and still hinged where it joined
+    anything.  Helix and Sheet therefore overlap: a helix-to-strand bond is in
+    both, and in neither is it counted twice.
+
+    Matching on the *drawn* label rather than on sequence separation is
+    deliberate.  ``_clean_sse`` has already demoted the runs too short to draw,
+    so a bond inside a two-residue "helix" that the ribbon renders as coil is
+    not offered as a helix rung — what the mode promises and what you can see
+    then agree.
+    """
+    if mode == HBondMode.NONE:
+        return []
+    pairs = _hbonds.backbone_hbonds(chain)
+    n = len(sse)
+    pairs = [(i, j) for (i, j) in pairs if 0 <= i < n and 0 <= j < n]
+    if mode == HBondMode.ALL:
+        return pairs
+    wanted = _HBOND_STRUCTURES.get(mode, ())
+    return [(i, j) for (i, j) in pairs
+            if sse[i] in wanted or sse[j] in wanted]
+
+
+def _residue_normals(tan, width):
+    """Per-residue ribbon **normal** unit vectors — the ribbon's thin direction.
+
+    The same ``cross(tangent, width)`` the sweep uses for its own frame, so a
+    strut lands square against the faces the ribbon was actually built with.
+    """
+    n = np.cross(tan, width)
+    norms = np.linalg.norm(n, axis=1)
+    safe = norms > 1e-9
+    out = np.zeros_like(n)
+    out[safe] = n[safe] / norms[safe, None]
+    for i in np.nonzero(~safe)[0]:
+        out[i] = _perp(tan[i])
+    return out
+
+
+def _strut_anchor(center, width_axis, hw, ht, direction):
+    """Where a strut actually leaves the ribbon at one end.
+
+    A bond between two β-strands runs *sideways*, so a strut that starts on the
+    centre-line has to travel out through half a plank before it reaches open
+    air — and it arrives at the edge wherever it happens to, not where the edge
+    is.  It should leave from the side, and from the side facing its partner.
+
+    Each end therefore has two candidate anchors, one on each edge, and the one
+    the strut heads toward wins.  Both the choice and the amount are in a single
+    signed dot product: ``direction @ width_axis`` is positive toward one edge
+    and negative toward the other, and its magnitude is how sideways the strut
+    is going.  A strut leaving through the *face* has no sideways component at
+    all and stays on the centre-line, which is where it should start.
+
+    The offset stops at ``hw - ht`` rather than ``hw``.  A ribbon section is a
+    stadium whose flat faces run out to ``hw - ht`` and whose edge is a
+    semicircle of radius ``ht`` beyond that, so this is the centre of the edge
+    roll: as far out as the plank stays full thickness, with the whole rounded
+    edge still ahead of the anchor to bury the end in.  On a round tube ``hw``
+    and ``ht`` are equal, the offset is zero, and the anchor is the axis — the
+    thickest part of it, and no special case to get there.
+    """
+    reach = max(0.0, float(hw) - float(ht))
+    if reach < 1e-9:
+        return np.asarray(center, float)
+    return center + width_axis * (float(direction @ width_axis) * reach)
+
+
+def _strut_end(direction, normal, hw, ht, radius):
+    """Section shape and orientation where a strut lands on the ribbon.
+
+    Returns ``(thin_axis, half_wide, half_thin)``.  The strut's section is
+    flattened along the **ribbon's** normal, so its end takes the shape of the
+    thing it is joining: a flat-sided oval lying in the plane of a sheet, and a
+    circle on a round coil tube, without either case being special-cased.
+
+    The amount of flattening is ``sin`` of the angle between the strut and the
+    ribbon normal, and that factor is doing real work at both ends of its range.
+    A strut running *along* the normal leaves through the face — there is
+    nothing to lie flat against and a round root is the right shape, which is
+    what the factor gives at zero.  A strut running *in* the ribbon's plane is
+    the case that looked wrong: a round rod there bulges out of both faces,
+    while a section squashed to the ribbon's own half-thickness sits flush with
+    them and the two read as one piece.  Everything between is a blend.
+    """
+    perp = normal - direction * float(normal @ direction)
+    flat = float(np.linalg.norm(perp))
+    if flat < 1e-6:
+        return _perp(direction), radius, radius
+    thin = perp / flat
+    # The thin half-size is the ribbon's own, so the end sits exactly flush with
+    # both faces rather than standing proud of either.
+    thin_target = max(radius, ht)
+    # ``max`` against the thin size, not just the shaft: on a round coil tube
+    # ``hw`` equals ``ht``, and a fraction of it would give an end taller than it
+    # is wide -- an oval standing on end, which is the opposite of lying flat.
+    # Held at the thin size it comes out circular and the same width as the tube,
+    # which is what "the shape of the thing it lands on" means for a tube.
+    wide_target = max(thin_target, _STRUT_END_WIDTH * hw)
+    return (thin,
+            radius + flat * (wide_target - radius),
+            radius + flat * (thin_target - radius))
+
+
+def _strut_solid(a, b, end_a, end_b, radius):
+    """One strut, as a swept section that morphs from ribbon-shaped to round.
+
+    Built with the same :func:`_section` and :func:`_loft` the ribbon itself is
+    built with, so a strut is a short piece of the same kind of object rather
+    than a primitive bolted on.  The section is the ribbon's own profile at each
+    landing, eased into a plain circle over :data:`_STRUT_BLEND_REACH` shaft
+    radii, so the middle of the strut is a round rod and only the ends know
+    what they are attached to.
+
+    ``a`` and ``b`` are the anchors :func:`_strut_anchor` chose, not the
+    centre-line points, and nothing here reaches past them — so the flat end
+    caps stay inside the ribbon and can never surface.
+    """
+    span = b - a
+    length = float(np.linalg.norm(span))
+    if length < 1e-9:
+        return None
+    direction = span / length
+    reach = min(_STRUT_BLEND_REACH * radius, 0.45 * length)
+
+    thin_a, wide_a, deep_a = end_a
+    thin_b, wide_b, deep_b = end_b
+    # A section is symmetric under a half turn, so the nearer of the two
+    # orientations is the one that twists least between the ends.
+    if float(thin_a @ thin_b) < 0.0:
+        thin_b = -thin_b
+
+    rings = max(1, int(_STRUT_BLEND_RINGS))
+    plan = []                       # (distance along the strut, half_wide, half_thin)
+    for k in range(rings + 1):
+        u = k / rings
+        ease = (1.0 - u) ** 2
+        plan.append((u * reach,
+                     radius + ease * (wide_a - radius),
+                     radius + ease * (deep_a - radius)))
+    for k in range(rings, -1, -1):
+        u = k / rings
+        ease = (1.0 - u) ** 2
+        plan.append((length - u * reach,
+                     radius + ease * (wide_b - radius),
+                     radius + ease * (deep_b - radius)))
+
+    centers, w_hats, n_hats, sections = [], [], [], []
+    previous = -1.0
+    for dist, half_wide, half_thin in plan:
+        # ``reach`` clamped to 0.45 * length can put two rings on top of each
+        # other on a very short strut; a zero-length band is a degenerate face.
+        if centers and dist - previous < 1e-9:
+            continue
+        previous = dist
+        t = dist / length
+        thin = _slerp(thin_a, thin_b, t)
+        thin = thin - direction * float(thin @ direction)
+        norm = float(np.linalg.norm(thin))
+        thin = thin / norm if norm > 1e-9 else _perp(direction)
+        centers.append(a + direction * dist)
+        w_hats.append(np.cross(direction, thin))
+        n_hats.append(thin)
+        sections.append(_section_uncached(half_wide, half_thin,
+                                          _STRUT_SECTION_VERTS))
+    if len(centers) < 2:
+        return None
+    return _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
+                 sections)
+
+
+def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims,
+                      normals, widths, half_width, half_thick):
+    """Fuse a strut across each selected hydrogen bond into ``mesh``.
+
+    A strut spans two **anchors**, not the N and O atoms the bond is actually
+    made of — those do not lie on the ribbon, so a strut drawn between them
+    would start and end in mid-air.  Each anchor is derived from ``ctrl[i]``,
+    which the swept centre-line passes through exactly (uniform Catmull-Rom at
+    ``t = 0`` evaluates to ``p1``), pushed out toward the edge the strut is
+    heading for by :func:`_strut_anchor`.  The push stops short of the edge
+    itself, so an end is still inside the ribbon with material on every side of
+    it and no cap can surface.
+
+    Each strut's ends take the shape of what they land on — see
+    :func:`_strut_solid`.  Two earlier shapes were wrong in instructive ways: a
+    bare cylinder stops at full width and reads as a rod pushed through a plate,
+    and a round flare is worse, because a fillet turned about the strut's own
+    axis bulges out of both faces of a ribbon it is running alongside.  Only the
+    ribbon's own section fits the ribbon.
+
+    All the struts are lofted, concatenated and fused in **one** boolean rather
+    than handed over as a hundred separate solids.  ``fix_normals`` then runs
+    once on a 20k-face batch instead of a hundred times, and ``_loft`` needs it:
+    its end caps are wound against its bands, and ``from_trimesh`` on a mesh
+    wound inside out yields the complement of the solid you meant.
+
+    A failure here costs the struts, not the chain: the ribbon is returned as it
+    was with a note, which ``pipeline._accept_mesh`` turns into a warning the
+    user actually sees.  Losing a subunit of a complex to a strut that would not
+    fuse is the wrong trade.
+    """
+    mode = HBondMode(getattr(params, "cartoon_hbonds", HBondMode.NONE))
+    pairs = _hbond_pairs(chain, sse, mode)
+    if not pairs:
+        return mesh
+
+    import trimesh
+    import manifold3d as m3d
+    from manifold3d import Manifold
+    from . import _manifold
+
+    radius = _strut_radius(params, dims)
+    solids = []
+    for i, j in pairs:
+        a, b = ctrl[i], ctrl[j]
+        direction = b - a
+        span = float(np.linalg.norm(direction))
+        if span < 1e-6:
+            continue
+        direction = direction / span
+        # Moving an end to an edge changes the line the choice of edge was made
+        # along, so the two are solved together.  Twice is enough: the anchors
+        # shift by at most a ribbon half-width and the direction barely turns,
+        # and a fixed count cannot sit oscillating between two edges.
+        for _ in range(2):
+            a = _strut_anchor(ctrl[i], widths[i], half_width[i], half_thick[i],
+                              direction)
+            b = _strut_anchor(ctrl[j], widths[j], half_width[j], half_thick[j],
+                              -direction)
+            span = float(np.linalg.norm(b - a))
+            if span < 1e-6:
+                break
+            direction = (b - a) / span
+        if span < 1e-6:
+            continue
+        solid = _strut_solid(
+            a, b,
+            _strut_end(direction, normals[i], half_width[i], half_thick[i], radius),
+            _strut_end(-direction, normals[j], half_width[j], half_thick[j], radius),
+            radius)
+        if solid is not None:
+            solids.append(solid)
+    if not solids:
+        return mesh
+
+    notes = list(mesh.metadata.get("notes", ()))
+    try:
+        struts = (solids[0] if len(solids) == 1
+                  else trimesh.util.concatenate(solids))
+        struts.fix_normals()
+        fused = Manifold.batch_boolean(
+            [_manifold.from_trimesh(mesh), _manifold.from_trimesh(struts)],
+            m3d.OpType.Add)
+        out = _manifold.to_trimesh(fused)
+    except Exception as exc:
+        notes.append(
+            f"Chain {chain.chain_id} was built without its hydrogen-bond "
+            f"struts: they could not be fused to the ribbon ({exc}).")
+        mesh.metadata["notes"] = notes
+        return mesh
+    out.metadata.update(mesh.metadata)
+    out.metadata["notes"] = notes
+    return out
+
+
 def build(chain, params: PrintParams):
     """Return a watertight ``trimesh.Trimesh`` cartoon of a protein ``chain``."""
     s = params.scale_mm_per_angstrom
@@ -473,6 +798,14 @@ def build(chain, params: PrintParams):
 
     # Per-residue profile + run bookkeeping for the arrowheads.
     hw_res, ht_res = _profile_arrays(sse, dims)
+    # What the ribbon is *actually* drawn at, residue by residue, filled in by
+    # ``add_sample`` below.  It differs from ``hw_res`` wherever the arrowhead
+    # override applies: a barb is 1.7x the strand width and a tip is a fraction
+    # of it.  A strut anchored out toward an edge has to be aimed at the edge
+    # the ribbon really has there, not at the one its base profile implies —
+    # otherwise the anchor at a strand's point lands in open air.  Seeded with
+    # the base profile so a residue that never falls on a sample is still sane.
+    hw_eff, ht_eff = hw_res.copy(), ht_res.copy()
     run_label = [""] * n
     run_start = [0] * n
     run_end = [0] * n
@@ -527,6 +860,11 @@ def build(chain, params: PrintParams):
                 hw = dims["tip_half"]
                 ht = dims["strand_ht"]
 
+        index = int(round(res_coord))
+        if 0 <= index < n and abs(res_coord - index) < 1e-9:
+            hw_eff[index] = hw
+            ht_eff[index] = ht
+
         centers.append(pos)
         w_hats.append(w_hat)
         n_hats.append(n_hat)
@@ -562,5 +900,8 @@ def build(chain, params: PrintParams):
         from . import _manifold
         return _manifold.to_trimesh(_manifold.sphere(centers[0], dims["coil_r"]))
 
-    return _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
+    mesh = _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
                  sections)
+    return _add_hbond_struts(mesh, chain, params, sse, ctrl, dims,
+                             _residue_normals(tan_raw, width), width,
+                             hw_eff, ht_eff)

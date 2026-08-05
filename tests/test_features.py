@@ -1583,3 +1583,204 @@ def test_share_table_matches_the_controls():
     got = subprocess.run([sys.executable, script, "--check"],
                          capture_output=True, text=True)
     assert got.returncode == 0, got.stdout + got.stderr
+
+
+# --------------------------------------------------------------------------
+# Cartoon hydrogen-bond struts
+# --------------------------------------------------------------------------
+def _ubq_chain():
+    return chains_mod.split_chains(
+        io.load_with_names(os.path.join(D, "1ubq.pdb"))[0])[0]
+
+
+def test_hbond_detector_finds_the_ubiquitin_sheet():
+    """The detector must find the β-hairpin everyone knows is in 1UBQ, and must
+    never let proline donate."""
+    from pdb2print.representations import hbonds
+    chain = _ubq_chain()
+    pairs = hbonds.backbone_hbonds(chain)
+    assert pairs, "no backbone hydrogen bonds found in 1UBQ"
+
+    # The N-terminal hairpin: strand 1 (residues 1-7) pairs with strand 2
+    # (10-17) antiparallel.  Indices are 0-based positions in the chain.
+    long_range = {(i, j) for i, j in pairs if abs(i - j) > 5}
+    hairpin = {(i, j) for i, j in long_range if i < 20 and j < 20}
+    assert len(hairpin) >= 4, sorted(long_range)[:10]
+
+    # Proline has no amide hydrogen, so it can accept but never donate.
+    pro = {k for k, (name, _res) in enumerate(_residue_pairs(chain))
+           if name == "PRO"}
+    assert pro, "1UBQ has prolines; the fixture changed"
+    assert not (pro & {i for i, _j in pairs}), "a proline donated"
+
+
+def _residue_pairs(chain):
+    from pdb2print.representations.tube_slab import _residue_iter
+    for name, res in _residue_iter(chain.atoms):
+        yield name, res
+
+
+def test_hbond_modes_are_nested_subsets():
+    """Helices and sheets are each part of Both, and Both is part of All.
+
+    This is the promise the control makes on screen.  It is also what stops the
+    two middle modes drifting apart from the third once someone edits the
+    classifier.
+    """
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    chain = _ubq_chain()
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    ca, _c, _o = cartoon._ca_backbone(chain)
+    sse = cartoon._clean_sse(cartoon._sse(chain, len(ca)))
+
+    sets = {m: set(cartoon._hbond_pairs(chain, sse, m)) for m in HBondMode}
+    assert sets[HBondMode.NONE] == set()
+    assert sets[HBondMode.HELIX] <= sets[HBondMode.BOTH]
+    assert sets[HBondMode.SHEET] <= sets[HBondMode.BOTH]
+    assert sets[HBondMode.BOTH] <= sets[HBondMode.ALL]
+    assert sets[HBondMode.BOTH] == sets[HBondMode.HELIX] | sets[HBondMode.SHEET]
+    assert sets[HBondMode.ALL], "1UBQ should offer something to brace"
+    # One end is enough, so a bond out of a sheet into a loop is a sheet bond —
+    # and a helix-to-strand bond is in both of the middle modes.
+    for mode, letter in ((HBondMode.HELIX, "a"), (HBondMode.SHEET, "b")):
+        for i, j in sets[mode]:
+            assert letter in (sse[i], sse[j])
+    loose = {(i, j) for (i, j) in sets[HBondMode.SHEET]
+             if sse[i] != sse[j]}
+    assert loose, "sheets that only bond to themselves — the filter is too tight"
+
+
+def test_cartoon_hbonds_off_returns_the_bare_ribbon():
+    """Off must be the mesh that shipped before struts existed — same vertices,
+    same faces.  The cache key depends on it: ``canonical_params`` drops the
+    field when it is off, so every cartoon entry already in ``cache/`` is served
+    for this build."""
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    chain = _ubq_chain()
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    assert p.cartoon_hbonds == HBondMode.NONE
+    plain = cartoon.build(chain, p)
+    again = cartoon.build(chain, PrintParams(
+        protein_representation=Representation.CARTOON,
+        cartoon_hbonds=HBondMode.NONE))
+    assert plain.vertices.shape == again.vertices.shape
+    assert (plain.faces == again.faces).all()
+    assert not plain.metadata.get("notes")
+
+
+def test_cartoon_hbonds_off_is_dropped_from_the_cache_key():
+    """The field must not appear in the canonical params when it is off, or
+    every pre-generated cartoon entry stops being reachable."""
+    from pdb2print.cache import canonical_params
+    from pdb2print.config import HBondMode, Representation
+    off = canonical_params(PrintParams(
+        protein_representation=Representation.CARTOON))
+    assert "cartoon_hbonds" not in off
+    on = canonical_params(PrintParams(
+        protein_representation=Representation.CARTOON,
+        cartoon_hbonds=HBondMode.SHEET))
+    assert on.get("cartoon_hbonds") == "sheet"
+    # And it is dropped entirely when no cartoon is built, on or off.
+    surf = canonical_params(PrintParams(
+        protein_representation=Representation.SURFACE,
+        cartoon_hbonds=HBondMode.ALL))
+    assert "cartoon_hbonds" not in surf
+
+
+def test_cartoon_hbonds_on_stays_watertight_and_adds_material():
+    """Struts must fuse into one watertight solid, not sit beside it."""
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    from pdb2print import meshops
+    chain = _ubq_chain()
+    base = PrintParams(protein_representation=Representation.CARTOON,
+                       scale_mm_per_angstrom=1.5, min_wall_mm=1.0)
+    off = meshops.repair(cartoon.build(chain, base))
+    braced = meshops.repair(cartoon.build(chain, PrintParams(
+        protein_representation=Representation.CARTOON,
+        scale_mm_per_angstrom=1.5, min_wall_mm=1.0,
+        cartoon_hbonds=HBondMode.ALL)))
+    assert braced.is_watertight
+    assert braced.body_count == 1
+    assert braced.volume > off.volume
+    # A strut is never thinner than half the minimum wall, so the exemption in
+    # config.MIN_WALL_EXEMPT stays true with the struts on.
+    dims = cartoon._dims(base)
+    assert cartoon._strut_radius(base, dims) >= base.min_wall_mm / 2.0
+
+
+def test_strut_end_lies_flat_against_the_ribbon_it_lands_on():
+    """A strut running in the plane of a ribbon must be squashed to the ribbon's
+    own half-thickness, and one leaving through the face must stay round."""
+    import numpy as np
+    from pdb2print.representations import cartoon
+    hw, ht, r = 2.0, 0.6, 0.5
+    normal = np.array([0.0, 0.0, 1.0])
+
+    # In the ribbon's plane: fully flattened, so it cannot bulge out of a face.
+    thin, wide, deep = cartoon._strut_end(
+        np.array([1.0, 0.0, 0.0]), normal, hw, ht, r)
+    assert abs(deep - ht) < 1e-9
+    assert abs(wide - cartoon._STRUT_END_WIDTH * hw) < 1e-9
+    assert abs(abs(float(thin @ normal)) - 1.0) < 1e-9
+    assert wide > deep, "the end has to be wider than it is thick"
+
+    # Straight out through the face: nothing to lie against, so it stays round.
+    thin, wide, deep = cartoon._strut_end(normal, normal, hw, ht, r)
+    assert abs(wide - r) < 1e-9 and abs(deep - r) < 1e-9
+
+    # A round coil tube has no flat to lie against: its end must come out
+    # circular, and the same size as the tube, not as an oval standing on end.
+    _thin, wide, deep = cartoon._strut_end(
+        np.array([1.0, 0.0, 0.0]), normal, 0.9, 0.9, r)
+    assert abs(wide - deep) < 1e-9, (wide, deep)
+    assert abs(wide - 0.9) < 1e-9
+
+
+def test_strut_anchors_leave_a_ribbon_by_the_edge_facing_the_partner():
+    """A sheet bond runs sideways, so it has to start at the side of the plank —
+    and at the side the partner is on, not the other one."""
+    import numpy as np
+    from pdb2print.representations import cartoon
+    centre = np.zeros(3)
+    w = np.array([1.0, 0.0, 0.0])          # the ribbon's width axis
+    hw, ht = 2.0, 0.6                      # a flat plank
+    edge = hw - ht                         # centre of the rolled edge
+
+    # Partner off to +x: leave by the +x edge. Off to -x: the other one.
+    for sign in (+1.0, -1.0):
+        got = cartoon._strut_anchor(centre, w, hw, ht, np.array([sign, 0.0, 0.0]))
+        assert abs(got[0] - sign * edge) < 1e-9, got
+    # Still inside the solid, with the whole rolled edge left to bury the end in.
+    assert edge < hw
+
+    # Straight out through the face: no sideways component, so no offset.
+    face = cartoon._strut_anchor(centre, w, hw, ht, np.array([0.0, 0.0, 1.0]))
+    assert np.allclose(face, centre)
+    # Halfway between: half the offset, so the anchor slides rather than snaps.
+    d = np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0)
+    assert abs(cartoon._strut_anchor(centre, w, hw, ht, d)[0]
+               - edge / np.sqrt(2.0)) < 1e-9
+
+    # A round tube has no edge to leave by: the anchor is the axis, whatever
+    # direction the strut goes.
+    for d in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])):
+        assert np.allclose(cartoon._strut_anchor(centre, w, 0.9, 0.9, d), centre)
+
+
+def test_strut_solid_is_closed_and_stays_between_its_ends():
+    """The ends sit on the centre-line points; nothing may reach past them."""
+    import numpy as np
+    from pdb2print.representations import cartoon
+    a, b, r = np.zeros(3), np.array([0.0, 0.0, 10.0]), 0.5
+    normal = np.array([1.0, 0.0, 0.0])
+    d = np.array([0.0, 0.0, 1.0])
+    end = cartoon._strut_end(d, normal, 2.0, 0.6, r)
+    solid = cartoon._strut_solid(a, b, end, cartoon._strut_end(-d, normal, 2.0, 0.6, r), r)
+    solid.fix_normals()
+    assert solid.is_watertight and solid.body_count == 1
+    assert solid.bounds[0][2] >= -1e-6 and solid.bounds[1][2] <= 10.0 + 1e-6
+    # A zero-length strut is dropped rather than lofted into a degenerate band.
+    assert cartoon._strut_solid(a, a, end, end, r) is None
