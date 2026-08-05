@@ -67,6 +67,37 @@ older one carries no chain list and no joint indices for the new panel to read.
   a joint's two ends (`ai`, `bi` in the connections payload) and the exclusion
   list all point at. Chain ids could never do this job — a homodimer repeats one
   and a ligand carries its host's.
+- **Hydrogen bonds, printed as struts, on cartoon models.** A control in the
+  cartoon Advanced drawer: None, Helices, Sheets, Both, All. It lays a strut
+  across each backbone hydrogen bond, which is the only way to stiffen a cartoon
+  short of printing it bigger — ribbon thickness is locked to width by
+  `_RIBBON_ASPECT`, so the inflate pass has nothing it can grow. Sheets stop
+  hinging and a helix stops behaving like a spring. Loops have no backbone
+  hydrogen bonds of their own and do not change.
+
+  Bonds are found with the Kabsch–Sander criterion DSSP uses, with the amide
+  hydrogen placed geometrically rather than read, so it works on structures that
+  ship no protons — which is nearly all of them. One end in the named structure
+  is enough to qualify, so the bonds that anchor a sheet to the rest of the fold
+  are included and not only the ones inside it. Bonds between residues fewer
+  than three apart are skipped: the ribbon is already continuous there, so a
+  strut is a lump rather than a brace.
+
+  A strut is swept with the same `_section` and `_loft` the ribbon itself is, so
+  it is a short piece of the same kind of object rather than a primitive bolted
+  on. Its ends carry the ribbon's own profile — a flat-sided oval lying in the
+  plane of a sheet, a circle on a round coil tube — eased into a plain rod over
+  the middle. It leaves by the edge facing its partner rather than out of the
+  middle of a plank, anchored short of the edge roll so no end cap can surface.
+
+  Off is the default and returns the identical mesh, so `canonical_params` drops
+  the field and every pre-generated cartoon entry stays reachable.
+  `CACHE_VERSION` did not move for this.
+
+  New controls now append to the **end** of the share-code field table
+  (`LATE_SEG_FIELDS` in `scripts/build_share_table.py`). A code stores a 6-bit
+  field index, so adding one to `SEG_FIELDS` would have shifted every checkbox
+  and slider after it and silently re-pointed every link already shared.
 
 ### Fixed
 

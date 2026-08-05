@@ -618,8 +618,9 @@ def _strut_solid(a, b, end_a, end_b, radius):
     radii, so the middle of the strut is a round rod and only the ends know
     what they are attached to.
 
-    The ends stay exactly on ``a`` and ``b`` — the centre-line points — so they
-    are buried in the ribbon and the flat end caps can never surface.
+    ``a`` and ``b`` are the anchors :func:`_strut_anchor` chose, not the
+    centre-line points, and nothing here reaches past them — so the flat end
+    caps stay inside the ribbon and can never surface.
     """
     span = b - a
     length = float(np.linalg.norm(span))
