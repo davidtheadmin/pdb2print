@@ -6,7 +6,7 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
-## [Unreleased]
+## [1.3.0] — 2026-08-05
 
 Not mesh-affecting: with nothing switched off and no override set, a build
 meshes exactly as it did at 1.2.0. `CACHE_VERSION` goes 5 → 6 anyway, because
@@ -120,6 +120,30 @@ older one carries no chain list and no joint indices for the new panel to read.
   Also: an entry with an extended ID has no legacy `.pdb` file and never will,
   so the fetch no longer asks for one — that was a guaranteed miss against a
   30 s timeout on the thread holding the build slot.
+
+- **The layout stacks on a phone.** Below 820px the left-to-right arrangement
+  becomes top-to-bottom — settings, then the viewer, then whichever panel is
+  open. Nothing is hidden: every control that exists on a desktop exists on a
+  phone, because the point is that a visitor on a phone can browse, preview,
+  share a link and download later rather than being handed a cut-down site.
+
+  The grid was the easy half. This page is an app shell — `html, body` at
+  `height: 100%` with `body { overflow: hidden }`, and the settings column
+  scrolling inside a viewport-height frame — which is right for a two-column
+  desktop tool and impossible where three stacked sections have to share one
+  screen height. Below the breakpoint the shell is dismantled: the page grows
+  to its content and the document scrolls, and the settings column stops being
+  its own scroll region, because a scroller inside a scroller swallows the
+  gesture and the page underneath will not move.
+
+  All of it is inside one media query, so the desktop stylesheet is unchanged.
+  The viewer and the panels are given heights back, since each collapses to
+  nothing once it is no longer stretched by a full-height column. Generate and
+  the panel buttons scroll their result into view, because stacked it happens
+  below the fold and otherwise looks like nothing happened. Touch targets go to
+  roughly 44px. The viewer's two overlay button groups stop sharing the top
+  edge — the stand and joints buttons drop below the downloads instead of
+  drawing on top of them.
 
   New controls now append to the **end** of the share-code field table
   (`LATE_SEG_FIELDS` in `scripts/build_share_table.py`). A code stores a 6-bit
