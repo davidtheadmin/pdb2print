@@ -1351,8 +1351,11 @@
           is wide -- at this width the two groups meet in the middle and print
           on top of each other.
 
-          Both move to the left edge and the actions drop below the downloads.
-          The offset is the download row's own height, which CSS cannot ask a
+          The actions drop below the download row and stay where they are
+          otherwise -- still against the right edge, still stacked. Only the
+          top offset moves.
+
+          That offset is the download row's own height, which CSS cannot ask a
           sibling element for, so it is stated once here as a variable: change
           the size of a .dl-top button and this has to change with it. Anything
           less coupled than that means wrapping the two groups in a shared flow
@@ -1363,11 +1366,7 @@
           the gap, rather than pushing sideways off the viewer. */
     .viewer-wrap { --dl-row-h: 51px; }   /* 15px text + 28px padding + 2px border */
     .dl-group { right: 14px; flex-wrap: wrap; }
-    .stand-group {
-      top: calc(14px + var(--dl-row-h) + 10px);
-      left: 14px; right: 14px;
-      align-items: flex-start;
-    }
+    .stand-group { top: calc(14px + var(--dl-row-h) + 10px); }
   }
 </style>
 </head>
