@@ -1349,9 +1349,9 @@
           <div class="start-label">Enter a PDB ID to begin</div>
           <div class="search-wrap">
             <svg class="s-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-            <input id="pdb-id" class="id-field" type="text" placeholder="e.g. 1ZAA" spellcheck="false" autocomplete="off" maxlength="8">
+            <input id="pdb-id" class="id-field" type="text" placeholder="e.g. 1ZAA" spellcheck="false" autocomplete="off" maxlength="12">
           </div>
-          <div class="hint" style="margin-top:6px">The 4-character code from <a href="https://www.rcsb.org" target="_blank" rel="noopener">rcsb.org</a> — press Enter or hit Generate.</div>
+          <div class="hint" style="margin-top:6px">The 4-character code from <a href="https://www.rcsb.org" target="_blank" rel="noopener">rcsb.org</a>, or the newer 12-character one (pdb_00001zaa) — press Enter or hit Generate.</div>
 
           <div id="upload-btn" class="upload-sec" title="Upload a structure file" role="button" tabindex="0" style="margin-top:10px">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg>
@@ -2785,6 +2785,20 @@
   }
   updateReps();
 
+  // How an ID is *shown*, and nothing else. The server decides what an ID
+  // means and whether it is one; a second copy of that rule over here is the
+  // presets.py bug wearing a different name, and this time the drift would be
+  // invisible until somebody's share link decoded to another structure.
+  //
+  // All this settles is case. A 4-character code reads as 1UBQ. The extended
+  // form's "pdb_" prefix is specified lowercase and the wwPDB asks that it not
+  // be altered, so the blanket .toUpperCase() that used to run here would have
+  // sent PDB_00001UBQ to a service that was promised pdb_00001ubq.
+  function displayId(text) {
+    const id = (text || '').trim();
+    return /^pdb_/i.test(id) ? id.toLowerCase() : id.toUpperCase();
+  }
+
   // setSeg outlived the presets that introduced it — moving a segmented
   // control from code is still needed when one choice implies another.
   function setSeg(name, value) {
@@ -3586,7 +3600,10 @@
     const at = raw.indexOf('.');
     const id = raw.slice(0, at).trim();
     const code = raw.slice(at + 1).trim();
-    if (!/^[A-Za-z0-9]{4}$/.test(id)) return false;
+    // Loose on purpose: long enough to be an ID, short enough to be one, and
+    // made of characters an ID can contain. Whether it *is* one is the server's
+    // call, and this only has to decide whether to put it in the box.
+    if (!/^[A-Za-z0-9_]{4,12}$/.test(id)) return false;
     let state;
     try {
       state = decodeShare(code);
@@ -3594,7 +3611,7 @@
       setReport('This link could not be read: ' + err.message, true);
       return false;
     }
-    $('#pdb-id').value = id.toUpperCase();
+    $('#pdb-id').value = displayId(id);
     clearFile();
     applyShareState(state);
     updateGenerateReady();
@@ -3740,7 +3757,7 @@
       sentJointOverrides = jointOverridesField();
       // Everything a link needs, as of the moment this build goes out.
       sentShare = {
-        id: ($('#pdb-id').value.trim() || '').toUpperCase(),
+        id: displayId($('#pdb-id').value),
         upload: fileInput.files.length > 0,
         changes: shareChanges(),
         exclude: Array.from(excludedChains).sort((a, b) => a - b),
@@ -4668,7 +4685,7 @@
     const half = Math.max(naturalHalf, (infoW + legendNeed + spare) / 2);
     const usable0 = Math.max(12, 2 * half - spare);
     const legendW = Math.max(6, usable0 - infoW);
-    if (vals.plaque && vals.plaque_pdb_id) rows.push({ kind: 'text', text: (meta.pdb_id || $('#pdb-id').value.trim() || 'PDB').toUpperCase(), cap_mm: vals.plaque_text, height_mm: vals.plaque_text * 1.6 });
+    if (vals.plaque && vals.plaque_pdb_id) rows.push({ kind: 'text', text: meta.pdb_id || displayId($('#pdb-id').value) || 'PDB', cap_mm: vals.plaque_text, height_mm: vals.plaque_text * 1.6 });
     const title = vals.plaque_title_text || '';
     if (vals.plaque && title) {
       // The real title, wrapped roughly. A preview whose whole job is to show
@@ -6180,7 +6197,7 @@
   function structureLabel() {
     const f = $('#file-input');
     if (f && f.files && f.files.length) return f.files[0].name;
-    const id = $('#pdb-id').value.trim().toUpperCase();
+    const id = displayId($('#pdb-id').value);
     return id || '';
   }
 

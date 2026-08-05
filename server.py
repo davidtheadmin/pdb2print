@@ -35,6 +35,7 @@ from pdb2print.config import (
     PlaqueRelief, PlaqueFont,
     MoleculeType, LigandStyle, HBondMode, color_for_index, _palette_index,
 )
+from pdb2print.io import canonical_pdb_id
 from pdb2print.pipeline import build_all, BuildCancelled
 from pdb2print import export
 from pdb2print import cache as cache_mod
@@ -694,9 +695,11 @@ def _download_stem(source: str, params: PrintParams) -> str:
     which structure, and at what scale.
 
     ``source`` is either a bare PDB ID or the path of an uploaded file; either
-    way only the basename (without extension) contributes.
+    way only the basename (without extension) contributes.  An ID is
+    canonicalised first, so the two spellings of one entry do not land in the
+    downloads folder as two differently-named files.
     """
-    stem = os.path.splitext(os.path.basename(source))[0]
+    stem = canonical_pdb_id(source) or os.path.splitext(os.path.basename(source))[0]
     stem = _SAFE_STEM.sub("_", stem).strip("._-").lower()[:40] or "model"
     scale = f"{params.scale_mm_per_angstrom:g}".replace(".", "p")
     return f"{stem}_pdb2print_{scale}mm"
@@ -1514,7 +1517,16 @@ def _map_stand(fields: dict) -> StandParams:
 
 
 def _plaque_id(source: str) -> str:
-    """What the plaque calls this structure: its ID, or an uploaded file's name."""
+    """What the plaque calls this structure: its ID, or an uploaded file's name.
+
+    An ID goes through ``canonical_pdb_id``, which is what keeps ``1UBQ``
+    engraved on the plate rather than ``PDB_00001UBQ`` when someone arrives by
+    the extended spelling — twelve characters that mean the same four, on an
+    object where every character costs plate width.
+    """
+    canonical = canonical_pdb_id(source)
+    if canonical is not None:
+        return canonical
     stem = os.path.splitext(os.path.basename(source))[0]
     return stem.upper() if len(stem) <= 8 else stem
 

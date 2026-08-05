@@ -94,6 +94,33 @@ older one carries no chain list and no joint indices for the new panel to read.
   the field and every pre-generated cartoon entry stays reachable.
   `CACHE_VERSION` did not move for this.
 
+- **Extended PDB IDs.** `pdb_00001ubq` is accepted everywhere a 4-character ID
+  was, and both keep working — permanently. On 21 July 2027 the wwPDB stops
+  issuing 4-character IDs and everything deposited after that has a 12-character
+  one and nothing else, so a tool that only reads four characters stops being
+  able to open new structures on that date.
+
+  The two spellings are one entry, not two, and exactly one leaves
+  `io.canonical_pdb_id`: the **4-character form wherever an entry has one**.
+  That is a cache decision. `cache.key_for` hashes the source, so canonicalising
+  the other way would rename every key in existence — the pre-generated entries
+  shipped in the repo included — over a spelling change that produces a
+  byte-identical mesh. Collapsing means today's input still lands on today's
+  key, the two spellings share one cache entry instead of building the same
+  model twice, and the plaque keeps engraving `1UBQ` rather than
+  `PDB_00001UBQ`.
+
+  The rule lives in one place. The front end no longer validates IDs at all —
+  it decides how to *show* one and nothing else — because a second copy of the
+  rule in JavaScript is the `presets.py` bug wearing a different name, and here
+  the drift would be invisible until somebody's share link decoded to another
+  structure. Share links need no format change: the ID rides as a literal before
+  the `.`, not in the bitstream, so every link already out there still works.
+
+  Also: an entry with an extended ID has no legacy `.pdb` file and never will,
+  so the fetch no longer asks for one — that was a guaranteed miss against a
+  30 s timeout on the thread holding the build slot.
+
   New controls now append to the **end** of the share-code field table
   (`LATE_SEG_FIELDS` in `scripts/build_share_table.py`). A code stores a 6-bit
   field index, so adding one to `SEG_FIELDS` would have shifted every checkbox
