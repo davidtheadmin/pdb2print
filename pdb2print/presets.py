@@ -33,6 +33,7 @@ from typing import Dict
 
 from .config import (
     PrintParams, ConnectionParams, Representation, BaseStyle, BackboneStyle,
+    HBondMode,
 )
 
 #: The chip the UI opens on, and the one the cache is warmest for.
@@ -81,6 +82,9 @@ _UI_UNTOUCHED = dict(
     cartoon_helix_width_mm=4.5,
     cartoon_strand_width_mm=4.0,
     cartoon_coil_radius_mm=0.9,     # UI "tube thickness" 1.8 mm diameter / 2
+    # The "Hydrogen bonds" control, which loads on "None".  Equal to the
+    # dataclass default, and stated anyway for the reason the block below gives.
+    cartoon_hbonds=HBondMode.NONE,
     # The "Include ligands" checkbox, which loads checked.  This happens to equal
     # the ``PrintParams`` default, so omitting it would work today — and would be
     # a trap the first time the form's default and the dataclass default part

@@ -33,7 +33,7 @@ from pdb2print.config import (
     PrintParams, Representation, MinWallMode, BaseStyle, BackboneStyle,
     ConnectionParams, NoMagnetMethod, MagnetShape, StandParams, ColumnShape,
     PlaqueRelief, PlaqueFont,
-    MoleculeType, LigandStyle, color_for_index, _palette_index,
+    MoleculeType, LigandStyle, HBondMode, color_for_index, _palette_index,
 )
 from pdb2print.pipeline import build_all, BuildCancelled
 from pdb2print import export
@@ -127,7 +127,7 @@ def _bounded(fields: dict, name: str) -> float:
 #: every page load and server.py is not, so a change to both shows up as the new
 #: control appearing and doing the old thing — which is indistinguishable from a
 #: bug in the new control, and sends everybody looking in the wrong place.
-CODE_STAMP = '2026-08-04.1'
+CODE_STAMP = '2026-08-05.1'
 
 #: When this process started, for /api/health.
 _STARTED = time.time()
@@ -744,6 +744,9 @@ def _map_params(fields: dict) -> PrintParams:
         cartoon_helix_width_mm=float(fields.get("cartoon_helix_width", 4.5)),
         cartoon_strand_width_mm=float(fields.get("cartoon_strand_width", 4.0)),
         cartoon_coil_radius_mm=float(fields.get("cartoon_coil_radius", 0.9)),
+        # Absent means "none", which is the control's own default and the
+        # geometry the cartoon had before struts existed.
+        cartoon_hbonds=HBondMode(fields.get("cartoon_hbonds") or "none"),
         slab_thickness_mm=float(fields["slab_thickness"]),
         slab_scale=float(fields["base_width"]),
         connector_radius_mm=float(fields["connector_radius"]),
@@ -1242,6 +1245,7 @@ async def generate(
     cartoon_helix_width: float = Form(4.5),
     cartoon_strand_width: float = Form(4.0),
     cartoon_coil_radius: float = Form(0.9),
+    cartoon_hbonds: str = Form("none"),
     slab_thickness: float = Form(1.2),
     base_width: float = Form(1.0),
     connector_radius: float = Form(0.6),
@@ -1338,6 +1342,7 @@ async def generate(
             "cartoon_helix_width": cartoon_helix_width,
             "cartoon_strand_width": cartoon_strand_width,
             "cartoon_coil_radius": cartoon_coil_radius,
+            "cartoon_hbonds": cartoon_hbonds,
             "slab_thickness": slab_thickness, "base_width": base_width,
             "connector_radius": connector_radius, "atom_radius": atom_radius,
             "bond_radius": bond_radius,

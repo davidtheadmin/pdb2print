@@ -32,6 +32,12 @@ the ribbon minor axis and the arrow tip are the thin, fragile features — so th
 solid is printable without the voxel min-wall pass.  ``Representation.CARTOON``
 therefore stays in :data:`pdb2print.config.MIN_WALL_EXEMPT`.
 
+Optionally a strut is fused across each backbone hydrogen bond
+(:class:`pdb2print.config.HBondMode`), which is the only way to stiffen a
+cartoon short of printing it bigger — its thickness is locked to its width by
+:data:`_RIBBON_ASPECT`, so there is nothing to inflate.  Off, which is the
+default, ``build`` returns the bare loft and nothing below this line runs.
+
 The sweep is watertight by construction: a regular ``M × K`` grid of ring
 vertices closed with two end-cap fans, so every edge is shared by exactly two
 faces.  Self-intersection where a helix ribbon twists tightly does not affect
@@ -44,7 +50,8 @@ from __future__ import annotations
 import numpy as np
 from functools import lru_cache as _lru_cache
 
-from ..config import PrintParams
+from ..config import PrintParams, HBondMode
+from . import hbonds as _hbonds
 from ._common import _catmull_pos_tan  # analytic Catmull-Rom position + tangent
 from .tube_slab import _residue_iter, _atom_coord
 
@@ -71,6 +78,23 @@ _MIN_STRAND_LEN = 3
 # This is that default; strands are smoothed at full strength and helices only
 # lightly (see :func:`_smooth_control_points`).
 _SMOOTH = 0.7
+# Circular tessellation of a hydrogen-bond strut.  Lower than ``_SECTION_VERTS``
+# on purpose and only here: a strut is about 1.2 mm across, so twelve facets put
+# 0.31 mm between them -- under what a 0.4 mm nozzle resolves -- and there are up
+# to a hundred of them per chain, each one a boolean against a 78k-triangle
+# ribbon.  Twenty segments cost a third more time for a facet nobody can see.
+_STRUT_SEGMENTS = 12
+# A strut never runs thinner than this, whatever the sliders say (mm radius).
+# ``min_wall_mm`` is normally what floors it; this is the backstop for a build
+# that has switched the minimum wall off entirely.
+_MIN_STRUT_RADIUS_MM = 0.25
+# Which drawn secondary structures each mode braces.  ``_clean_sse`` labels, so
+# these are the letters the *ribbon* was built from -- see ``_hbond_pairs``.
+_HBOND_STRUCTURES = {
+    HBondMode.HELIX: ("a",),
+    HBondMode.SHEET: ("b",),
+    HBondMode.BOTH: ("a", "b"),
+}
 
 
 def _ca_backbone(chain):
@@ -445,6 +469,101 @@ def _dims(params: PrintParams):
     }
 
 
+def _strut_radius(params: PrintParams, dims) -> float:
+    """Radius of a hydrogen-bond strut (mm).
+
+    The ribbon's own half-thickness, so a strut comes out exactly as thick as
+    the thing it braces and reads as part of the same object rather than as
+    scaffolding bolted on.  It follows the Helix size and Sheet size sliders for
+    free, which is why this is not a control of its own.
+
+    Floored at half the minimum wall, the same as every dimension in
+    :func:`_dims`.  That is what keeps ``Representation.CARTOON`` honest in
+    ``config.MIN_WALL_EXEMPT``: the exemption is a promise that the builder
+    owns its own wall thicknesses, and a strut is a wall thickness.
+    """
+    half_wall = params.min_wall_mm / 2.0 if params.min_wall_mm > 0 else 0.0
+    return max(min(dims["helix_ht"], dims["strand_ht"]),
+               half_wall, _MIN_STRUT_RADIUS_MM)
+
+
+def _hbond_pairs(chain, sse, mode: HBondMode):
+    """Residue pairs to brace, filtered to what ``mode`` asks for.
+
+    Both ends must carry the *same* label, so a mode never produces a strut
+    running from a helix to a strand.  Matching on the drawn label rather than
+    on sequence separation is deliberate: ``_clean_sse`` has already demoted the
+    runs too short to draw, so a bond inside a two-residue "helix" that the
+    ribbon renders as coil is not offered as a helix rung.  What the mode
+    promises and what you can see then agree.
+    """
+    if mode == HBondMode.NONE:
+        return []
+    pairs = _hbonds.backbone_hbonds(chain)
+    n = len(sse)
+    pairs = [(i, j) for (i, j) in pairs if 0 <= i < n and 0 <= j < n]
+    if mode == HBondMode.ALL:
+        return pairs
+    wanted = _HBOND_STRUCTURES.get(mode, ())
+    return [(i, j) for (i, j) in pairs if sse[i] == sse[j] and sse[i] in wanted]
+
+
+def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
+    """Fuse a strut across each selected hydrogen bond into ``mesh``.
+
+    The struts run **centre-line to centre-line**, ``ctrl[i]`` to ``ctrl[j]``,
+    not between the N and O atoms the bond is actually made of — those do not
+    lie on the ribbon, so a strut drawn there would start and end in mid-air.
+    Uniform Catmull-Rom at ``t = 0`` evaluates to ``p1`` exactly, so the swept
+    centre-line passes precisely through every ``ctrl[i]``: an end placed there
+    is buried inside the ribbon by construction and can never poke out of the
+    far face.
+
+    Flat-ended cylinders rather than capsules.  Both ends are inside solid
+    material, so hemispherical caps are invisible — and they are two thirds of
+    the primitives, which on this boolean is two thirds of the time.
+
+    A failure here costs the struts, not the chain: the ribbon is returned as it
+    was with a note, which ``pipeline._accept_mesh`` turns into a warning the
+    user actually sees.  Losing a subunit of a complex to a strut that would not
+    fuse is the wrong trade.
+    """
+    mode = HBondMode(getattr(params, "cartoon_hbonds", HBondMode.NONE))
+    pairs = _hbond_pairs(chain, sse, mode)
+    if not pairs:
+        return mesh
+
+    import manifold3d as m3d
+    from manifold3d import Manifold
+    from . import _manifold
+
+    radius = _strut_radius(params, dims)
+    struts = []
+    for i, j in pairs:
+        a, b = ctrl[i], ctrl[j]
+        if float(np.linalg.norm(b - a)) < 1e-6:
+            continue
+        # ``frustum`` with equal radii is a plain flat-ended cylinder.
+        struts.append(_manifold.frustum(a, b, radius, radius, _STRUT_SEGMENTS))
+    if not struts:
+        return mesh
+
+    notes = list(mesh.metadata.get("notes", ()))
+    try:
+        fused = Manifold.batch_boolean(
+            [_manifold.from_trimesh(mesh)] + struts, m3d.OpType.Add)
+        out = _manifold.to_trimesh(fused)
+    except Exception as exc:
+        notes.append(
+            f"Chain {chain.chain_id} was built without its hydrogen-bond "
+            f"struts: they could not be fused to the ribbon ({exc}).")
+        mesh.metadata["notes"] = notes
+        return mesh
+    out.metadata.update(mesh.metadata)
+    out.metadata["notes"] = notes
+    return out
+
+
 def build(chain, params: PrintParams):
     """Return a watertight ``trimesh.Trimesh`` cartoon of a protein ``chain``."""
     s = params.scale_mm_per_angstrom
@@ -562,5 +681,6 @@ def build(chain, params: PrintParams):
         from . import _manifold
         return _manifold.to_trimesh(_manifold.sphere(centers[0], dims["coil_r"]))
 
-    return _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
+    mesh = _loft(np.asarray(centers), np.asarray(w_hats), np.asarray(n_hats),
                  sections)
+    return _add_hbond_struts(mesh, chain, params, sse, ctrl, dims)

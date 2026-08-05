@@ -1583,3 +1583,125 @@ def test_share_table_matches_the_controls():
     got = subprocess.run([sys.executable, script, "--check"],
                          capture_output=True, text=True)
     assert got.returncode == 0, got.stdout + got.stderr
+
+
+# --------------------------------------------------------------------------
+# Cartoon hydrogen-bond struts
+# --------------------------------------------------------------------------
+def _ubq_chain():
+    return chains_mod.split_chains(
+        io.load_with_names(os.path.join(D, "1ubq.pdb"))[0])[0]
+
+
+def test_hbond_detector_finds_the_ubiquitin_sheet():
+    """The detector must find the β-hairpin everyone knows is in 1UBQ, and must
+    never let proline donate."""
+    from pdb2print.representations import hbonds
+    chain = _ubq_chain()
+    pairs = hbonds.backbone_hbonds(chain)
+    assert pairs, "no backbone hydrogen bonds found in 1UBQ"
+
+    # The N-terminal hairpin: strand 1 (residues 1-7) pairs with strand 2
+    # (10-17) antiparallel.  Indices are 0-based positions in the chain.
+    long_range = {(i, j) for i, j in pairs if abs(i - j) > 5}
+    hairpin = {(i, j) for i, j in long_range if i < 20 and j < 20}
+    assert len(hairpin) >= 4, sorted(long_range)[:10]
+
+    # Proline has no amide hydrogen, so it can accept but never donate.
+    pro = {k for k, (name, _res) in enumerate(_residue_pairs(chain))
+           if name == "PRO"}
+    assert pro, "1UBQ has prolines; the fixture changed"
+    assert not (pro & {i for i, _j in pairs}), "a proline donated"
+
+
+def _residue_pairs(chain):
+    from pdb2print.representations.tube_slab import _residue_iter
+    for name, res in _residue_iter(chain.atoms):
+        yield name, res
+
+
+def test_hbond_modes_are_nested_subsets():
+    """Helices and sheets are each part of Both, and Both is part of All.
+
+    This is the promise the control makes on screen.  It is also what stops the
+    two middle modes drifting apart from the third once someone edits the
+    classifier.
+    """
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    chain = _ubq_chain()
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    ca, _c, _o = cartoon._ca_backbone(chain)
+    sse = cartoon._clean_sse(cartoon._sse(chain, len(ca)))
+
+    sets = {m: set(cartoon._hbond_pairs(chain, sse, m)) for m in HBondMode}
+    assert sets[HBondMode.NONE] == set()
+    assert sets[HBondMode.HELIX] <= sets[HBondMode.BOTH]
+    assert sets[HBondMode.SHEET] <= sets[HBondMode.BOTH]
+    assert sets[HBondMode.BOTH] <= sets[HBondMode.ALL]
+    assert sets[HBondMode.HELIX].isdisjoint(sets[HBondMode.SHEET])
+    assert sets[HBondMode.ALL], "1UBQ should offer something to brace"
+    # Every strut joins two pieces of ribbon drawn the same way.
+    for mode, letter in ((HBondMode.HELIX, "a"), (HBondMode.SHEET, "b")):
+        for i, j in sets[mode]:
+            assert sse[i] == sse[j] == letter
+
+
+def test_cartoon_hbonds_off_returns_the_bare_ribbon():
+    """Off must be the mesh that shipped before struts existed — same vertices,
+    same faces.  The cache key depends on it: ``canonical_params`` drops the
+    field when it is off, so every cartoon entry already in ``cache/`` is served
+    for this build."""
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    chain = _ubq_chain()
+    p = PrintParams(protein_representation=Representation.CARTOON)
+    assert p.cartoon_hbonds == HBondMode.NONE
+    plain = cartoon.build(chain, p)
+    again = cartoon.build(chain, PrintParams(
+        protein_representation=Representation.CARTOON,
+        cartoon_hbonds=HBondMode.NONE))
+    assert plain.vertices.shape == again.vertices.shape
+    assert (plain.faces == again.faces).all()
+    assert not plain.metadata.get("notes")
+
+
+def test_cartoon_hbonds_off_is_dropped_from_the_cache_key():
+    """The field must not appear in the canonical params when it is off, or
+    every pre-generated cartoon entry stops being reachable."""
+    from pdb2print.cache import canonical_params
+    from pdb2print.config import HBondMode, Representation
+    off = canonical_params(PrintParams(
+        protein_representation=Representation.CARTOON))
+    assert "cartoon_hbonds" not in off
+    on = canonical_params(PrintParams(
+        protein_representation=Representation.CARTOON,
+        cartoon_hbonds=HBondMode.SHEET))
+    assert on.get("cartoon_hbonds") == "sheet"
+    # And it is dropped entirely when no cartoon is built, on or off.
+    surf = canonical_params(PrintParams(
+        protein_representation=Representation.SURFACE,
+        cartoon_hbonds=HBondMode.ALL))
+    assert "cartoon_hbonds" not in surf
+
+
+def test_cartoon_hbonds_on_stays_watertight_and_adds_material():
+    """Struts must fuse into one watertight solid, not sit beside it."""
+    from pdb2print.config import HBondMode, Representation
+    from pdb2print.representations import cartoon
+    from pdb2print import meshops
+    chain = _ubq_chain()
+    base = PrintParams(protein_representation=Representation.CARTOON,
+                       scale_mm_per_angstrom=1.5, min_wall_mm=1.0)
+    off = meshops.repair(cartoon.build(chain, base))
+    braced = meshops.repair(cartoon.build(chain, PrintParams(
+        protein_representation=Representation.CARTOON,
+        scale_mm_per_angstrom=1.5, min_wall_mm=1.0,
+        cartoon_hbonds=HBondMode.ALL)))
+    assert braced.is_watertight
+    assert braced.body_count == 1
+    assert braced.volume > off.volume
+    # A strut is never thinner than half the minimum wall, so the exemption in
+    # config.MIN_WALL_EXEMPT stays true with the struts on.
+    dims = cartoon._dims(base)
+    assert cartoon._strut_radius(base, dims) >= base.min_wall_mm / 2.0
