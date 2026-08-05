@@ -1739,6 +1739,37 @@ def test_strut_end_lies_flat_against_the_ribbon_it_lands_on():
     assert abs(wide - 0.9) < 1e-9
 
 
+def test_strut_anchors_leave_a_ribbon_by_the_edge_facing_the_partner():
+    """A sheet bond runs sideways, so it has to start at the side of the plank —
+    and at the side the partner is on, not the other one."""
+    import numpy as np
+    from pdb2print.representations import cartoon
+    centre = np.zeros(3)
+    w = np.array([1.0, 0.0, 0.0])          # the ribbon's width axis
+    hw, ht = 2.0, 0.6                      # a flat plank
+    edge = hw - ht                         # centre of the rolled edge
+
+    # Partner off to +x: leave by the +x edge. Off to -x: the other one.
+    for sign in (+1.0, -1.0):
+        got = cartoon._strut_anchor(centre, w, hw, ht, np.array([sign, 0.0, 0.0]))
+        assert abs(got[0] - sign * edge) < 1e-9, got
+    # Still inside the solid, with the whole rolled edge left to bury the end in.
+    assert edge < hw
+
+    # Straight out through the face: no sideways component, so no offset.
+    face = cartoon._strut_anchor(centre, w, hw, ht, np.array([0.0, 0.0, 1.0]))
+    assert np.allclose(face, centre)
+    # Halfway between: half the offset, so the anchor slides rather than snaps.
+    d = np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0)
+    assert abs(cartoon._strut_anchor(centre, w, hw, ht, d)[0]
+               - edge / np.sqrt(2.0)) < 1e-9
+
+    # A round tube has no edge to leave by: the anchor is the axis, whatever
+    # direction the strut goes.
+    for d in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, 1.0])):
+        assert np.allclose(cartoon._strut_anchor(centre, w, 0.9, 0.9, d), centre)
+
+
 def test_strut_solid_is_closed_and_stays_between_its_ends():
     """The ends sit on the centre-line points; nothing may reach past them."""
     import numpy as np
