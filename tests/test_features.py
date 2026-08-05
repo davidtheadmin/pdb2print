@@ -1639,12 +1639,16 @@ def test_hbond_modes_are_nested_subsets():
     assert sets[HBondMode.HELIX] <= sets[HBondMode.BOTH]
     assert sets[HBondMode.SHEET] <= sets[HBondMode.BOTH]
     assert sets[HBondMode.BOTH] <= sets[HBondMode.ALL]
-    assert sets[HBondMode.HELIX].isdisjoint(sets[HBondMode.SHEET])
+    assert sets[HBondMode.BOTH] == sets[HBondMode.HELIX] | sets[HBondMode.SHEET]
     assert sets[HBondMode.ALL], "1UBQ should offer something to brace"
-    # Every strut joins two pieces of ribbon drawn the same way.
+    # One end is enough, so a bond out of a sheet into a loop is a sheet bond —
+    # and a helix-to-strand bond is in both of the middle modes.
     for mode, letter in ((HBondMode.HELIX, "a"), (HBondMode.SHEET, "b")):
         for i, j in sets[mode]:
-            assert sse[i] == sse[j] == letter
+            assert letter in (sse[i], sse[j])
+    loose = {(i, j) for (i, j) in sets[HBondMode.SHEET]
+             if sse[i] != sse[j]}
+    assert loose, "sheets that only bond to themselves — the filter is too tight"
 
 
 def test_cartoon_hbonds_off_returns_the_bare_ribbon():
@@ -1705,3 +1709,21 @@ def test_cartoon_hbonds_on_stays_watertight_and_adds_material():
     # config.MIN_WALL_EXEMPT stays true with the struts on.
     dims = cartoon._dims(base)
     assert cartoon._strut_radius(base, dims) >= base.min_wall_mm / 2.0
+
+
+def test_flared_strut_is_wider_at_its_ends_than_in_the_middle():
+    """The fillet is the whole point: a strut has to arrive wider than its shaft
+    or the joint reads as a rod pushed through a plate."""
+    import numpy as np
+    from pdb2print.representations import _manifold
+    a, b, r = np.zeros(3), np.array([0.0, 0.0, 10.0]), 0.5
+    strut = _manifold.flared_strut(a, b, r, 16)
+    plain = _manifold.frustum(a, b, r, r, 16)
+    assert _manifold.volume(strut) > _manifold.volume(plain)
+    # It must not grow *longer*, only wider: the ends stay on the centre-line
+    # points, which is what keeps them buried inside the ribbon.
+    box = strut.bounding_box()
+    assert box[2] >= -1e-6 and box[5] <= 10.0 + 1e-6
+    assert max(abs(box[0]), abs(box[3])) <= r * _manifold._FLARE_RADIUS + 1e-6
+    # A degenerate pair must not raise.
+    assert _manifold.volume(_manifold.flared_strut(a, a, r, 16)) > 0

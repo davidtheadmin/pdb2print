@@ -75,18 +75,21 @@ class HBondMode(str, Enum):
 
     The two middle modes classify by the secondary structure the ribbon is
     actually drawn with (``cartoon._clean_sse``), not by what a bond's sequence
-    separation implies.  A strut then always joins two pieces of ribbon that
-    read as the same thing, which is the only version that looks deliberate.
+    separation implies — so what a mode promises and what you can see on the
+    model agree.
 
-    Loops are absent from every mode because they are absent from the chemistry:
-    a loop is a stretch of backbone with no hydrogen bonds, so ``ALL`` does not
-    brace one either.
+    **One end is enough.**  ``SHEET`` takes every bond that *touches* a strand,
+    the ones running out of the sheet into a loop or a helix included.  Those
+    are what hold a sheet onto the rest of the fold; requiring both ends gave a
+    sheet that was rigid in itself and still hinged everywhere it joined
+    anything else.  ``HELIX`` and ``SHEET`` therefore overlap, and a
+    helix-to-strand bond belongs to both.
     """
 
     NONE = "none"      # nothing added; the ribbon is exactly what it was
-    HELIX = "helix"    # both ends inside one helix — rungs up the spiral
-    SHEET = "sheet"    # both ends inside strands — ties the sheet into a plate
-    BOTH = "both"      # helices and sheets, and nothing else
+    HELIX = "helix"    # every bond with an end in a helix
+    SHEET = "sheet"    # every bond with an end in a strand
+    BOTH = "both"      # every bond touching either
     ALL = "all"        # every backbone hydrogen bond the chain has
 
 

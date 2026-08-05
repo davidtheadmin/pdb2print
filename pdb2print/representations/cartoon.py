@@ -90,6 +90,7 @@ _STRUT_SEGMENTS = 12
 _MIN_STRUT_RADIUS_MM = 0.25
 # Which drawn secondary structures each mode braces.  ``_clean_sse`` labels, so
 # these are the letters the *ribbon* was built from -- see ``_hbond_pairs``.
+# One end is enough to qualify: see the note there.
 _HBOND_STRUCTURES = {
     HBondMode.HELIX: ("a",),
     HBondMode.SHEET: ("b",),
@@ -490,12 +491,19 @@ def _strut_radius(params: PrintParams, dims) -> float:
 def _hbond_pairs(chain, sse, mode: HBondMode):
     """Residue pairs to brace, filtered to what ``mode`` asks for.
 
-    Both ends must carry the *same* label, so a mode never produces a strut
-    running from a helix to a strand.  Matching on the drawn label rather than
-    on sequence separation is deliberate: ``_clean_sse`` has already demoted the
-    runs too short to draw, so a bond inside a two-residue "helix" that the
-    ribbon renders as coil is not offered as a helix rung.  What the mode
-    promises and what you can see then agree.
+    **One end is enough.**  A mode names the thing being braced, not a pair of
+    matching labels, so "Sheets" takes every bond that touches a strand —
+    including the ones running out of the sheet into a loop or a helix.  Those
+    are the bonds that hold a sheet onto the rest of the fold, and leaving them
+    out gave a sheet that was rigid in itself and still hinged where it joined
+    anything.  Helix and Sheet therefore overlap: a helix-to-strand bond is in
+    both, and in neither is it counted twice.
+
+    Matching on the *drawn* label rather than on sequence separation is
+    deliberate.  ``_clean_sse`` has already demoted the runs too short to draw,
+    so a bond inside a two-residue "helix" that the ribbon renders as coil is
+    not offered as a helix rung — what the mode promises and what you can see
+    then agree.
     """
     if mode == HBondMode.NONE:
         return []
@@ -505,7 +513,8 @@ def _hbond_pairs(chain, sse, mode: HBondMode):
     if mode == HBondMode.ALL:
         return pairs
     wanted = _HBOND_STRUCTURES.get(mode, ())
-    return [(i, j) for (i, j) in pairs if sse[i] == sse[j] and sse[i] in wanted]
+    return [(i, j) for (i, j) in pairs
+            if sse[i] in wanted or sse[j] in wanted]
 
 
 def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
@@ -519,9 +528,12 @@ def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
     is buried inside the ribbon by construction and can never poke out of the
     far face.
 
-    Flat-ended cylinders rather than capsules.  Both ends are inside solid
-    material, so hemispherical caps are invisible — and they are two thirds of
-    the primitives, which on this boolean is two thirds of the time.
+    Each strut is flared into a fillet where it meets the ribbon
+    (:func:`_manifold.flared_strut`).  A bare cylinder arrives at full width and
+    stops, which reads as a rod pushed through a plate and is the weakest root
+    a printed part can have; widening it into the surface is what makes the two
+    look like one object.  It is still a single primitive, so it costs the same
+    boolean a plain cylinder would have.
 
     A failure here costs the struts, not the chain: the ribbon is returned as it
     was with a note, which ``pipeline._accept_mesh`` turns into a warning the
@@ -543,8 +555,7 @@ def _add_hbond_struts(mesh, chain, params: PrintParams, sse, ctrl, dims):
         a, b = ctrl[i], ctrl[j]
         if float(np.linalg.norm(b - a)) < 1e-6:
             continue
-        # ``frustum`` with equal radii is a plain flat-ended cylinder.
-        struts.append(_manifold.frustum(a, b, radius, radius, _STRUT_SEGMENTS))
+        struts.append(_manifold.flared_strut(a, b, radius, _STRUT_SEGMENTS))
     if not struts:
         return mesh
 
