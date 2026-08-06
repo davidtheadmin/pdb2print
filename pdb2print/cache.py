@@ -50,12 +50,21 @@ DEFAULT_CACHE_DIR = os.path.join(
 
 #: Default ceiling on the whole store, overridable with ``PDB2PRINT_CACHE_MAX_GB``.
 #:
-#: 20 GB is chosen against a 100 GB disk that also carries the OS, a multi-GB
-#: Docker image and Caddy's certificate storage.  It holds roughly a thousand
-#: entries at the measured average of ~20 MB — far more than the handful of
-#: structures that actually repeat — while leaving the machine plenty of room
-#: to keep working.
-DEFAULT_MAX_BYTES = 20 * 1024 ** 3
+#: 40 GB is chosen against the 96 GB disk the production host actually has,
+#: which also carries the OS, a multi-GB Docker image and Caddy's certificate
+#: storage.  Measured 2026-08-05: 330 entries in 11 GB, so ~33 MB each rather
+#: than the ~20 MB this was first sized against, and 40 GB holds roughly 1,200.
+#: With the cache full the host still has about 27 GB free.
+#:
+#: Reaching the cap is not a failure and does not need heading off.  It is the
+#: point at which ``enforce_limit`` starts evicting least-recently-used entries,
+#: which is the design: the store stops growing and keeps whatever people are
+#: actually asking for.  Raising the number buys a larger working set, not
+#: safety — :data:`MIN_FREE_BYTES` below is what protects the disk.
+#:
+#: ``PDB2PRINT_CACHE_MAX_GB`` overrides this per host, which is the knob to
+#: reach for on a machine with a different disk rather than editing this line.
+DEFAULT_MAX_BYTES = 40 * 1024 ** 3
 
 #: Free space below which the cache stops writing, regardless of its own cap.
 #:
