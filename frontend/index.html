@@ -1809,7 +1809,7 @@
                   </div>
                 </div>
 
-                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and on a small one the seat search will refuse it and say so in Chains &amp; joints. Only for surface ligands.">
+                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and on a small one the seat search will refuse it and say so in Chains &amp; joints. Spacefill and Surface only — the other two styles are too thin to cut a pocket into.">
                   <input type="checkbox" id="ligand_magnets"><span class="track"></span>
                   <span class="sw-text"><span>Magnet on ligands</span></span>
                 </label>
@@ -2904,19 +2904,22 @@
   // describing something the protein was not doing. Moved rather than
   // duplicated, because two controls for one number is two chances to disagree
   // about what it is.
-  // Ligands are meshed by their own style picker, not by the protein's, so this
-  // is the only thing that makes a ligand a surface.
-  function ligandIsSurface() {
+  // Surface and spacefill both come out as one closed lump with a face to seat
+  // against. Ball & stick and Sticks are beads on rods a millimetre or two
+  // across, so a pocket would take the molecule apart rather than join it to
+  // anything. Mirrors MAGNETABLE_LIGAND_STYLES in config.py.
+  const LIGAND_MAGNET_STYLES = ['surface', 'spacefill'];
+  function ligandTakesMagnets() {
     const box = $('#include_ligands');
-    return !!(box && box.checked && groups.ligand_style() === 'surface');
+    return !!(box && box.checked
+              && LIGAND_MAGNET_STYLES.includes(groups.ligand_style()));
   }
   // The row sits inside the Magnets well, so "connect is on and magnets are the
   // method" is already answered by the block it lives in. This only adds the
-  // ligand half of the question. A ball-and-stick or sticks ligand has no face
-  // to seat anything against, which is why the style is part of it.
+  // ligand half of the question.
   function updateLigandMagnetRow() {
     const row = $('#ligand-magnet-row');
-    if (row) row.hidden = !ligandIsSurface();
+    if (row) row.hidden = !ligandTakesMagnets();
   }
   // A ligand is not a third card that can ask for these. It has its own pair,
   // under Ligands, because the probe is an absolute size in ångström and a drug

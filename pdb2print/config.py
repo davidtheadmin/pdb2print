@@ -162,6 +162,18 @@ class LigandStyle(str, Enum):
     STICKS = "sticks"
 
 
+#: The ligand styles solid enough to have a magnet cut into them.
+#:
+#: Both are one closed lump with a face to seat against.  The other two are not:
+#: a ball-and-stick ligand is beads on rods a millimetre or two thick and a
+#: sticks ligand is only the rods, so a pocket wider than the part it is cut into
+#: would take the molecule apart rather than join it to anything.  Whether a
+#: *particular* surface or spacefill ligand is big enough is a different question
+#: and the seat search already answers it; this only says which two are worth
+#: asking about.
+MAGNETABLE_LIGAND_STYLES = frozenset({LigandStyle.SURFACE, LigandStyle.SPACEFILL})
+
+
 class ColumnShape(str, Enum):
     """Cross-section — and profile — of a display-stand column.
 
@@ -339,12 +351,14 @@ class ConnectionParams:
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
     #: Whether a ligand may be given a magnet as well as the pocket it already
-    #: sits in.  Off by default, and read only when the ligand is styled as a
-    #: surface: on a ball-and-stick or sticks ligand there is no face to seat
-    #: anything against.  There is no count to go with it — a ligand interface
-    #: takes one magnet or none, and which of those it is falls out of the seat
-    #: search rather than a setting.  When no seat passes, the friction fit that
-    #: has always held a ligand is left exactly as it was.
+    #: sits in.  Off by default, and read only for the styles in
+    #: :data:`MAGNETABLE_LIGAND_STYLES` — surface and spacefill, the two that
+    #: come out as one closed lump.  On a ball-and-stick or sticks ligand there
+    #: is nothing but beads and rods to seat against.  There is no count to go
+    #: with it — a ligand interface takes one magnet or none, and which of those
+    #: it is falls out of the seat search rather than a setting.  When no seat
+    #: passes, the friction fit that has always held a ligand is left exactly as
+    #: it was.
     ligand_magnets: bool = False
 
     #: Per-pair overrides supplied by the user, as ``i<TAB>j<TAB>mode`` lines

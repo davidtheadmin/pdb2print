@@ -38,9 +38,14 @@ from typing import Dict, List, Optional
 
 from .config import (
     PrintParams, Representation, BaseStyle, BackboneStyle, MoleculeType,
-    LigandStyle, HBondMode,
+    LigandStyle, HBondMode, MAGNETABLE_LIGAND_STYLES,
 )
+
 from .io import looks_like_pdb_id, canonical_pdb_id
+
+#: ``_plain`` has already turned every enum into its value by the time the
+#: pruning runs, so this comparison is against strings.
+_MAGNETABLE_STYLE_VALUES = frozenset(s.value for s in MAGNETABLE_LIGAND_STYLES)
 
 #: Where the shipped cache lives.  A directory inside the repo (rather than a
 #: temp dir) is the whole point: a free Space's filesystem resets on restart, so
@@ -199,9 +204,9 @@ def canonical_params(params: PrintParams) -> dict:
         data.pop("exclude_chains", None)
 
     # Read here, before the block below starts removing the fields it is
-    # computed from.  The connections block further down needs it too.
-    lig_surface = (bool(data.get("include_ligands"))
-                   and data.get("ligand_style") == LigandStyle.SURFACE.value)
+    # computed from.  The connections block further down needs it.
+    lig_magnetable = (bool(data.get("include_ligands"))
+                      and data.get("ligand_style") in _MAGNETABLE_STYLE_VALUES)
 
     if not data.get("include_ligands"):
         drop("ligand_style", "ligand_atom_mm", "ligand_bond_mm",
@@ -326,7 +331,7 @@ def canonical_params(params: PrintParams) -> dict:
     # ``cache/`` reachable, which is why this feature needs no ``CACHE_VERSION``
     # bump either.  The two branches below that replace the whole dict are all
     # ``connect`` off, so they drop it on their own.
-    if not (conn.get("ligand_magnets") and lig_surface
+    if not (conn.get("ligand_magnets") and lig_magnetable
             and conn.get("connect") and conn.get("use_magnets")):
         conn.pop("ligand_magnets", None)
 

@@ -27,9 +27,12 @@ must not have, so an old code is refused with a message instead of read.
   interfaces offer 1–5, DNA 1–2, a ligand one. The arrow shows the number when
   one is set, so a row still reads without opening it.
 - **A magnet on a ligand.** A switch in the Magnets well, shown when ligands are
-  on and styled as Surface. The pocket cut to fit the ligand is unchanged and is
-  still what holds it; this adds a magnet on top of that where one fits. On a
-  ligand too small to seat one nothing changes, and the row says so.
+  on and styled as Spacefill or Surface — the two that come out as one closed
+  lump. The pocket cut to fit the ligand is unchanged and is still what holds
+  it; this adds a magnet on top of that where one fits. On a ligand too small to
+  seat one nothing changes, and the row says so. Ball & stick and Sticks are
+  beads on rods a millimetre or two across, so a pocket would take the molecule
+  apart rather than join it to anything; they are not offered.
 - **Magnets up to 10 mm thick**, up from 6. A thick magnet needs a thick model:
   it wants roughly its own thickness plus the collar in solid plastic behind
   each face, and past that the seat search runs out of material and reports it.

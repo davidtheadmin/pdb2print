@@ -1988,9 +1988,20 @@ def test_a_ligand_is_offered_a_joint_only_when_asked():
     assert _joinable(lig, lig, True) is False
 
 
-def test_ligand_magnets_need_a_surface_ligand_and_magnets_on():
+def test_only_the_two_solid_ligand_styles_can_take_a_magnet():
+    """Surface and spacefill come out as one lump. The other two are rods."""
+    from pdb2print.config import LigandStyle, MAGNETABLE_LIGAND_STYLES
+
+    assert MAGNETABLE_LIGAND_STYLES == frozenset(
+        {LigandStyle.SURFACE, LigandStyle.SPACEFILL})
+    assert LigandStyle.BALL_STICK not in MAGNETABLE_LIGAND_STYLES
+    assert LigandStyle.STICKS not in MAGNETABLE_LIGAND_STYLES
+
+
+def test_ligand_magnets_need_every_one_of_their_four_conditions():
     """The switch alone is not enough, and the joint loop is what reads it."""
-    from pdb2print.config import LigandStyle, NoMagnetMethod
+    from pdb2print.config import (
+        LigandStyle, NoMagnetMethod, MAGNETABLE_LIGAND_STYLES)
 
     def offered(**kw):
         p = _params(connect=True, use_magnets=True, ligand_magnets=True)
@@ -2003,12 +2014,15 @@ def test_ligand_magnets_need_a_surface_ligand_and_magnets_on():
                 setattr(p, k, v)
         cp = p.connections
         return bool(cp.ligand_magnets and cp.use_magnets and p.include_ligands
-                    and p.ligand_style == LigandStyle.SURFACE)
+                    and p.ligand_style in MAGNETABLE_LIGAND_STYLES)
 
     assert offered() is True
+    assert offered(ligand_style=LigandStyle.SPACEFILL) is True
     assert offered(ligand_magnets=False) is False
     assert offered(include_ligands=False) is False
     assert offered(ligand_style=LigandStyle.BALL_STICK) is False
+    assert offered(ligand_style=LigandStyle.STICKS) is False
+    # Bridge and inflate weld, and a welded ligand is not a ligand.
     assert offered(use_magnets=False,
                    no_magnet_method=NoMagnetMethod.BRIDGE) is False
 
@@ -2124,17 +2138,21 @@ def test_ligand_magnets_move_the_key_only_where_they_are_read():
     from pdb2print import cache
     from pdb2print.config import LigandStyle
 
-    def key(**conn):
+    def key(style=LigandStyle.SURFACE, **conn):
         p = _params(**conn)
         p.include_ligands = True
-        p.ligand_style = LigandStyle.SURFACE
+        p.ligand_style = style
         return cache.key_for(BNA, p)
 
     on = dict(connect=True, use_magnets=True)
-    assert key(**on) != key(**on, ligand_magnets=True)
-    # Off is today's key, whatever else is set.
-    assert key(**on) == key(**on, ligand_magnets=False)
-    # Unread everywhere else, so it must not split those keys either.
+    for style in (LigandStyle.SURFACE, LigandStyle.SPACEFILL):
+        assert key(style, **on) != key(style, **on, ligand_magnets=True), style
+        # Off is today's key, whatever else is set.
+        assert key(style, **on) == key(style, **on, ligand_magnets=False), style
+    # A style that can never take one does not split the key either.
+    beads = LigandStyle.BALL_STICK
+    assert key(beads, **on) == key(beads, **on, ligand_magnets=True)
+    # Nor does anything outside the loop that reads it.
     for branch in (dict(connect=False), dict(connect=True, use_magnets=False)):
         assert key(**branch) == key(**branch, ligand_magnets=True), branch
 

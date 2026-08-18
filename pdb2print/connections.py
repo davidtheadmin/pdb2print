@@ -89,7 +89,8 @@ from scipy.spatial import cKDTree
 
 from .config import (
     PrintParams, ConnectionParams, NoMagnetMethod, MagnetShape,
-    MoleculeType, BaseStyle, InterferenceRule, Representation, LigandStyle,
+    MoleculeType, BaseStyle, InterferenceRule, Representation,
+    MAGNETABLE_LIGAND_STYLES,
 )
 from .chains import Chain
 from .representations import _manifold, tube_slab
@@ -268,9 +269,9 @@ def _joinable(a: Chain, b: Chain, ligands: bool = False) -> bool:
       millimetres thick through the ring — means a pocket wider and deeper than
       the part it is cut into, so ``_commit`` rejects it and the joint is lost.
       That is a *seat* question, though, not a rule: the seat search already
-      answers it per interface, and on a big surface-styled cofactor the answer
-      can be yes.  So when the user asks for it, the pair is offered and the
-      existing footprint, fill and depth tests decide.
+      answers it per interface, and on a big cofactor meshed as one closed lump
+      the answer can be yes.  So when the user asks for it, the pair is offered
+      and the existing footprint, fill and depth tests decide.
     * a *bridge* or an *inflate* weld would fuse the ligand to its host, which
       destroys the only interesting thing about printing it separately: that it
       comes out and goes back in.  Those two call sites never pass the flag, so
@@ -2043,7 +2044,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     lig_joints = bool(getattr(cp, "ligand_magnets", False)
                       and cp.use_magnets
                       and params.include_ligands
-                      and params.ligand_style == LigandStyle.SURFACE)
+                      and params.ligand_style in MAGNETABLE_LIGAND_STYLES)
     # Said once for the whole build rather than per interface: it is a fact
     # about the settings, not about any one pair.
     _scale_note = _socket_scale_note(built, cp, lig_joints)
