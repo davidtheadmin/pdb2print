@@ -104,6 +104,10 @@ _PARAM_BOUNDS = {
     "grid_spacing": (0.2, 1.5),
     "min_wall": (0.0, 5.0),
     "probe_radius": (0.6, 5.0),
+    # The ligand's own pair. Same bounds as the polymer's, because they are the
+    # same two physical quantities measured on a smaller molecule.
+    "ligand_probe_radius": (0.6, 5.0),
+    "ligand_surface_padding": (0.0, 2.0),
     "connector_diameter": (1.5, 12.0),
     # Never clamped at all until now — a bare ``float()``, on a public endpoint,
     # feeding a pocket depth that is subtracted from both halves of every joint.
@@ -778,6 +782,13 @@ def _map_params(fields: dict) -> PrintParams:
         # branch is only reached by a caller that omits the field entirely.
         ligand_bond_mm=float(fields.get("ligand_bond", 1.4)),
         ligand_vdw_scale=float(fields.get("ligand_vdw_scale", 1.0)),
+        # Bounded like the polymer's pair, and defaulted to the same numbers, so
+        # a caller that says nothing about them builds what it always built.
+        ligand_probe_radius_ang=(_bounded(fields, "ligand_probe_radius")
+                                 if "ligand_probe_radius" in fields else 1.4),
+        ligand_surface_atom_padding_ang=(
+            _bounded(fields, "ligand_surface_padding")
+            if "ligand_surface_padding" in fields else 0.0),
         connections=_map_connections(fields),
     )
 
@@ -1272,6 +1283,8 @@ async def generate(
     ligand_atom: float = Form(2.2),
     ligand_bond: float = Form(1.4),
     ligand_vdw_scale: float = Form(1.0),
+    ligand_probe_radius: float = Form(1.4),
+    ligand_surface_padding: float = Form(0.0),
     # --- connector / joinery system ---
     connect: str = Form("false"),
     use_magnets: str = Form("false"),
@@ -1367,6 +1380,8 @@ async def generate(
             "ligand_style": ligand_style, "ligand_atom": ligand_atom,
             "ligand_bond": ligand_bond,
             "ligand_vdw_scale": ligand_vdw_scale,
+            "ligand_probe_radius": ligand_probe_radius,
+            "ligand_surface_padding": ligand_surface_padding,
             "connect": connect, "use_magnets": use_magnets,
             "no_magnet_method": no_magnet_method,
             "connector_diameter": connector_diameter,

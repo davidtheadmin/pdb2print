@@ -73,9 +73,17 @@ BOOL_FIELDS = ["include_ligands", "magnets", "socket", "basepair_connect"]
 #: code stores a field's *position* and inserting one moves everything after it.
 LATE_BOOL_FIELDS = ["ligand_magnets"]
 
+#: Sliders added after the table already existed.  These are the reason
+#: ``_sliders`` filters at all: it reads the markup in document order, so a new
+#: slider dropped into the Ligands card would land between ``ligand_vdw_scale``
+#: and ``scale`` and push seven fields down one place.  Held out of the document
+#: scan and appended at the end instead.
+LATE_SLIDER_FIELDS = ["ligand_probe_radius", "ligand_surface_padding"]
 
-def _sliders(html: str) -> list:
-    out = []
+
+def _sliders(html: str, names=None) -> list:
+    out = {}
+    order = []
     for m in re.finditer(r'data-slider="([a-z_]+)"', html):
         name = m.group(1)
         window = html[m.end():m.end() + 900]
@@ -90,14 +98,22 @@ def _sliders(html: str) -> list:
         lo, hi, st = float(at["min"]), float(at["max"]), float(at["step"])
         n = int(round((hi - lo) / st)) + 1
         default = float(at.get("value", lo))
-        out.append({
+        if name not in out:
+            order.append(name)
+        out[name] = {
             "k": name, "t": "s",
             "lo": lo, "st": st, "n": n,
             "d": int(round((default - lo) / st)),
-        })
+        }
     if not out:
         raise SystemExit("no sliders found — has the markup changed shape?")
-    return out
+    if names is None:
+        late = set(LATE_SLIDER_FIELDS)
+        return [out[k] for k in order if k not in late]
+    for name in names:
+        if name not in out:
+            raise SystemExit(f"slider {name!r} is not in the markup")
+    return [out[name] for name in names]
 
 
 def _segs(html: str, names=None) -> list:
@@ -148,7 +164,8 @@ def table(html: str) -> list:
     """
     return (_segs(html) + _bools(html) + _sliders(html)
             + _segs(html, LATE_SEG_FIELDS)
-            + _bools(html, LATE_BOOL_FIELDS))
+            + _bools(html, LATE_BOOL_FIELDS)
+            + _sliders(html, LATE_SLIDER_FIELDS))
 
 
 def render(fields: list) -> str:

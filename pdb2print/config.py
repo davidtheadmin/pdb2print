@@ -825,6 +825,23 @@ class PrintParams:
     #: value smooths hairline gaps for a more print-robust shell.
     surface_atom_padding_ang: float = 0.0
 
+    #: The same two numbers again, for a ligand meshed as a surface, and
+    #: deliberately its own pair rather than the polymer's.
+    #:
+    #: A ligand is one or two orders of magnitude smaller than the thing it is
+    #: bound to, and the probe is an absolute size in ångström: the radius that
+    #: rounds off a protein's crevices without touching its shape will close a
+    #: drug's rings entirely, and the padding that saves a hairline gap on a
+    #: surface a hundred ångström across is a visible bulge on one twelve across.
+    #: Sharing them meant a ligand could only be tuned by detuning its host.
+    #:
+    #: They default to the polymer's defaults, so a build that sets neither is
+    #: the build it always was.  ``ligand.build`` substitutes them into a copy of
+    #: the params before handing the ligand to ``surface.build``, which asks for
+    #: the polymer names and needs to know nothing about any of this.
+    ligand_probe_radius_ang: float = 1.4
+    ligand_surface_atom_padding_ang: float = 0.0
+
     # --- tube-and-slab tuning ------------------------------------------
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale
     #: Backbone tube radius for the *protein* "tubes" representation, kept

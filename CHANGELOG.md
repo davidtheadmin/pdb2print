@@ -33,17 +33,24 @@ must not have, so an old code is refused with a message instead of read.
 - **Magnets up to 10 mm thick**, up from 6. A thick magnet needs a thick model:
   it wants roughly its own thickness plus the collar in solid plastic behind
   each face, and past that the seat search runs out of material and reports it.
-- **Probe radius and Surface padding under Ligands** when the ligand is a
-  surface and neither the protein nor the DNA is. They are the two controls that
-  shape a surface ligand, and on a cartoon protein they were nowhere on the page
-  while the tooltip pointed at a card that did not have them.
+- **A surface ligand has its own probe radius and surface padding**, under
+  Advanced settings in the Ligands card. They used to be the protein's, which
+  meant a ligand could only be tuned by detuning its host — and on a cartoon
+  protein they were nowhere on the page at all, while the tooltip pointed at a
+  card that did not have them. The probe is an absolute size in ångström and a
+  ligand is a fraction of the size of what it is bound to: the radius that
+  rounds off a protein's crevices closes a drug's rings, and the padding that
+  saves a hairline gap on a surface a hundred ångström across is a visible bulge
+  on one twelve across. Both start at the protein's own defaults, so a build
+  that leaves them alone is the build it always was.
 
 ### Fixed
 
 - **A surface ligand's probe radius reached the cache key.** With neither
   polymer set to Surface the probe radius and surface padding were dropped from
-  the key — but a surface ligand reads both. Two builds differing only in probe
+  the key — but a surface ligand read both. Two builds differing only in probe
   radius shared one entry, and the second was served the first one's geometry.
+  Both pairs are now keyed exactly where they are read.
 - **A chain exclusion or joint override in a share link survives the build.**
   The panel wipes both lists whenever the structure changes and checks at the
   top of every build; a page opening a link is the largest change there is, so

@@ -1633,7 +1633,7 @@
 
           <!-- ---- ligands ---- -->
           <div class="grp" id="grp-ligands">
-            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand is sized by the probe and padding sliders. They sit under Protein when a protein or DNA surface is using them too, so the two match.">Ligands</p>
+            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand has its own probe and padding, under Advanced settings here. They start where the protein's start, so the two match until you change one.">Ligands</p>
             <label class="switch">
               <input type="checkbox" id="include_ligands"><span class="track"></span>
               <span class="sw-text"><span>Include ligands</span></span>
@@ -1665,6 +1665,18 @@
                   <div class="field" data-slider="ligand_vdw_scale">
                     <div class="slider-row"><span class="name" title="Spacefill only: multiplies the real van der Waals radii. 1.0 is chemically honest; higher fuses the spheres into one lump.">Spacefill fullness</span><span class="val"></span></div>
                     <input type="range" min="0.6" max="1.6" step="0.05" value="1.0">
+                  </div>
+                  <!-- The ligand's own pair, not the ones under Protein. Same
+                       two numbers, a different molecule: the probe is an
+                       absolute size in ångström and a drug is a hundredth the
+                       size of what it is bound to. -->
+                  <div class="field" data-slider="ligand_probe_radius">
+                    <div class="slider-row"><span class="name" title="Surface only: the ball that rolls over the ligand. 1.4 is a water molecule. Larger smooths the surface and fills the rings in; smaller keeps the shape and can break thin parts off.">Ligand probe radius (Å)</span><span class="val"></span></div>
+                    <input type="range" min="0.6" max="3.0" step="0.1" value="1.4">
+                  </div>
+                  <div class="field" data-slider="ligand_surface_padding">
+                    <div class="slider-row"><span class="name" title="Surface only: grows every atom before the surface is made. Closes hairline gaps that will not print. A ligand is small, so a little goes a long way here.">Ligand surface padding (Å)</span><span class="val"></span></div>
+                    <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
                   </div>
                 </div>
               </details>
@@ -2589,6 +2601,8 @@
     {"k":"connector_diameter","t":"s","lo":1.5,"st":0.5,"n":22,"d":5},
     {"k":"cartoon_hbonds","t":"g","v":["none","helix","sheet","both","all"],"d":0},
     {"k":"ligand_magnets","t":"b","d":0},
+    {"k":"ligand_probe_radius","t":"s","lo":0.6,"st":0.1,"n":25,"d":8},
+    {"k":"ligand_surface_padding","t":"s","lo":0.0,"st":0.05,"n":41,"d":0},
   ];
   /* SHARE-TABLE-END */
 
@@ -2904,16 +2918,14 @@
     const row = $('#ligand-magnet-row');
     if (row) row.hidden = !ligandIsSurface();
   }
-  // A surface ligand reads the same two numbers, so it is a third card that can
-  // ask for them — and the last one asked, because when a polymer is a surface
-  // the ligand shares its settings and the controls belong with the bigger
-  // thing. Without this the pair had nowhere to go on a cartoon protein with a
-  // surface ligand: the sliders were hidden, the ligand drawer was empty, and
-  // the thing on screen was being shaped by two controls that were not there.
-  function homeSurfaceFields(pRep, nRep, ligSurface) {
+  // A ligand is not a third card that can ask for these. It has its own pair,
+  // under Ligands, because the probe is an absolute size in ångström and a drug
+  // is not a protein: the radius that rounds off a protein's crevices closes a
+  // drug's rings, and the padding that saves a hairline gap on a surface a
+  // hundred ångström across is a bulge on one twelve across.
+  function homeSurfaceFields(pRep, nRep) {
     const host = pRep === 'surface' ? $('#advanced-surface .drawer')
-               : (nRep === 'surface' ? $('#advanced-dna .drawer')
-               : (ligSurface ? $('#advanced-ligand .drawer') : null));
+               : (nRep === 'surface' ? $('#advanced-dna .drawer') : null);
     if (!host) return;
     const anchor = host.querySelector('[data-slider="protein_tube_radius"]');
     ['surface_padding', 'probe_radius'].forEach(key => {
@@ -2931,13 +2943,12 @@
     const note = $('#dna-surface-note');
     if (note) note.hidden = !(nRep === 'surface' && pRep === 'surface');
     // Show only the protein shape control relevant to the chosen style.
-    const ligSurface = ligandIsSurface();
-    const anySurface = pRep === 'surface' || nRep === 'surface' || ligSurface;
+    const anySurface = pRep === 'surface' || nRep === 'surface';
     const show = (key, on) => { const f = $(`[data-slider="${key}"]`); if (f) f.hidden = !on; };
-    show('surface_padding',     anySurface);      // used by any molecular surface
+    show('surface_padding',     anySurface);      // used by any polymer surface
     show('probe_radius',        anySurface);
     show('protein_tube_radius', pRep === 'tubes');
-    homeSurfaceFields(pRep, nRep, ligSurface);
+    homeSurfaceFields(pRep, nRep);
     // Cartoon panel (its own sliders live inside the block, shown/hidden as one).
     const cartoon = pRep === 'cartoon';
     const cartoonBlock = $('#cartoon'); if (cartoonBlock) cartoonBlock.hidden = !cartoon;
@@ -2950,16 +2961,13 @@
     // The "delicate to print" note is only for the ribbon/tube styles.
     const exp = $('#protein-exp-note'); if (exp) exp.hidden = (pRep === 'surface');
     updateDnaDims();
-    // Last, because it is a question about what the two calls above left
-    // standing. It lives here rather than in updateLigandOpts because changing
-    // the *protein* to a surface takes probe and padding back out of the ligand
-    // drawer, and that path never touches the ligand controls at all.
-    syncLigandDrawer();
   }
 
   // A drawer holding nothing still opens, and the badge that would have read
   // zero is suppressed — so an empty one looks exactly like a populated one.
-  // Same rule the surface drawer and the connections block already follow.
+  // That is what Surface used to do here, before the style got a probe and a
+  // padding of its own; every style now populates it, and this is the check
+  // that keeps that true rather than a sentence claiming it does.
   function syncLigandDrawer() {
     const adv = $('#advanced-ligand');
     if (!adv) return;
@@ -3099,28 +3107,26 @@
   //   ball & stick — atom size, bond size
   //   spacefill    — atom size (as a floor), vdW fullness
   //   sticks       — bond size only
-  //   surface      — none of its own; it is sized by the probe and padding
-  //                  controls, which move in here when no polymer is a surface
-  //                  and stay under Protein when one is
+  //   surface      — its own probe and padding, not the ones under Protein
   const LIGAND_FIELDS = {
     ball_stick: ['ligand_atom', 'ligand_bond'],
     spacefill: ['ligand_atom', 'ligand_vdw_scale'],
     sticks: ['ligand_bond'],
-    surface: [],
+    surface: ['ligand_probe_radius', 'ligand_surface_padding'],
   };
+  const LIGAND_KEYS = ['ligand_atom', 'ligand_bond', 'ligand_vdw_scale',
+                       'ligand_probe_radius', 'ligand_surface_padding'];
 
   function updateLigandOpts() {
     const on = $('#include_ligands').checked;
     $('#ligand-opts').hidden = !on;
     const style = on ? groups.ligand_style() : 'ball_stick';
     const shown = LIGAND_FIELDS[style] || LIGAND_FIELDS.ball_stick;
-    ['ligand_atom', 'ligand_bond', 'ligand_vdw_scale'].forEach(key => {
+    LIGAND_KEYS.forEach(key => {
       const field = $(`.field[data-slider="${key}"]`);
       if (field) field.hidden = !shown.includes(key);
     });
-    // It moves probe and padding in or out, and it ends by measuring what the
-    // drawer is left holding.
-    updateReps();
+    syncLigandDrawer();
     updateLigandMagnetRow();
   }
   $('#include_ligands').addEventListener('change', updateLigandOpts);
@@ -4069,6 +4075,8 @@
     fd.append('ligand_atom', sliders.ligand_atom.value);
     fd.append('ligand_bond', sliders.ligand_bond.value);
     fd.append('ligand_vdw_scale', sliders.ligand_vdw_scale.value);
+    fd.append('ligand_probe_radius', sliders.ligand_probe_radius.value);
+    fd.append('ligand_surface_padding', sliders.ligand_surface_padding.value);
     fd.append('connect', $('#connect').checked);
     fd.append('use_magnets', groups.use_magnets());
     fd.append('no_magnet_method', groups.no_magnet_method());

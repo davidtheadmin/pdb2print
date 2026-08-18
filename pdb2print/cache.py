@@ -198,21 +198,34 @@ def canonical_params(params: PrintParams) -> dict:
     if not data.get("exclude_chains"):
         data.pop("exclude_chains", None)
 
+    # Read here, before the block below starts removing the fields it is
+    # computed from.  The connections block further down needs it too.
+    lig_surface = (bool(data.get("include_ligands"))
+                   and data.get("ligand_style") == LigandStyle.SURFACE.value)
+
     if not data.get("include_ligands"):
         drop("ligand_style", "ligand_atom_mm", "ligand_bond_mm",
-             "ligand_vdw_scale")
+             "ligand_vdw_scale", "ligand_probe_radius_ang",
+             "ligand_surface_atom_padding_ang")
     else:
         # Each ligand style reads a different subset, so the rest can merge.
         style = data.get("ligand_style")
         if style == LigandStyle.SURFACE.value:
-            # Sized entirely by the surface controls, which are keyed already.
+            # Sized entirely by the ligand's own probe and padding, which are
+            # the two fields *not* dropped here.  They are the ligand's, not the
+            # polymer's: a surface ligand no longer reads ``probe_radius_ang``
+            # at all, so keying it off that would be keying it off a number it
+            # does not use.
             drop("ligand_atom_mm", "ligand_bond_mm", "ligand_vdw_scale")
-        elif style == LigandStyle.SPACEFILL.value:
-            drop("ligand_bond_mm")
-        elif style == LigandStyle.STICKS.value:
-            drop("ligand_atom_mm", "ligand_vdw_scale")
         else:
-            drop("ligand_vdw_scale")
+            # Every other style is beads and sticks. Nothing reads a probe.
+            drop("ligand_probe_radius_ang", "ligand_surface_atom_padding_ang")
+            if style == LigandStyle.SPACEFILL.value:
+                drop("ligand_bond_mm")
+            elif style == LigandStyle.STICKS.value:
+                drop("ligand_atom_mm", "ligand_vdw_scale")
+            else:
+                drop("ligand_vdw_scale")
 
     # min_wall_mode selects a branch inside meshops.enforce_min_wall, and that
     # pass returns early for every representation there is (MIN_WALL_EXEMPT
@@ -241,15 +254,14 @@ def canonical_params(params: PrintParams) -> dict:
     if data.get("cartoon_hbonds") in (None, HBondMode.NONE.value):
         data.pop("cartoon_hbonds", None)
 
-    # Surface tuning is read only when something is meshed as a surface — and a
-    # ligand styled Surface is one of those things.  ``ligand_style`` is not a
-    # ``Representation`` and so was never in ``reps``, which made a cartoon
-    # protein with a surface ligand drop the two controls that were shaping the
-    # ligand: two builds at different probe radii shared one key, and the second
-    # was served the first one's geometry.
-    lig_surface = (bool(data.get("include_ligands"))
-                   and data.get("ligand_style") == LigandStyle.SURFACE.value)
-    if Representation.SURFACE.value not in reps and not lig_surface:
+    # Surface tuning is read only when a *polymer* is meshed as a surface.  A
+    # surface ligand does not read these — it has its own pair, keyed in the
+    # ligand block above — which is what makes this condition true again.  It was
+    # not before that pair existed: ``ligand_style`` is not a ``Representation``
+    # and was never in ``reps``, so a cartoon protein with a surface ligand
+    # dropped the two controls that were shaping the ligand, and two builds at
+    # different probe radii shared one key.
+    if Representation.SURFACE.value not in reps:
         drop("probe_radius_ang", "surface_atom_padding_ang")
 
     # The protein tube radius belongs to the protein "tubes" style alone.  It is

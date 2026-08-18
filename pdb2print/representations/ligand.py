@@ -202,14 +202,27 @@ def build(chain, params: PrintParams):
         # variant at all — and a drug rendered the same way as the pocket it sits
         # in is the whole reason to want the style.
         #
+        # The ligand's own probe and padding are substituted in here rather than
+        # read over there: ``surface.build`` is the polymer's builder, it reads
+        # ``probe_radius_ang`` and ``surface_atom_padding_ang``, and teaching it
+        # which caller it has would put a ligand branch in the one file that has
+        # never needed one.  A shallow copy of the params says the same thing
+        # and says it once.
+        #
         # Above the bead sizes and the island scan deliberately: this path reads
         # neither, and ``_island_links`` is a double loop over every atom pair.
         # The heavy-atom filtering above does not reach it either — ``surface``
         # is handed the chain, not ``coords`` — so a file carrying explicit
         # hydrogens gets them meshed. Left alone because fixing it changes
         # geometry and would orphan every cached entry built before it.
+        import dataclasses
+
         from . import surface
-        return surface.build(chain, params)
+        return surface.build(chain, dataclasses.replace(
+            params,
+            probe_radius_ang=params.ligand_probe_radius_ang,
+            surface_atom_padding_ang=params.ligand_surface_atom_padding_ang,
+        ))
 
     atom_r, bond_r = _radii(params)
     links = _island_links(coords, _BOND_CUTOFF_ANG)

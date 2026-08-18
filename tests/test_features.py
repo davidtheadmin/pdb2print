@@ -2034,32 +2034,89 @@ def test_the_narrowest_part_warning_skips_a_ligand_it_cannot_apply_to():
 
 
 # --------------------------------------------------------------------------
-# Cache keys for the two new settings
+# A surface ligand's own probe and padding
 # --------------------------------------------------------------------------
-def test_a_surface_ligand_keeps_the_surface_controls_in_its_key():
-    """``ligand_style`` is not a ``Representation``, so it was not in ``reps``.
+def _synthetic_ligand(n=10, spacing=1.5):
+    """A ``Chain`` of ``n`` carbons in a line, classified as a ligand.
 
-    A cartoon protein with a surface ligand dropped the two controls that were
-    shaping the ligand: two probe radii, one entry, and the second request was
-    served the first one's geometry.
+    Enough to mesh as a surface and nothing more.  Real ligands live in real
+    structures; this exists because none of the bundled fixtures carries one
+    past the six-heavy-atom floor, and what the test below is about is *which
+    two numbers reach the mesher*, not what the molecule is.
     """
+    import biotite.structure as struc
+    import numpy as np
+    from pdb2print.chains import Chain
+    from pdb2print.config import MoleculeType
+
+    atoms = struc.AtomArray(n)
+    atoms.coord = np.array([[i * spacing, 0.0, 0.0] for i in range(n)], float)
+    atoms.chain_id = np.array(["A"] * n)
+    atoms.res_id = np.array([1] * n)
+    atoms.res_name = np.array(["LIG"] * n)
+    atoms.atom_name = np.array([f"C{i}" for i in range(n)])
+    atoms.element = np.array(["C"] * n)
+    atoms.hetero = np.array([True] * n)
+    return Chain(chain_id="A", atoms=atoms, mtype=MoleculeType.LIGAND,
+                 name="Ligand LIG 1", res_name="LIG", res_id=1, index=0)
+
+
+def test_a_surface_ligand_has_its_own_probe_and_padding():
+    """The polymer's pair does not reach the ligand, and the ligand's does.
+
+    The probe is an absolute size in angstrom and a ligand is a hundredth the
+    size of what it is bound to, so one pair of numbers could not describe both.
+    """
+    import dataclasses
+    from pdb2print import geometry, meshops
+    from pdb2print.config import LigandStyle
+
+    # Built here rather than read from a fixture: none of the bundled
+    # structures carries a ligand past the six-heavy-atom floor, and what this
+    # is about is which two numbers reach the mesher, not what the molecule is.
+    lig = _synthetic_ligand()
+
+    base = PrintParams(scale_mm_per_angstrom=1.2, grid_spacing_mm=0.6,
+                       include_ligands=True, ligand_style=LigandStyle.SURFACE)
+
+    def volume(**kw):
+        p = dataclasses.replace(base, **kw)
+        return meshops.repair(geometry.generate_chain_mesh(lig, p)).volume
+
+    plain = volume()
+    # The ligand's own padding grows it; the polymer's does not touch it.
+    assert volume(ligand_surface_atom_padding_ang=0.8) > plain * 1.05
+    assert volume(surface_atom_padding_ang=0.8) == pytest.approx(plain)
+    # Same for the probe: the ligand's changes the mesh, the polymer's does not.
+    assert volume(ligand_probe_radius_ang=2.6) != pytest.approx(plain)
+    assert volume(probe_radius_ang=2.6) == pytest.approx(plain)
+
+
+def test_the_two_surface_pairs_are_keyed_apart():
+    """Each pair is in the key exactly where it is read, and nowhere else."""
     from pdb2print import cache
     from pdb2print.config import LigandStyle, Representation
 
-    def key(probe, **kw):
+    def key(**kw):
         p = PrintParams(protein_representation=Representation.CARTOON,
-                        probe_radius_ang=probe, include_ligands=True,
+                        include_ligands=True,
                         ligand_style=LigandStyle.SURFACE)
         for k, v in kw.items():
             setattr(p, k, v)
         return cache.key_for(BNA, p)
 
-    assert key(1.4) != key(2.0)
-    # Not a surface ligand: nothing reads them, so they still merge.
-    assert (key(1.4, ligand_style=LigandStyle.BALL_STICK)
-            == key(2.0, ligand_style=LigandStyle.BALL_STICK))
-    assert (key(1.4, include_ligands=False)
-            == key(2.0, include_ligands=False))
+    # Read by the ligand, so they split the key.
+    assert key() != key(ligand_probe_radius_ang=2.0)
+    assert key() != key(ligand_surface_atom_padding_ang=0.5)
+    # The polymer is a cartoon and the ligand no longer reads its pair, so it
+    # must not split the key at all.
+    assert key() == key(probe_radius_ang=2.0)
+    assert key() == key(surface_atom_padding_ang=0.5)
+    # And a ligand that is not a surface reads neither pair.
+    beads = dict(ligand_style=LigandStyle.BALL_STICK)
+    assert key(**beads) == key(**beads, ligand_probe_radius_ang=2.0)
+    off = dict(include_ligands=False)
+    assert key(**off) == key(**off, ligand_surface_atom_padding_ang=0.5)
 
 
 def test_ligand_magnets_move_the_key_only_where_they_are_read():
