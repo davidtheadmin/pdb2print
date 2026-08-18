@@ -185,7 +185,6 @@ def build(chain, params: PrintParams):
     from ..chains import heavy_atom_mask
 
     s = float(params.scale_mm_per_angstrom)
-    atom_r, bond_r = _radii(params)
 
     atoms = chain.atoms
     coords = np.asarray(atoms.coord, float)
@@ -195,7 +194,6 @@ def build(chain, params: PrintParams):
     if len(coords) == 0:
         raise ValueError(f"{chain.label()} has no heavy atoms to build.")
 
-    links = _island_links(coords, _BOND_CUTOFF_ANG)
     style = params.ligand_style
 
     if style == LigandStyle.SURFACE:
@@ -203,8 +201,18 @@ def build(chain, params: PrintParams):
         # It asks for nothing but atoms and radii, so this needs no ligand
         # variant at all — and a drug rendered the same way as the pocket it sits
         # in is the whole reason to want the style.
+        #
+        # Above the bead sizes and the island scan deliberately: this path reads
+        # neither, and ``_island_links`` is a double loop over every atom pair.
+        # The heavy-atom filtering above does not reach it either — ``surface``
+        # is handed the chain, not ``coords`` — so a file carrying explicit
+        # hydrogens gets them meshed. Left alone because fixing it changes
+        # geometry and would orphan every cached entry built before it.
         from . import surface
         return surface.build(chain, params)
+
+    atom_r, bond_r = _radii(params)
+    links = _island_links(coords, _BOND_CUTOFF_ANG)
 
     if style == LigandStyle.SPACEFILL:
         solids = _spacefill_solids(coords, s, params, _elements(atoms, keep))

@@ -68,6 +68,11 @@ LATE_SEG_FIELDS = ["cartoon_hbonds"]
 #: as ``use_magnets`` — it is driven, not chosen.
 BOOL_FIELDS = ["include_ligands", "magnets", "socket", "basepair_connect"]
 
+#: Checkboxes added after the table already existed.  Same rule as
+#: ``LATE_SEG_FIELDS``: on the end, never in the list above, because a share
+#: code stores a field's *position* and inserting one moves everything after it.
+LATE_BOOL_FIELDS = ["ligand_magnets"]
+
 
 def _sliders(html: str) -> list:
     out = []
@@ -123,9 +128,9 @@ def _segs(html: str, names=None) -> list:
     return out
 
 
-def _bools(html: str) -> list:
+def _bools(html: str, names=None) -> list:
     out = []
-    for name in BOOL_FIELDS:
+    for name in (BOOL_FIELDS if names is None else names):
         m = re.search(r'<input type="checkbox" id="%s"([^>]*)>' % re.escape(name),
                       html)
         if not m:
@@ -142,7 +147,8 @@ def table(html: str) -> list:
     because every share code ever minted decodes against it.
     """
     return (_segs(html) + _bools(html) + _sliders(html)
-            + _segs(html, LATE_SEG_FIELDS))
+            + _segs(html, LATE_SEG_FIELDS)
+            + _bools(html, LATE_BOOL_FIELDS))
 
 
 def render(fields: list) -> str:

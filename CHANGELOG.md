@@ -6,6 +6,59 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
+## [Unreleased]
+
+Not mesh-affecting, and `CACHE_VERSION` stays at 6: every new setting is dropped
+from the key when it is off, so the entries already in `cache/` — including the
+2.2 GB shipped in the repo — stay reachable.
+
+**Share links minted before this release no longer open.** `SHARE_FORMAT` goes
+1 → 2. A per-joint count needs three bits where there was one, and the magnet
+thickness slider now has twenty steps where it had twelve, so a format-1 code
+reads both against fields that have moved under it. Either would decode to
+something structurally valid and wrong, which is the one failure a share link
+must not have, so an old code is refused with a message instead of read.
+
+### Added
+
+- **Magnets per joint, one joint at a time.** Each row in Chains & joints keeps
+  Default, None and Join, and gains a small arrow that opens a count. Set it and
+  that interface uses that number instead of the one under Magnets. Protein
+  interfaces offer 1–5, DNA 1–2, a ligand one. The arrow shows the number when
+  one is set, so a row still reads without opening it.
+- **A magnet on a ligand.** A switch in the Magnets well, shown when ligands are
+  on and styled as Surface. The pocket cut to fit the ligand is unchanged and is
+  still what holds it; this adds a magnet on top of that where one fits. On a
+  ligand too small to seat one nothing changes, and the row says so.
+- **Magnets up to 10 mm thick**, up from 6. A thick magnet needs a thick model:
+  it wants roughly its own thickness plus the collar in solid plastic behind
+  each face, and past that the seat search runs out of material and reports it.
+- **Probe radius and Surface padding under Ligands** when the ligand is a
+  surface and neither the protein nor the DNA is. They are the two controls that
+  shape a surface ligand, and on a cartoon protein they were nowhere on the page
+  while the tooltip pointed at a card that did not have them.
+
+### Fixed
+
+- **A surface ligand's probe radius reached the cache key.** With neither
+  polymer set to Surface the probe radius and surface padding were dropped from
+  the key — but a surface ligand reads both. Two builds differing only in probe
+  radius shared one entry, and the second was served the first one's geometry.
+- **A chain exclusion or joint override in a share link survives the build.**
+  The panel wipes both lists whenever the structure changes and checks at the
+  top of every build; a page opening a link is the largest change there is, so
+  it cleared the two lists the link had just restored, before anything read
+  them. No shared veto had ever survived a link.
+- Magnet thickness is clamped to the slider's range on the way in. It was the
+  one slider that reached a bare `float()` on a public endpoint.
+- The "the magnet is large for this model" warning no longer measures a ligand.
+  A small ligand is nearly always the narrowest part in a build, so the line
+  named a part that could not be given a magnet under any setting.
+- `ligand_bond` defaulted to 1.2 in `server.py` against 1.4 in the config and
+  the slider. Invisible from the web UI, which always submits a value.
+- The empty Advanced settings drawer under Ligands is hidden rather than left
+  open on nothing.
+
 ## [1.3.0] — 2026-08-05
 
 Not mesh-affecting: with nothing switched off and no override set, a build

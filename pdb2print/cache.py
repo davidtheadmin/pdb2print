@@ -241,8 +241,15 @@ def canonical_params(params: PrintParams) -> dict:
     if data.get("cartoon_hbonds") in (None, HBondMode.NONE.value):
         data.pop("cartoon_hbonds", None)
 
-    # Surface tuning is read only when something is meshed as a surface.
-    if Representation.SURFACE.value not in reps:
+    # Surface tuning is read only when something is meshed as a surface — and a
+    # ligand styled Surface is one of those things.  ``ligand_style`` is not a
+    # ``Representation`` and so was never in ``reps``, which made a cartoon
+    # protein with a surface ligand drop the two controls that were shaping the
+    # ligand: two builds at different probe radii shared one key, and the second
+    # was served the first one's geometry.
+    lig_surface = (bool(data.get("include_ligands"))
+                   and data.get("ligand_style") == LigandStyle.SURFACE.value)
+    if Representation.SURFACE.value not in reps and not lig_surface:
         drop("probe_radius_ang", "surface_atom_padding_ang")
 
     # The protein tube radius belongs to the protein "tubes" style alone.  It is
@@ -299,6 +306,17 @@ def canonical_params(params: PrintParams) -> dict:
         if _overrides:
             reduced["joint_overrides"] = _overrides
         return reduced
+
+    # ``ligand_magnets`` is read by one loop, under four conditions, and it is
+    # kept in the key under exactly those four.  Anywhere else it changes
+    # nothing, so leaving it in would split one build across two entries — and
+    # dropping it while it is off is what keeps every entry already in
+    # ``cache/`` reachable, which is why this feature needs no ``CACHE_VERSION``
+    # bump either.  The two branches below that replace the whole dict are all
+    # ``connect`` off, so they drop it on their own.
+    if not (conn.get("ligand_magnets") and lig_surface
+            and conn.get("connect") and conn.get("use_magnets")):
+        conn.pop("ligand_magnets", None)
 
     if not (conn.get("connect") or conn.get("basepair_connect")):
         data["connections"] = _keep_overrides(

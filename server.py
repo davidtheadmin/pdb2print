@@ -105,6 +105,10 @@ _PARAM_BOUNDS = {
     "min_wall": (0.0, 5.0),
     "probe_radius": (0.6, 5.0),
     "connector_diameter": (1.5, 12.0),
+    # Never clamped at all until now — a bare ``float()``, on a public endpoint,
+    # feeding a pocket depth that is subtracted from both halves of every joint.
+    # The slider reaches 10.0 and nothing above that is a real magnet.
+    "magnet_thickness": (0.5, 10.0),
     "surface_padding": (0.0, 2.0),
 }
 
@@ -713,13 +717,15 @@ def _map_connections(fields: dict) -> ConnectionParams:
         no_magnet_method=NoMagnetMethod(fields.get("no_magnet_method", "inflate")),
         connector_diameter_mm=(_bounded(fields, "connector_diameter")
                                if "connector_diameter" in fields else 4.0),
-        magnet_thickness_mm=float(fields.get("magnet_thickness", 2.0)),
+        magnet_thickness_mm=(_bounded(fields, "magnet_thickness")
+                             if "magnet_thickness" in fields else 2.0),
         magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
         # Floored at zero rather than at one: zero now means "no joint on these
         # interfaces" and has to survive, but a negative count is nonsense that
         # would read as a veto by accident.
         magnet_count=max(0, int(float(fields.get("magnet_count", 1)))),
         dna_magnet_count=max(0, int(float(fields.get("dna_magnet_count", 1)))),
+        ligand_magnets=_bool(fields.get("ligand_magnets", False)),
         # Capped like every other free-text field that reaches the builder: one
         # line per joint, and a structure has a handful, so 2000 characters is
         # far more than any real model needs and still bounds the field.
@@ -768,7 +774,9 @@ def _map_params(fields: dict) -> PrintParams:
         exclude_chains=str(fields.get("exclude_chains", "") or "")[:2000],
         ligand_style=LigandStyle(fields.get("ligand_style", "ball_stick")),
         ligand_atom_mm=float(fields.get("ligand_atom", 2.2)),
-        ligand_bond_mm=float(fields.get("ligand_bond", 1.2)),
+        # 1.4, not 1.2: the config default and the slider both say 1.4, and this
+        # branch is only reached by a caller that omits the field entirely.
+        ligand_bond_mm=float(fields.get("ligand_bond", 1.4)),
         ligand_vdw_scale=float(fields.get("ligand_vdw_scale", 1.0)),
         connections=_map_connections(fields),
     )
@@ -1262,7 +1270,7 @@ async def generate(
     exclude_chains: str = Form(""),
     ligand_style: str = Form("ball_stick"),
     ligand_atom: float = Form(2.2),
-    ligand_bond: float = Form(1.2),
+    ligand_bond: float = Form(1.4),
     ligand_vdw_scale: float = Form(1.0),
     # --- connector / joinery system ---
     connect: str = Form("false"),
@@ -1273,6 +1281,7 @@ async def generate(
     magnet_shape: str = Form("round"),
     magnet_count: int = Form(1),
     dna_magnet_count: int = Form(1),
+    ligand_magnets: str = Form("false"),
     socket: str = Form("true"),
     socket_wall: float = Form(1.5),
     magnet_fit_clearance: float = Form(0.2),
@@ -1363,6 +1372,7 @@ async def generate(
             "connector_diameter": connector_diameter,
             "magnet_thickness": magnet_thickness, "magnet_shape": magnet_shape,
             "magnet_count": magnet_count, "dna_magnet_count": dna_magnet_count,
+            "ligand_magnets": ligand_magnets,
             "socket": socket, "socket_wall": socket_wall,
             "magnet_fit_clearance": magnet_fit_clearance,
             "joint_overrides": joint_overrides,

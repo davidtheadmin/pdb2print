@@ -338,16 +338,26 @@ class ConnectionParams:
     #: usually smaller than protein↔protein ones, so this is exposed separately
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
+    #: Whether a ligand may be given a magnet as well as the pocket it already
+    #: sits in.  Off by default, and read only when the ligand is styled as a
+    #: surface: on a ball-and-stick or sticks ligand there is no face to seat
+    #: anything against.  There is no count to go with it — a ligand interface
+    #: takes one magnet or none, and which of those it is falls out of the seat
+    #: search rather than a setting.  When no seat passes, the friction fit that
+    #: has always held a ligand is left exactly as it was.
+    ligand_magnets: bool = False
 
-    #: Per-pair vetoes supplied by the user, as ``i<TAB>j<TAB>mode`` lines with
-    #: ``i < j`` (built indices, not chain ids) and mode ``none`` or ``join``.
-    #: A pair with no line follows whatever the global setting says, so this
-    #: never contradicts the control above it — it only removes joints the build
-    #: would otherwise have made.
+    #: Per-pair overrides supplied by the user, as ``i<TAB>j<TAB>mode`` lines
+    #: with ``i < j`` (``Chain.index`` values, not built positions) and mode
+    #: ``none``, ``join``, or a decimal count.  A pair with no line follows
+    #: whatever the global setting says.
     #:
     #: ``none`` leaves the pair carved apart with nothing joining it. ``join``
     #: leaves the pair's overlap uncarved, so the two parts stay welded; it adds
-    #: no geometry and is not the inflate path.
+    #: no geometry and is not the inflate path.  A count replaces the global
+    #: "magnets per interface" on that one interface, and is clamped to what the
+    #: kind of interface will take — five on protein↔protein, two on anything
+    #: with DNA in it, one on a ligand.
     #:
     #: Kept as the raw string rather than a mapping so it canonicalises into the
     #: cache key by itself, the way ``plaque_legend_labels`` does.

@@ -1869,3 +1869,232 @@ def test_a_bad_id_says_what_a_good_one_looks_like():
         io.resolve_source("not-an-id")
     text = str(err.value)
     assert "1UBQ" in text and "pdb_00001ubq" in text
+
+
+# --------------------------------------------------------------------------
+# Per-pair magnet counts
+# --------------------------------------------------------------------------
+def test_joint_override_parser_accepts_a_count():
+    """A mode may be a number, and only a plain in-range number."""
+    from pdb2print.connections import joint_overrides
+    got = joint_overrides(
+        "0\t1\t3\n"
+        "2\t3\t01\n"          # canonicalised, so it hashes as one thing
+        "4\t5\t0\n"           # zero is a real answer: no joint on this pair
+        "6\t7\t9\n"           # past what any interface will take
+        "8\t9\t-1\n"          # a sign is a malformed line, not a number
+        "10\t11\t2.0\n"       # so is a decimal point
+        "12\t13\tnone\n"      # the two words still work
+        "14\t15\tjoin\n"
+    )
+    assert got == {(0, 1): "3", (2, 3): "1", (4, 5): "0",
+                   (12, 13): "none", (14, 15): "join"}
+
+
+def test_a_per_pair_count_replaces_the_global():
+    """Two magnets everywhere, one on the pair that asked for one.
+
+    The count used to be read nine lines before the override was consulted, so
+    a number set on a row could not reach the seat search at all.
+    """
+    settings = dict(connect=True, use_magnets=True, contact_threshold_mm=3.5,
+                    connector_diameter_mm=2.5, magnet_thickness_mm=1.5,
+                    magnet_count=2, dna_magnet_count=2)
+    base = build_all(OVERLAP, _params(**settings))
+    two = [c for c in base.connections
+           if c["method"] == "magnet" and c["applied"] and c["count"] == 2]
+    assert two, "no interface took two magnets in the baseline build"
+    i, j = two[0]["ai"], two[0]["bi"]
+
+    cut = build_all(OVERLAP, _params(
+        **settings, joint_overrides=f"{i}\t{j}\t1"))
+    row = [c for c in cut.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1
+    assert row[0]["count"] == 1, "the per-pair count did not reach the search"
+    # ``asked`` is what the user said, not what seated: a row that compared the
+    # two would read as unbuilt whenever an interface took fewer than it offered.
+    assert row[0]["asked"] == 1 and row[0]["by_hand"] is True
+    # Every other pair still follows the global.
+    for c in cut.connections:
+        if (c["ai"], c["bi"]) != (i, j):
+            assert c["asked"] == 0
+    assert _all_watertight_single(cut)
+
+
+def test_a_per_pair_count_is_clamped_to_what_the_kind_takes():
+    """The parser lets the widest range through; the clamp is per interface.
+
+    It cannot be anywhere else — the parser has two indices and no idea what
+    sort of pair they name.  Five on a DNA interface is two, the same way five
+    on a ligand is one.
+    """
+    from pdb2print.connections import MAX_JOINT_COUNT
+    assert MAX_JOINT_COUNT["ligand"] == 1
+
+    base = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=2.5, magnet_thickness_mm=1.5))
+    rows = [c for c in base.connections if c["kind"] == "dna-protein"]
+    if not rows:
+        pytest.skip("no DNA-protein interface in the baseline build")
+    i, j = rows[0]["ai"], rows[0]["bi"]
+
+    asked5 = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=2.5, magnet_thickness_mm=1.5,
+        joint_overrides=f"{i}\t{j}\t5"))
+    row = [c for c in asked5.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert row and row[0]["asked"] == MAX_JOINT_COUNT["dna-protein"] == 2
+
+
+def test_a_count_of_zero_by_hand_is_the_same_as_none():
+    """Written two ways, reported one way, or the panel lies about the build."""
+    report = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    magnets = [c for c in report.connections if c["method"] == "magnet"
+               and c["applied"]]
+    assert magnets, "nothing to veto in the baseline build"
+    i, j = magnets[0]["ai"], magnets[0]["bi"]
+
+    zero = build_all(OVERLAP, _params(
+        connect=True, use_magnets=True, joint_overrides=f"{i}\t{j}\t0"))
+    row = [c for c in zero.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1
+    assert row[0]["method"] == "none" and row[0]["count"] == 0
+    assert row[0]["by_hand"] is True, "zero by hand is still a hand veto"
+    assert "set by hand" in row[0]["note"]
+
+
+# --------------------------------------------------------------------------
+# Magnets on ligands
+# --------------------------------------------------------------------------
+def _fake_chain(mtype):
+    from pdb2print.chains import Chain
+    from pdb2print.config import MoleculeType
+    return Chain(chain_id="X", atoms=None, mtype=getattr(MoleculeType, mtype))
+
+
+def test_a_ligand_is_offered_a_joint_only_when_asked():
+    """One gate, four call sites, and the flag reaches exactly one of them."""
+    from pdb2print.connections import _joinable
+    lig, prot, dna = (_fake_chain("LIGAND"), _fake_chain("PROTEIN"),
+                      _fake_chain("NUCLEIC"))
+
+    assert _joinable(prot, dna) is True
+    assert _joinable(lig, prot) is False
+    assert _joinable(prot, lig) is False
+    assert _joinable(lig, prot, True) is True
+    assert _joinable(prot, lig, True) is True
+    # Neither one is a host, so there is no carved pocket to add a magnet to.
+    assert _joinable(lig, lig, True) is False
+
+
+def test_ligand_magnets_need_a_surface_ligand_and_magnets_on():
+    """The switch alone is not enough, and the joint loop is what reads it."""
+    from pdb2print.config import LigandStyle, NoMagnetMethod
+
+    def offered(**kw):
+        p = _params(connect=True, use_magnets=True, ligand_magnets=True)
+        p.include_ligands = True
+        p.ligand_style = LigandStyle.SURFACE
+        for k, v in kw.items():
+            if hasattr(p.connections, k):
+                setattr(p.connections, k, v)
+            else:
+                setattr(p, k, v)
+        cp = p.connections
+        return bool(cp.ligand_magnets and cp.use_magnets and p.include_ligands
+                    and p.ligand_style == LigandStyle.SURFACE)
+
+    assert offered() is True
+    assert offered(ligand_magnets=False) is False
+    assert offered(include_ligands=False) is False
+    assert offered(ligand_style=LigandStyle.BALL_STICK) is False
+    assert offered(use_magnets=False,
+                   no_magnet_method=NoMagnetMethod.BRIDGE) is False
+
+
+def test_the_narrowest_part_warning_skips_a_ligand_it_cannot_apply_to():
+    """A small ligand is nearly always the narrowest part in the build.
+
+    With them counted, the "the magnet is large for this model" line named a
+    part that could not be given a magnet under any setting.
+    """
+    import trimesh
+    from pdb2print.connections import _socket_scale_note
+    from pdb2print.config import ConnectionParams
+
+    big = trimesh.creation.box(extents=(40.0, 40.0, 40.0))
+    small = trimesh.creation.box(extents=(3.0, 8.0, 8.0))
+    built = [(_fake_chain("PROTEIN"), big), (_fake_chain("LIGAND"), small)]
+    cp = ConnectionParams(connect=True, use_magnets=True,
+                          connector_diameter_mm=4.0)
+
+    assert _socket_scale_note(built, cp) == ""
+    assert "large" in _socket_scale_note(built, cp, True)
+
+
+# --------------------------------------------------------------------------
+# Cache keys for the two new settings
+# --------------------------------------------------------------------------
+def test_a_surface_ligand_keeps_the_surface_controls_in_its_key():
+    """``ligand_style`` is not a ``Representation``, so it was not in ``reps``.
+
+    A cartoon protein with a surface ligand dropped the two controls that were
+    shaping the ligand: two probe radii, one entry, and the second request was
+    served the first one's geometry.
+    """
+    from pdb2print import cache
+    from pdb2print.config import LigandStyle, Representation
+
+    def key(probe, **kw):
+        p = PrintParams(protein_representation=Representation.CARTOON,
+                        probe_radius_ang=probe, include_ligands=True,
+                        ligand_style=LigandStyle.SURFACE)
+        for k, v in kw.items():
+            setattr(p, k, v)
+        return cache.key_for(BNA, p)
+
+    assert key(1.4) != key(2.0)
+    # Not a surface ligand: nothing reads them, so they still merge.
+    assert (key(1.4, ligand_style=LigandStyle.BALL_STICK)
+            == key(2.0, ligand_style=LigandStyle.BALL_STICK))
+    assert (key(1.4, include_ligands=False)
+            == key(2.0, include_ligands=False))
+
+
+def test_ligand_magnets_move_the_key_only_where_they_are_read():
+    """Off must hash as it always did, or every shipped cache entry is orphaned."""
+    from pdb2print import cache
+    from pdb2print.config import LigandStyle
+
+    def key(**conn):
+        p = _params(**conn)
+        p.include_ligands = True
+        p.ligand_style = LigandStyle.SURFACE
+        return cache.key_for(BNA, p)
+
+    on = dict(connect=True, use_magnets=True)
+    assert key(**on) != key(**on, ligand_magnets=True)
+    # Off is today's key, whatever else is set.
+    assert key(**on) == key(**on, ligand_magnets=False)
+    # Unread everywhere else, so it must not split those keys either.
+    for branch in (dict(connect=False), dict(connect=True, use_magnets=False)):
+        assert key(**branch) == key(**branch, ligand_magnets=True), branch
+
+
+# --------------------------------------------------------------------------
+# Magnet thickness
+# --------------------------------------------------------------------------
+def test_magnet_thickness_is_clamped_like_every_other_slider():
+    """It reached a bare ``float()`` on a public endpoint until now."""
+    import server
+
+    def thickness(v):
+        return server._map_connections({"magnet_thickness": v}).magnet_thickness_mm
+
+    assert thickness("10.0") == 10.0
+    assert thickness("2.0") == 2.0
+    assert thickness("500") == 10.0
+    assert thickness("-4") == 0.5
+    # An omitted field still gets the form's own default rather than a clamp.
+    assert server._map_connections({}).magnet_thickness_mm == 2.0
