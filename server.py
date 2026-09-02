@@ -54,7 +54,17 @@ mimetypes.add_type("model/gltf-binary", ".glb")
 
 # Every generation writes its outputs into a fresh sub-directory here, which is
 # served read-only at /files/<token>/... for both <model-viewer> and downloads.
-OUTPUT_ROOT = tempfile.mkdtemp(prefix="pdb2print_out_")
+#
+# The root has a **fixed name**, deliberately. It used to be a fresh
+# ``mkdtemp`` per process, and ``_sweep_output_root`` only ever looks inside the
+# root the current process made -- so every restart orphaned the entire previous
+# tree, and no code anywhere could reclaim it. In the container the system temp
+# directory is part of the writable layer, i.e. the host disk: 45.6 GB of
+# orphans had collected there by 2026-09-02, which filled the disk and took the
+# site down. One stable root means the TTL sweep below also collects whatever a
+# previous process left behind.
+OUTPUT_ROOT = os.path.join(tempfile.gettempdir(), "pdb2print_out")
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # The build cache. Shipped entries live in the repo and survive a restart, which
 # the temp directory above deliberately does not.
@@ -831,6 +841,50 @@ def _sweep_output_root(now: Optional[float] = None) -> int:
         shutil.rmtree(path, ignore_errors=True)
         removed += 1
     return removed
+
+
+def _sweep_stale_temp_dirs(now: Optional[float] = None) -> int:
+    """Remove ``pdb2print_*`` temp directories left by an earlier process.
+
+    Three things put them there. Until 2026-09-02 ``OUTPUT_ROOT`` was a fresh
+    ``mkdtemp`` per process, so every restart orphaned a whole tree of build
+    outputs; ``export.write_stl_zip`` never removed its scratch directory; and
+    ``io.fetch_pdb_id`` leaves one small directory per structure it downloads,
+    held for the life of the process by the ``_FETCHED`` memo. The first two are
+    fixed now, but a deployment that has been running the old code has a
+    backlog -- and once the temp directory is a host mount, that backlog
+    outlives a container rebuild.
+
+    **Call this at startup only.** It is guarded by the same TTL as the
+    per-build sweep, which makes it safe against a second process, but not
+    against this one: ``_FETCHED`` holds paths under here for as long as the
+    process lives, and at import time that memo is still empty.
+    """
+    now = time.time() if now is None else now
+    root = tempfile.gettempdir()
+    keep = os.path.abspath(OUTPUT_ROOT)
+    removed = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.startswith("pdb2print_"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            if os.path.abspath(path) == keep or not os.path.isdir(path):
+                continue
+            if now - os.path.getmtime(path) < OUTPUT_TTL_SECONDS:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+_sweep_stale_temp_dirs()
 
 
 # --------------------------------------------------------------------------

@@ -165,13 +165,17 @@ class LigandStyle(str, Enum):
 #: The ligand styles solid enough to have a magnet cut into them.
 #:
 #: Both are one closed lump with a face to seat against.  The other two are not:
-#: a ball-and-stick ligand is beads on rods a millimetre or two thick and a
-#: sticks ligand is only the rods, so a pocket wider than the part it is cut into
-#: would take the molecule apart rather than join it to anything.  Whether a
-#: *particular* surface or spacefill ligand is big enough is a different question
-#: and the seat search already answers it; this only says which two are worth
-#: asking about.
-MAGNETABLE_LIGAND_STYLES = frozenset({LigandStyle.SURFACE, LigandStyle.SPACEFILL})
+#: **Every style is offered.**  It used to be surface and spacefill only, on the
+#: reasoning that a ball-and-stick or sticks ligand is beads on rods a millimetre
+#: or two across, so a pocket would take the molecule apart rather than join it
+#: to anything.  That is true of a small one at a small scale — and it is a
+#: question about a *particular* ligand at a *particular* scale, which the seat
+#: search already answers, from the real geometry, per interface.  Refusing it
+#: here refused the thick ones too, at any scale, with no way to ask.  So the
+#: gate is gone and the footprint, fill and depth tests decide: where there is
+#: not enough material no seat passes, the row says so in Chains & joints, and
+#: the friction fit that has always held a ligand is left exactly as it was.
+MAGNETABLE_LIGAND_STYLES = frozenset(LigandStyle)
 
 
 class ColumnShape(str, Enum):
@@ -351,10 +355,11 @@ class ConnectionParams:
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
     #: Whether a ligand may be given a magnet as well as the pocket it already
-    #: sits in.  Off by default, and read only for the styles in
-    #: :data:`MAGNETABLE_LIGAND_STYLES` — surface and spacefill, the two that
-    #: come out as one closed lump.  On a ball-and-stick or sticks ligand there
-    #: is nothing but beads and rods to seat against.  There is no count to go
+    #: sits in.  Off by default, and offered for every style in
+    #: :data:`MAGNETABLE_LIGAND_STYLES`, which is now all four: whether one
+    #: particular ligand has the material for a seat is a question about its
+    #: geometry at the chosen scale, and the seat search answers it far better
+    #: than a list of styles can.  There is no count to go
     #: with it — a ligand interface takes one magnet or none, and which of those
     #: it is falls out of the seat search rather than a setting.  When no seat
     #: passes, the friction fit that has always held a ligand is left exactly as

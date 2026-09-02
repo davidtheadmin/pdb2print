@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -1988,14 +1989,19 @@ def test_a_ligand_is_offered_a_joint_only_when_asked():
     assert _joinable(lig, lig, True) is False
 
 
-def test_only_the_two_solid_ligand_styles_can_take_a_magnet():
-    """Surface and spacefill come out as one lump. The other two are rods."""
+def test_every_ligand_style_may_be_offered_a_magnet():
+    """The style gate is gone; the seat search decides per interface.
+
+    It was surface and spacefill only, which refused a thick ball-and-stick
+    ligand at any scale with no way to ask. Whether *this* ligand has the
+    material for a seat is a geometry question, and the footprint, fill and
+    depth tests already answer it.
+    """
     from pdb2print.config import LigandStyle, MAGNETABLE_LIGAND_STYLES
 
-    assert MAGNETABLE_LIGAND_STYLES == frozenset(
-        {LigandStyle.SURFACE, LigandStyle.SPACEFILL})
-    assert LigandStyle.BALL_STICK not in MAGNETABLE_LIGAND_STYLES
-    assert LigandStyle.STICKS not in MAGNETABLE_LIGAND_STYLES
+    assert MAGNETABLE_LIGAND_STYLES == frozenset(LigandStyle)
+    for style in LigandStyle:
+        assert style in MAGNETABLE_LIGAND_STYLES
 
 
 def test_ligand_magnets_need_every_one_of_their_four_conditions():
@@ -2018,10 +2024,12 @@ def test_ligand_magnets_need_every_one_of_their_four_conditions():
 
     assert offered() is True
     assert offered(ligand_style=LigandStyle.SPACEFILL) is True
+    # Every style is offered now. A thin one simply loses at the seat search,
+    # which is a per-interface answer rather than a blanket refusal.
+    assert offered(ligand_style=LigandStyle.BALL_STICK) is True
+    assert offered(ligand_style=LigandStyle.STICKS) is True
     assert offered(ligand_magnets=False) is False
     assert offered(include_ligands=False) is False
-    assert offered(ligand_style=LigandStyle.BALL_STICK) is False
-    assert offered(ligand_style=LigandStyle.STICKS) is False
     # Bridge and inflate weld, and a welded ligand is not a ligand.
     assert offered(use_magnets=False,
                    no_magnet_method=NoMagnetMethod.BRIDGE) is False
@@ -2145,13 +2153,13 @@ def test_ligand_magnets_move_the_key_only_where_they_are_read():
         return cache.key_for(BNA, p)
 
     on = dict(connect=True, use_magnets=True)
-    for style in (LigandStyle.SURFACE, LigandStyle.SPACEFILL):
+    # Every style may be offered a magnet now, so every style splits the key
+    # when the switch is on -- and none of them when it is off, which is what
+    # keeps the shipped entries reachable.
+    for style in LigandStyle:
         assert key(style, **on) != key(style, **on, ligand_magnets=True), style
         # Off is today's key, whatever else is set.
         assert key(style, **on) == key(style, **on, ligand_magnets=False), style
-    # A style that can never take one does not split the key either.
-    beads = LigandStyle.BALL_STICK
-    assert key(beads, **on) == key(beads, **on, ligand_magnets=True)
     # Nor does anything outside the loop that reads it.
     for branch in (dict(connect=False), dict(connect=True, use_magnets=False)):
         assert key(**branch) == key(**branch, ligand_magnets=True), branch
@@ -2173,3 +2181,172 @@ def test_magnet_thickness_is_clamped_like_every_other_slider():
     assert thickness("-4") == 0.5
     # An omitted field still gets the form's own default rather than a clamp.
     assert server._map_connections({}).magnet_thickness_mm == 2.0
+
+
+# --------------------------------------------------------------------------
+# Disk hygiene (the 2026-09-02 outage)
+# --------------------------------------------------------------------------
+def test_write_stl_zip_removes_its_scratch_directory(tmp_path):
+    """It used to leak one directory of full-resolution STLs per download.
+
+    Nothing swept them: ``_sweep_output_root`` only looks inside ``OUTPUT_ROOT``,
+    and these were siblings of it. In the container that is the writable layer,
+    so they accumulated on the host disk until it was full.
+    """
+    import glob
+    import tempfile as _tempfile
+    import trimesh
+    from pdb2print import export
+
+    class _Chain:
+        def label(self):
+            return "chain_A_protein"
+
+    built = [(_Chain(), trimesh.creation.box(extents=(1.0, 1.0, 1.0)))]
+    before = set(glob.glob(os.path.join(_tempfile.gettempdir(), "pdb2print_stl_*")))
+    out = export.write_stl_zip(built, str(tmp_path / "chains.zip"))
+    after = set(glob.glob(os.path.join(_tempfile.gettempdir(), "pdb2print_stl_*")))
+
+    assert os.path.isfile(out)
+    assert after == before, f"leaked {after - before}"
+
+
+def test_output_root_has_a_stable_name():
+    """A fresh ``mkdtemp`` per process orphaned the whole tree on every restart.
+
+    The TTL sweep only ever looks inside the root the current process made, so
+    with a random name nothing could reclaim what the previous one left. A fixed
+    name is what lets the sweep collect it.
+    """
+    import server
+    assert os.path.basename(server.OUTPUT_ROOT) == "pdb2print_out"
+    assert os.path.isdir(server.OUTPUT_ROOT)
+
+
+def test_sweep_stale_temp_dirs_takes_old_siblings_and_spares_the_rest(monkeypatch,
+                                                                     tmp_path):
+    """Old ``pdb2print_*`` siblings go; the live root and anything recent stay."""
+    import tempfile as _tempfile
+    import server
+
+    fake_tmp = tmp_path / "tmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(fake_tmp))
+
+    old_out = fake_tmp / "pdb2print_out_abcd1234"     # a previous process's root
+    old_stl = fake_tmp / "pdb2print_stl_deadbeef"     # a leaked STL scratch dir
+    old_fetch = fake_tmp / "pdb2print_xyz"            # a leaked RCSB download
+    fresh = fake_tmp / "pdb2print_stl_fresh"          # someone is using this now
+    other = fake_tmp / "not_ours"                     # nothing to do with us
+    for d in (old_out, old_stl, old_fetch, fresh, other):
+        d.mkdir()
+        (d / "f.bin").write_bytes(b"x")
+
+    stale = time.time() - server.OUTPUT_TTL_SECONDS - 60
+    for d in (old_out, old_stl, old_fetch, other):
+        os.utime(d, (stale, stale))
+
+    # The live root is old too, and must still survive on identity alone.
+    live = fake_tmp / "pdb2print_out"
+    live.mkdir()
+    os.utime(live, (stale, stale))
+    monkeypatch.setattr(server, "OUTPUT_ROOT", str(live))
+
+    removed = server._sweep_stale_temp_dirs()
+
+    assert removed == 3
+    assert not old_out.exists() and not old_stl.exists() and not old_fetch.exists()
+    assert fresh.exists(), "a directory inside the TTL is in use"
+    assert live.exists(), "the live output root must never be swept"
+    assert other.exists(), "only pdb2print_* is ours to delete"
+
+
+def test_cache_says_so_when_it_stops_storing_on_a_full_disk(tmp_path, caplog):
+    """The floor was silent, which is why the disk filling up went unnoticed.
+
+    Every build became a cold build and the only symptom was that the site felt
+    slow. The transition is logged in both directions now.
+    """
+    import logging
+    from pdb2print import cache as cache_mod
+
+    c = cache_mod.Cache(root=str(tmp_path))
+    monkey = {"free": cache_mod.MIN_FREE_BYTES // 2}
+    c.free_bytes = lambda: monkey["free"]
+
+    with caplog.at_level(logging.WARNING, logger="pdb2print.cache"):
+        assert c.has_headroom() is False
+        assert c.has_headroom() is False          # logged once, not per build
+        assert sum("not storing new builds" in r.message for r in caplog.records) == 1
+
+        caplog.clear()
+        monkey["free"] = cache_mod.MIN_FREE_BYTES * 4
+        assert c.has_headroom() is True
+        assert any("storing again" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------
+# A hand-set joint keeps its row
+# --------------------------------------------------------------------------
+def test_a_joined_pair_keeps_its_row_when_the_fit_pass_is_off():
+    """A row is how a setting is changed back, so it has to survive the build.
+
+    With ``resolve_interference`` off there is no carve to skip, so the join
+    pass never ran and the joint loop skipped the pair on the assumption that
+    it had. The row vanished, the panel dropped the override with it, and the
+    next Generate silently put the magnet back.
+    """
+    from pdb2print.config import InterferenceRule
+
+    p = _params(connect=True, use_magnets=True, joint_overrides="2\t3\tjoin")
+    p.resolve_interference = InterferenceRule.NONE
+    report = build_all(OVERLAP, p)
+
+    rows = [c for c in report.connections if (c["ai"], c["bi"]) == (2, 3)]
+    assert len(rows) == 1, "a hand-set joint must keep exactly one row"
+    assert rows[0]["method"] == "join"
+    assert rows[0]["by_hand"] is True
+    assert rows[0]["applied"] is False, "nothing was fused, and it should say so"
+
+
+def test_a_hand_set_joint_survives_every_assembly_mode():
+    """The backstop is per build, not per mode, so a new mode cannot lose one."""
+    from pdb2print.config import InterferenceRule, NoMagnetMethod
+
+    def row(**kw):
+        mutate = kw.pop("mutate", None)
+        p = _params(connect=True, joint_overrides="2\t3\tjoin", **kw)
+        if mutate:
+            mutate(p)
+        got = [c for c in build_all(OVERLAP, p).connections
+               if (c["ai"], c["bi"]) == (2, 3)]
+        assert len(got) == 1, f"lost the row for {kw}"
+        return got[0]
+
+    assert row(use_magnets=True)["method"] == "join"
+    assert row(use_magnets=False,
+               no_magnet_method=NoMagnetMethod.BRIDGE)["method"] == "join"
+    # These two weld the whole build; the pair is reported by the pass that
+    # handles them rather than by the join pass, which is fine — it is listed.
+    assert row(use_magnets=False, no_magnet_method=NoMagnetMethod.INFLATE)
+    assert row(use_magnets=False, no_magnet_method=NoMagnetMethod.OVERLAP)
+    assert row(use_magnets=True,
+               mutate=lambda p: setattr(p, "resolve_interference",
+                                        InterferenceRule.NONE))
+
+
+def test_leaving_a_chain_out_is_the_one_case_that_drops_a_row():
+    """Forgetting is right exactly once: when the chain is not in the build.
+
+    An excluded chain has no built position, so its pairs are never reconciled
+    and the panel is free to drop the override — which is what stops a veto
+    travelling to a pair it was never about.
+    """
+    p = _params(connect=True, use_magnets=True, joint_overrides="2\t3\tjoin")
+    p.exclude_chains = "3"
+    report = build_all(OVERLAP, p)
+
+    assert not [c for c in report.connections if 3 in (c["ai"], c["bi"])]
+    assert not [c for c in report.connections if (c["ai"], c["bi"]) == (2, 3)]
+    # The chains that are still in the build keep theirs.
+    assert [c for c in report.connections if (c["ai"], c["bi"]) == (0, 2)]

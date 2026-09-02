@@ -248,3 +248,7 @@ __marimo__/
 # Staging area for files removed from the repo but not yet deleted from disk
 # (the Cowork device bridge cannot unlink, so removals land here first).
 /_to_delete/
+
+# Scratch for the container, bind-mounted so it is visible from the host.
+/deploy/tmp/*
+!/deploy/tmp/.gitkeep

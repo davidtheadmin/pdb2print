@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 from dataclasses import asdict, dataclass, is_dataclass
@@ -42,6 +43,8 @@ from .config import (
 )
 
 from .io import looks_like_pdb_id, canonical_pdb_id
+
+logger = logging.getLogger(__name__)
 
 #: ``_plain`` has already turned every enum into its value by the time the
 #: pruning runs, so this comparison is against strings.
@@ -570,6 +573,9 @@ class Cache:
         self.root = os.path.abspath(root)
         self.read_only = read_only
         self.max_bytes = DEFAULT_MAX_BYTES if max_bytes is None else max_bytes
+        #: Whether the last headroom check found the disk too full to store.
+        #: Only used to log the transition once rather than on every build.
+        self._out_of_headroom = False
 
     # -- paths ----------------------------------------------------------
     def entry_dir(self, key: str) -> str:
@@ -635,9 +641,26 @@ class Cache:
             return None
 
     def has_headroom(self) -> bool:
-        """True if there is enough free disk to be worth writing another entry."""
+        """True if there is enough free disk to be worth writing another entry.
+
+        Logs the transition in each direction. Without that the floor is a
+        silent failure: the cache simply stops storing, every build becomes a
+        cold build, and the only symptom is that the site feels slow. That is
+        what hid the disk filling up before the 2026-09-02 outage.
+        """
         free = self.free_bytes()
-        return free is None or free > MIN_FREE_BYTES
+        ok = free is None or free > MIN_FREE_BYTES
+        if not ok and not self._out_of_headroom:
+            logger.warning(
+                "cache: only %.1f GB free on %s (floor is %.1f GB) -- not "
+                "storing new builds until there is more room; every build is "
+                "now a cold build",
+                (free or 0) / 1024 ** 3, self.root, MIN_FREE_BYTES / 1024 ** 3)
+        elif ok and self._out_of_headroom:
+            logger.warning("cache: %.1f GB free on %s -- storing again",
+                           (free or 0) / 1024 ** 3, self.root)
+        self._out_of_headroom = not ok
+        return ok
 
     def last_used(self, key: str) -> float:
         """When this entry was last served, as a POSIX timestamp.

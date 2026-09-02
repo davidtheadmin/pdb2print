@@ -8,6 +8,8 @@ chain for the Core One's multi-material setup.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 import zipfile
 from typing import List, Tuple
 
@@ -149,13 +151,24 @@ def write_stls(built: List[BuiltChain], out_dir: str) -> List[str]:
 
 
 def write_stl_zip(built: List[BuiltChain], path: str) -> str:
-    """Bundle per-chain STLs into a single zip for easy download."""
-    import tempfile
+    """Bundle per-chain STLs into a single zip for easy download.
+
+    The scratch directory holding the loose STLs is removed once they are in
+    the zip.  It used to be left behind: every STL export leaked one
+    ``pdb2print_stl_*`` directory of full-resolution meshes into the system
+    temp directory, where nothing swept it -- ``_sweep_output_root`` only ever
+    looks inside ``OUTPUT_ROOT``.  In the container that directory is part of
+    the writable layer, i.e. the host disk, and it was half of what filled it
+    on 2026-09-02.
+    """
     tmp = tempfile.mkdtemp(prefix="pdb2print_stl_")
-    paths = write_stls(built, tmp)
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in paths:
-            zf.write(p, arcname=os.path.basename(p))
+    try:
+        paths = write_stls(built, tmp)
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                zf.write(p, arcname=os.path.basename(p))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return path
 
 

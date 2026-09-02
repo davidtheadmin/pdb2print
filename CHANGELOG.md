@@ -27,12 +27,14 @@ must not have, so an old code is refused with a message instead of read.
   interfaces offer 1–5, DNA 1–2, a ligand one. The arrow shows the number when
   one is set, so a row still reads without opening it.
 - **A magnet on a ligand.** A switch in the Magnets well, shown when ligands are
-  on and styled as Spacefill or Surface — the two that come out as one closed
-  lump. The pocket cut to fit the ligand is unchanged and is still what holds
-  it; this adds a magnet on top of that where one fits. On a ligand too small to
-  seat one nothing changes, and the row says so. Ball & stick and Sticks are
-  beads on rods a millimetre or two across, so a pocket would take the molecule
-  apart rather than join it to anything; they are not offered.
+  on, **whichever style they are drawn in**. The pocket cut to fit the ligand is
+  unchanged and is still what holds it; this adds a magnet on top of that where
+  one fits. Whether one fits is a question about this ligand at this scale, and
+  the seat search answers it from the real geometry, per interface: where there
+  is not enough material no seat passes, the row says so in Chains & joints, and
+  the friction fit is left exactly as it was. Ball & stick and Sticks are
+  usually too thin — but only usually, and the earlier style gate refused the
+  thick ones too, at any scale, with no way to ask.
 - **Magnets up to 10 mm thick**, up from 6. A thick magnet needs a thick model:
   it wants roughly its own thickness plus the collar in solid plastic behind
   each face, and past that the seat search runs out of material and reports it.
@@ -49,6 +51,32 @@ must not have, so an old code is refused with a message instead of read.
 
 ### Fixed
 
+- **A joint set by hand keeps its row in Chains & joints.** Setting a pair to
+  Join and regenerating made the row disappear, and the panel drops overrides
+  for pairs the build did not list — so the setting went with it and the next
+  Generate quietly put the magnet back. Each pass reported the pairs *it*
+  handled, and a joined pair reached none of them when the fit pass was off
+  (interference set to None, or an overlap-only assembly) or when it was a
+  ligand, which Join refuses by design. Reconciled once at the end of the pass
+  instead of at each site, so a new mode cannot lose one. Leaving a chain out of
+  the build still drops its rows, which is the one case where forgetting is
+  right.
+- **Two temp-directory leaks that filled the server's disk and took the site
+  down on 2026-09-02.** `OUTPUT_ROOT` was a fresh `mkdtemp` per process, and the
+  TTL sweep only ever looks inside the root the *current* process made — so
+  every restart orphaned a whole tree of build outputs that nothing could
+  reclaim. Separately, `export.write_stl_zip` never removed the scratch
+  directory holding the loose STLs, leaking one per export. In the container
+  the system temp directory is part of the writable layer, i.e. the host disk,
+  where 45.6 GB of orphans had collected: `docker system df` was the only place
+  it was visible. `OUTPUT_ROOT` now has a fixed name, so the sweep also collects
+  what a previous process left; `write_stl_zip` cleans up in a `finally`; and a
+  startup sweep clears the backlog, including the per-structure directories
+  `io.fetch_pdb_id` leaves behind.
+- **The cache says so when it stops storing.** Below `MIN_FREE_BYTES` of free
+  disk it silently declines to write. Every build then becomes a cold build and
+  the only symptom is that the site feels slow — which is what hid the disk
+  filling up for weeks. The transition is logged in both directions now.
 - **A surface ligand's probe radius reached the cache key.** With neither
   polymer set to Surface the probe radius and surface padding were dropped from
   the key — but a surface ligand read both. Two builds differing only in probe

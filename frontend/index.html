@@ -1809,7 +1809,7 @@
                   </div>
                 </div>
 
-                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and on a small one the seat search will refuse it and say so in Chains &amp; joints. Spacefill and Surface only — the other two styles are too thin to cut a pocket into.">
+                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and where there is not enough material for a seat the search refuses it and says so in Chains &amp; joints — which a thin style or a small ligand often will be.">
                   <input type="checkbox" id="ligand_magnets"><span class="track"></span>
                   <span class="sw-text"><span>Magnet on ligands</span></span>
                 </label>
@@ -2904,11 +2904,12 @@
   // describing something the protein was not doing. Moved rather than
   // duplicated, because two controls for one number is two chances to disagree
   // about what it is.
-  // Surface and spacefill both come out as one closed lump with a face to seat
-  // against. Ball & stick and Sticks are beads on rods a millimetre or two
-  // across, so a pocket would take the molecule apart rather than join it to
-  // anything. Mirrors MAGNETABLE_LIGAND_STYLES in config.py.
-  const LIGAND_MAGNET_STYLES = ['surface', 'spacefill'];
+  // Every style is offered. Whether a particular ligand has the material for a
+  // seat depends on its size and the scale, not on which style drew it, and the
+  // seat search answers that per interface -- refusing Ball & stick and Sticks
+  // here refused the thick ones too, with no way to ask. Mirrors
+  // MAGNETABLE_LIGAND_STYLES in config.py.
+  const LIGAND_MAGNET_STYLES = ['surface', 'spacefill', 'ball_stick', 'sticks'];
   function ligandTakesMagnets() {
     const box = $('#include_ligands');
     return !!(box && box.checked

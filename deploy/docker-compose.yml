@@ -2,6 +2,7 @@
 #
 #   cd /opt/pdb2print/deploy
 #   docker compose up -d --build
+#   docker builder prune -f          # see the note under `build:` below
 #
 # Caddy fetches and renews a Let's Encrypt certificate automatically, so there
 # is no certbot step and nothing to remember in ninety days.
@@ -9,6 +10,10 @@
 services:
   app:
     build:
+      # Building on the box leaves the intermediate layers behind, and nothing
+      # ever collects them: 19.7 GB of them had accumulated by 2026-09-02.
+      # Run `docker builder prune -f` after every deploy, or build the image
+      # somewhere else and pull it.
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
@@ -20,9 +25,37 @@ services:
     volumes:
       # The build cache lives on the host, so it survives rebuilds and restarts.
       - ./cache:/app/cache
+      # So does the scratch directory, for a different reason: anything written
+      # inside the container goes to its writable layer, which is invisible to
+      # `du` on the host and shows up only in `docker system df`. A leak there
+      # filled the disk on 2026-09-02 and took the site down. Mounted here it is
+      # plainly visible, and a host-side cron can sweep it without `docker exec`.
+      - ./tmp:/app/tmp
     environment:
       # Cache fills with whatever people build. Set to 1 to make it read-only.
       - PDB2PRINT_CACHE_RO=0
+      # The cap has to fit the disk it shares. 96 GB total, ~15 GB of OS and
+      # Docker images, ~10 GB of scratch: 25 GB of cache leaves real headroom.
+      # The old default of 40 GB assumed the cache had the disk to itself.
+      - PDB2PRINT_CACHE_MAX_GB=25
+      # Python reads TMPDIR, so this is what puts mkdtemp under the mount above.
+      - TMPDIR=/app/tmp
+    healthcheck:
+      # Shows in `docker ps`. It does not restart anything on its own -- Docker
+      # only restarts on exit -- but it turns "up but wedged" into something you
+      # can see without loading the site.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/api/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      # Unbounded by default. Not what filled the disk on 2026-09-02 -- the logs
+      # were 1.2 MB -- but there is no reason to leave the next one uncapped.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2-alpine
@@ -32,10 +65,15 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data      # certificates — losing this means re-issuing them
+      - caddy_data:/data      # certificates -- losing this means re-issuing them
       - caddy_config:/config
     depends_on:
       - app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   caddy_data:

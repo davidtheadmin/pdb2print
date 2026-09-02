@@ -2496,6 +2496,54 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         if _again:
             fit_notes.extend(interference.audit(mans, chains, ignore=fused))
 
+    # 2c) Every pair the user set by hand keeps its row, whatever the build did
+    #     with it.
+    #
+    #     A row is the only way to change a setting back, so a row that vanishes
+    #     takes the setting with it: the panel drops overrides for pairs the
+    #     build did not list, and the next Generate reverts to the default
+    #     without saying anything.  Set a pair to Join and it came back as a
+    #     magnet.
+    #
+    #     Each pass above reports the pairs *it* handled, and between them they
+    #     miss any pair that is overridden but never reaches one.  Two ways in
+    #     today: the fit pass is off (``resolve_interference`` is None, or the
+    #     assembly is overlap-only), so there is no carve to skip and the join
+    #     pass never runs; or the pair is a ligand, which ``join`` refuses by
+    #     design — a welded ligand is not a ligand.  Both then fall through the
+    #     joint loop's ``if mode == "join": continue``, which assumes the join
+    #     pass already reported.  This is the backstop rather than a fix at each
+    #     of those two sites, so a third one cannot reintroduce the bug.
+    #
+    #     Leaving a chain out of the build is the one case where forgetting is
+    #     right, and it falls out of this for free: an excluded chain has no
+    #     built position, so its pairs are never reconciled and the panel is
+    #     free to drop them.
+    _listed = {(c.ai, c.bi) for c in applied} | {(c.bi, c.ai) for c in applied}
+    _built_at = {s: k for k, s in enumerate(src)}
+    for (_a, _b), _mode in sorted(overrides.items()):
+        if not _mode or (_a, _b) in _listed:
+            continue
+        _i, _j = _built_at.get(_a), _built_at.get(_b)
+        if _i is None or _j is None:
+            continue                  # a chain this build did not include
+        if _is_ligand(chains[_i]) or _is_ligand(chains[_j]):
+            _why = ("a ligand is held by the pocket cut to fit it, and welding "
+                    "it in would defeat that")
+        elif not do_fit:
+            _why = ("nothing was carved apart in this build, so there is "
+                    "nothing to fuse")
+        else:
+            _why = "this build made no joint here"
+        applied.append(Connection(
+            chains[_i].chain_id, chains[_j].chain_id,
+            _kind(chains[_i], chains[_j]),
+            "join" if _mode == "join" else "none",
+            gap_mm=0.0, count=0, applied=False,
+            ai=_a, bi=_b, by_hand=True,
+            asked=int(_mode) if _mode.isdigit() else 0,
+            note=f"left as it is — {_why}"))
+
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
     step(0.97, "Rebuilding meshes…")
     new_built = []
