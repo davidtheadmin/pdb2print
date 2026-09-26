@@ -5,6 +5,7 @@ your slicer understands.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21599702.svg)](https://doi.org/10.5281/zenodo.21599702)
+[![bio.tools](https://img.shields.io/badge/bio.tools-pdb2print-blue)](https://bio.tools/pdb2print)
 
 ### **[pdb2print.org →](https://pdb2print.org)**
 
@@ -72,11 +73,15 @@ nothing moved but the camera. Illustration by Janet Iwasa, RCSB PDB,
 
 ## Using it
 
+The site has a guide with annotated screenshots behind the **?** button, and every
+setting with an **i** explains itself. The short version:
+
 ### 1. Load a structure
 
-Type a 4-character PDB ID — `1ZAA` is a good first one — and hit Fetch. Or upload
-a `.pdb`, `.cif`, `.mmcif` or `.bcif`. There are a few examples under the search
-box if you just want to see it work.
+Type a PDB ID — `1ZAA` is a good first one — and press Enter or Generate. Both the
+4-character IDs and the newer 12-character ones (`pdb_00001zaa`) work. Or upload a
+`.pdb`, `.cif`, `.mmcif` or `.bcif`. There are six examples under the search box if
+you just want to see it work.
 
 ### 2. Pick a style
 
@@ -86,22 +91,22 @@ reason otherwise. **Cartoon** gives you the helix-and-sheet ribbons from a
 textbook figure, and **Tubes** gives you the backbone alone — both look great and
 both are delicate, so plan on supports and ideally resin.
 
-For DNA and RNA you get Surface or **Tube-slab**, a backbone with one rung per
-base. The three chips at the top set the tube-slab look in one click:
+Cartoon can also print **hydrogen bonds** as struts across the backbone: for the
+helices, the sheets, both, or every bond. It makes the model a lot stiffer and
+roughly doubles the build time.
 
-| | |
-|---|---|
-| **Clean ladder** | Smooth tube, one round rod per base. The sturdiest. |
-| **Molecular** | Ball-and-stick throughout. |
-| **Tube + molecule bases** | Smooth tube, ball-and-stick bases. |
+For DNA and RNA you get Surface or **Tube-slab**, a backbone with one rung per
+base. The backbone is a smooth tube or ball-and-stick; the bases are rods, flat
+slabs or ball-and-stick. A tube with rods is the default and the sturdiest.
 
 ### 3. Decide about ligands
 
 Off by default. Turn **Include ligands** on and anything bound that is not
 protein, nucleic acid or water becomes its own object: the KRAS inhibitor in 9YMP,
 the four haems in 2HHB. Each one gets its own filament and sits in a pocket carved
-to its shape, held by friction — no magnet, because a 4 mm magnet is bigger than
-most drugs.
+to its shape, held by friction. A 4 mm magnet is bigger than most drugs, so there
+is no magnet unless you ask for one with **Magnet on ligands**, and then only where
+the ligand has room for it.
 
 Four styles, in order of how likely they are to survive the printer:
 
@@ -117,11 +122,13 @@ host ends up with a drug-shaped void in it, and on a molecular surface that void
 usually sealed, so the slicer fills it with support. Worth knowing before you
 print, which is the point of it being a decision rather than a default.
 
-**Ligand thickness** is the one setting, the diameter of the balls; the sticks
-follow it. It is an absolute size in millimetres while the atom spacing follows
-**Scale**, so the two only line up at one scale — turn the scale up and turn this
-up with it, or the molecule thins out into pinheads on long sticks. It is not
-derived from the scale on purpose: the reason to raise the scale is usually that
+Each style shows only the sizes it uses. **Ligand atoms** and **Ligand bonds** are
+the ball and stick diameters, **Spacefill fullness** scales the van der Waals
+radii, and a surface ligand has its own probe radius and padding, separate from the
+protein's. The atom and bond sizes are absolute millimetres while the atom spacing
+follows **Scale**, so the two only line up at one scale — turn the scale up and turn
+these up with it, or the molecule thins out into pinheads on long sticks. They are
+not derived from the scale on purpose: the reason to raise the scale is usually that
 something else in the model was too small to print, and having the ligand quietly
 follow would take away the adjustment you came for.
 
@@ -140,7 +147,7 @@ estimated dimensions show up under the slider.
 worth knowing: what actually matters is grid spacing divided by scale, so
 dropping the scale coarsens the mesh even though you never touched the grid.
 
-**Min wall** is the thinnest feature you'll allow. Anything skinnier gets grown
+**Min wall**, under Advanced settings, is the thinnest feature you'll allow. Anything skinnier gets grown
 to it while the model is built. Surface ignores this, because a molecular surface
 is already thick everywhere.
 
@@ -148,23 +155,34 @@ is already thick everywhere.
 
 Under **Printability → Assembly**.
 
-**Takes apart** is the default: the chains stay separate objects. Held by
-**Magnets** in a pocket cut into each side, or by **Nothing** at all, which is
-what you start with. Set the magnet diameter and thickness to match the ones you
-own. Press-fit clearance defaults to 0.2 mm, which is right on a Prusa Core One —
-raise it if the magnets won't go in, lower it if they fall out. The preview
-highlights where they'll end up.
+**Takes apart** is the default: the chains stay separate objects and just sit
+against each other. Switch on **Magnets** and a pocket is cut into each side of
+every joint. Pick round or square, set the diameter and thickness (up to 10 mm) to
+match the ones you own, and choose how many go into each joint: 1–5 between
+proteins, 0–2 between protein and DNA. **Flush socket** raises a flat collar on
+both parts so they meet on one clean disc. Press-fit clearance defaults to 0.2 mm,
+which is right on a Prusa Core One — raise it if the magnets won't go in, lower it
+if they fall out. The preview highlights where they'll end up.
 
 **One piece** welds the chains in plastic instead, either by growing them together
-(**Inflate**, nothing to size) or bridging them with a rod (**Bridges**, you set
-the diameter). Comes off the printer assembled.
+(**Inflate**, nothing to size), bridging them with a rod (**Bridges**, you set the
+diameter), or leaving everything exactly where the structure has it (**Overlap**,
+so only chains that already overlap end up fused). Comes off the printer assembled.
 
-**Connect DNA base pairs** is the one that welds the two strands of a duplex.
-Leave it on for DNA unless you specifically want them separate.
+**Connect DNA base pairs** is the one that welds the two strands of a duplex. It
+is off by default; turn it on for DNA unless you specifically want them separate.
+
+### 6. Change single chains and joints
+
+After a build, **Chains & joints** over the preview lists every chain and every
+joint the build made. Remove a chain and it is not built at all, and nothing is
+carved to fit it. Each joint can follow the Assembly setting, be left apart, or be
+fused, and the small arrow sets its own magnet count. If a joint has no room for a
+magnet, the list says so. **Regenerate** applies the changes.
 
 ![The five chains of 1TUP laid out separately, magnets seated in the pockets](docs/img/1tup-chains-apart.jpg)
 
-### 6. Download and slice
+### 7. Download and slice
 
 Grab the **3MF**. In PrusaSlicer:
 
@@ -172,10 +190,18 @@ Grab the **3MF**. In PrusaSlicer:
 2. Right-click an object and use **Change extruder** to assign a filament.
 3. Slice.
 
+Bambu Studio and OrcaSlicer work the same way: each chain is its own object, and
+you pick its filament in the object list.
+
 If you used magnets, push one into each pocket after printing, then put the
 halves together.
 
-### 7. Put it on a stand
+The square button next to the downloads copies a **share link**. It carries the PDB
+ID and every setting, so whoever opens it gets the same build. That also makes it
+the most useful thing to put in a bug report. Builds from uploaded files cannot be
+shared.
+
+### 8. Put it on a stand
 
 Optional, and only after a build. **Create display stand** adds a plate, one to
 three columns hollowed to fit the underside of the model, and a front apron
@@ -244,7 +270,7 @@ otherwise have been fine.
 
 **The cache** stores finished builds and serves them instantly when someone asks
 for the same structure at the same settings. It fills up on its own as people use
-it, and is capped at 20 GB — past that, least-recently-used entries are dropped,
+it, and is capped at 40 GB by default — past that, least-recently-used entries are dropped,
 so it stays bounded no matter how much traffic arrives. It also stops writing if
 free disk falls below 2 GB, because a slow site is better than one that cannot
 write an export or renew its certificate.
@@ -281,6 +307,7 @@ To deploy an update: `git pull && docker compose up -d --build`.
 ```
 server.py                 FastAPI: serves the page and /api/generate
 frontend/index.html       the UI, one file, no build step
+frontend/img/guide/       screenshots for the in-app guide
 icons/                    logo and wordmark, wordmark as outlines
 docs/img/                 the photographs this README uses
 pdb2print/
@@ -288,10 +315,10 @@ pdb2print/
   chains.py               chain split, protein/nucleic/ligand classification
   names.py                entry titles and chain labels for the plaque
   config.py               all settings
-  presets.py              the preset chips
+  presets.py              named parameter sets for the Python API
   cache.py                build cache
   geometry.py             dispatch to a representation
-  representations/        surface, cartoon, tube_slab, ligand
+  representations/        surface, cartoon, hbonds, tube_slab, ligand
   connections.py          magnets, bridges, base pairs
   interference.py         finds and resolves overlapping chains
   meshops.py              repair, minimum wall

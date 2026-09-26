@@ -26,3 +26,6 @@ media/
 # on /app/cache, not there. It cost ~28 minutes of a 33-minute deploy, and it
 # grows every time somebody builds a model.
 deploy/cache/
+# Guide screenshot tooling: its own node_modules and raw captures, never the app.
+scripts/guide_screens/node_modules/
+scripts/guide_screens/raw/

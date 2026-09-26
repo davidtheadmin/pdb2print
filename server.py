@@ -51,6 +51,9 @@ FRONTEND_DIR = os.path.join(HERE, "frontend")
 # spent CPU gzipping a 3MF (already a zip) on every download.
 mimetypes.add_type("model/3mf", ".3mf")
 mimetypes.add_type("model/gltf-binary", ".glb")
+# The guide's screenshots. Same gap in the slim image's table, and a
+# picture served as text/plain is one a nosniff browser refuses to draw.
+mimetypes.add_type("image/webp", ".webp")
 
 # Every generation writes its outputs into a fresh sub-directory here, which is
 # served read-only at /files/<token>/... for both <model-viewer> and downloads.

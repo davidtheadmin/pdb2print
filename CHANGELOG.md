@@ -97,6 +97,28 @@ must not have, so an old code is refused with a message instead of read.
 - The empty Advanced settings drawer under Ligands is hidden rather than left
   open on nothing.
 
+### Documentation
+
+- **The guide is rebuilt around screenshots.** The **?** button opens a guide
+  with annotated pictures of the page and of each step, sections organised by
+  what you are trying to do (magnets, Chains & joints, ligands, slicing, sharing,
+  the stand), a troubleshooting list and a short glossary. Light and dark
+  pictures follow the theme. `scripts/guide_screens/` retakes them and redraws
+  the numbered boxes after a layout change.
+- **The welcome card is a quick start.** Four steps over a marked-up picture of
+  the page, a button that builds 1ZAA straight away, and a link into the guide.
+  "New since July" moved to the bottom. `WELCOME_VERSION` is `2026-09`, so it
+  shows once more for everyone who dismissed it.
+- **Tooltips are shorter.** The long ones are down to one or two sentences, with
+  the detail moved into the guide; an **i** that has more to say links to its
+  section. The download, share, stand and Chains & joints buttons use the same
+  popover, so they explain themselves on touch screens too. The protein Tubes
+  slider is labelled *Tube radius*, which is what it sets.
+- README brought up to date: no Fetch button or preset chips any more, ligand
+  magnets and sizes, the Magnets switch, Overlap, Chains & joints, share links,
+  hydrogen bonds, 12-character IDs, the 40 GB cache default, and a bio.tools badge.
+- `server.py` serves `.webp` as `image/webp` (the slim image has no MIME table).
+
 ### Display stand
 
 Only the stand changed; stands are never cached.

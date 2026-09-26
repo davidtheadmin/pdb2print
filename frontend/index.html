@@ -143,6 +143,11 @@
     --glass:     rgba(255,255,255,.86);
 
     --focus:     rgba(20,122,83,.32);
+
+    /* the guide's callouts: boxes and numbers drawn over screenshots. Violet
+       because it is the one colour no screenshot contains, so a box can never
+       be mistaken for part of the interface it points at. */
+    --callout:   #6a42d6;
     --shadow-1:  0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.06);
     --shadow-2:  0 16px 40px rgba(16,24,40,.16);
     --scrim:     rgba(248,250,251,.975);
@@ -168,6 +173,7 @@
     --accent-soft: rgba(47,158,111,.16);
     --accent-mid:  rgba(47,158,111,.33);
     --adv:       #d8a33f;
+    --callout:   #9b82f5;
     --adv-soft:  rgba(216,163,63,.08);
     --adv-mid:   rgba(216,163,63,.20);
     --adv-line:  rgba(216,163,63,.55);
@@ -690,6 +696,7 @@
     pointer-events: none; opacity: 0; transition: opacity .1s;
   }
   #tip.show { opacity: 1; }
+  #tip .tip-more { display: block; margin-top: 5px; color: var(--accent); font-weight: 600; }
 
   /* ---- START: PDB search + upload + examples ---- */
   .start-label { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
@@ -1172,7 +1179,7 @@
     line-height: 1.55;
   }
   .manual-inner {
-    position: relative; width: 100%; max-width: 720px;
+    position: relative; width: 100%; max-width: 860px;
     max-height: calc(100vh - 40px); overflow: auto;
     background: var(--s1); border: 1px solid var(--border);
     border-radius: var(--r3); box-shadow: var(--shadow-2);
@@ -1206,6 +1213,53 @@
     color: var(--muted); font-size: 12px;
   }
   @media (max-width: 900px) { .manual dl { grid-template-columns: 1fr; gap: 1px 0; } .manual dd { margin-bottom: 7px; } }
+  .manual h4 { scroll-margin-top: 8px; }
+  .m-toc { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 2px; }
+  .m-toc a {
+    font-size: 11.5px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--text2); text-decoration: none;
+  }
+  .m-toc a:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ---- guide screenshots ----
+     One picture per theme, swapped on the same attribute the rest of the page
+     follows; the hidden one is never fetched (loading=lazy + display:none).
+     The boxes and numbers are an SVG on top, in the picture's own pixel
+     space, so they scale with it and stay editable as text in this file.
+     Regenerate the pictures with scripts/guide_screens/ after a layout change. */
+  .m-shot {
+    position: relative; margin: 4px 0 10px;
+    border: 1px solid var(--border); border-radius: var(--r2);
+    overflow: hidden; background: var(--bg);
+  }
+  .m-shot img { display: block; width: 100%; height: auto; }
+  .m-shot .sh-d { display: none; }
+  [data-theme="dark"] .m-shot .sh-l { display: none; }
+  [data-theme="dark"] .m-shot .sh-d { display: block; }
+  .m-shot svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .m-shot rect { fill: none; stroke: var(--callout); stroke-width: 3; }
+  .m-shot .b circle { fill: var(--callout); stroke: var(--s1); stroke-width: 2; }
+  .m-shot .b text {
+    fill: #fff; font: 700 15px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+    text-anchor: middle; dominant-baseline: central;
+  }
+  .m-callouts { margin: 0 0 12px; padding-left: 22px; color: var(--text2); }
+  .m-callouts li { margin-bottom: 5px; padding-left: 2px; }
+  .m-callouts li::marker { color: var(--callout); font-weight: 700; }
+  .m-callouts b { color: var(--text); font-weight: 600; }
+  .m-fig.side { display: grid; grid-template-columns: 280px 1fr; gap: 18px; align-items: start; margin-bottom: 4px; }
+  .m-fig.side.narrow-img { grid-template-columns: 470px 1fr; align-items: center; }
+  .m-fig.side .m-shot { margin: 0; }
+  .m-i {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border-2);
+    font: 600 9.5px/1 ui-monospace, monospace; color: var(--text2); vertical-align: 1px;
+  }
+  @media (max-width: 700px) {
+    .m-fig.side, .m-fig.side.narrow-img { grid-template-columns: 1fr; }
+    .m-fig.side .m-shot { max-width: 340px; }
+  }
+
 
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation-duration: .01ms !important; }
@@ -1245,7 +1299,7 @@
     display: flex; align-items: center; justify-content: center; padding: 20px;
   }
   .wel {
-    position: relative; width: 100%; max-width: 470px;
+    position: relative; width: 100%; max-width: 560px;
     max-height: calc(100vh - 40px); overflow: auto;
     background: var(--s1); border: 1px solid var(--border);
     border-radius: var(--r3); padding: 22px 24px 16px; line-height: 1.5;
@@ -1260,6 +1314,19 @@
   }
   .wel h4 .when { color: var(--muted); font-weight: 400; letter-spacing: .04em; }
   .wel ol { margin: 0; padding-left: 19px; color: var(--text2); }
+  .wel .wel-shot { margin: 2px 0 12px; }
+  .wel .wel-shot rect { stroke-width: 6; }
+  .wel .wel-shot .b circle { stroke-width: 4; }
+  .wel .wel-shot .b text { font-size: 34px; }
+  .wel ol.wel-steps li::marker { color: var(--callout); font-weight: 700; }
+  .wel ol.wel-steps b { color: var(--text); font-weight: 600; }
+  .wel-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+  .wel-actions .wel-ok { margin-left: 0; }
+  .wel-link {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: var(--accent); font: 600 13px/1 inherit; font-family: inherit;
+  }
+  .wel-link:hover { text-decoration: underline; }
   .wel ol li { margin-bottom: 4px; }
   .wel code { background: var(--s2); border-radius: 4px; padding: 1px 4px; font-size: 12px; }
   .wel ul.new { margin: 0; padding-left: 17px; color: var(--text2); }
@@ -1280,6 +1347,8 @@
     font: 650 13px/1 inherit; font-family: inherit; cursor: pointer;
   }
   .wel-ok:hover { background: var(--accent-d); }
+  .wel-ok.quiet { background: var(--s2); color: var(--text); border: 1px solid var(--border-2); }
+  .wel-ok.quiet:hover { background: var(--sunken); }
   .wel-close {
     position: absolute; top: 9px; right: 11px; width: 24px; height: 24px;
     display: flex; align-items: center; justify-content: center; padding: 0;
@@ -1410,14 +1479,14 @@
             <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.7 6.7 0 0 0 10.5 10.5Z"/></svg>
           </button>
           <button id="help-btn" class="icon-btn accent" type="button" aria-expanded="false"
-                  aria-controls="manual" title="How it works">?</button>
+                  aria-controls="manual" title="Guide: how to use pdb2print">?</button>
           <button id="legal-btn" class="icon-btn" type="button" aria-expanded="false"
                   aria-controls="legal" title="Privacy, licence and terms" aria-label="Privacy, licence and terms">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>
           </button>
           <a id="support-btn" class="support-btn" href="https://ko-fi.com/pdb2print"
              target="_blank" rel="noopener noreferrer"
-             title="Support pdb2print on Ko-fi — it pays for the server">
+             title="Support pdb2print on Ko-fi. It pays for the server.">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1l8.8 8.8 8.8-8.8a5 5 0 0 0 0-7.1Z"/></svg>
             Support the project
           </a>
@@ -1479,10 +1548,10 @@
 
           <!-- ---- protein ---- -->
           <div class="grp" style="margin-top:2px">
-            <p class="grp-h" title="All the amino-acid chains, drawn the same way. Surface is a solid skin over the molecule and the easiest to print. Cartoon is the ribbon picture from textbooks. Tubes is the backbone on its own. Cartoon and tubes are thin in places, so expect supports.">Protein</p>
+            <p class="grp-h" title="How the protein chains are drawn. Surface is the sturdiest. Cartoon and Tubes show the fold but are thin, so expect supports." data-more="g-style">Protein</p>
             <div class="seg pick three" data-group="protein_rep">
-              <button data-value="surface" class="active" title="A solid skin over the whole molecule."><span class="t">Surface</span></button>
-              <button data-value="cartoon" title="Ribbons for the helices, arrows for the sheets, a thin tube for the loops."><span class="t">Cartoon</span></button>
+              <button data-value="surface" class="active" title="A solid skin over the whole molecule. The easiest to print."><span class="t">Surface</span></button>
+              <button data-value="cartoon" title="Ribbons for helices, arrows for sheets, a thin tube for loops."><span class="t">Cartoon</span></button>
               <button data-value="tubes" title="One smooth tube along the backbone."><span class="t">Tubes</span></button>
             </div>
             <p class="rep-note" id="protein-exp-note">Thin in places. Expect supports, and raise the scale or the thickness.</p>
@@ -1496,15 +1565,15 @@
                 <div class="drawer">
                   <div id="cartoon" hidden>
                     <div class="field" data-slider="cartoon_helix_width">
-                      <div class="slider-row"><span class="name" title="Sizes the helix ribbon. Wider and thicker together, so it stays a flat band.">Helix size (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Width of the helix ribbons. Thickness follows, so they stay flat bands.">Helix size (mm)</span><span class="val"></span></div>
                       <input type="range" min="1.5" max="10.0" step="0.1" value="4.5">
                     </div>
                     <div class="field" data-slider="cartoon_strand_width">
-                      <div class="slider-row"><span class="name" title="Sizes the sheet ribbon and its arrowheads. Wider and thicker together, so it stays a flat plank.">Sheet size (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Width of the sheet ribbons and their arrowheads. Thickness follows, so they stay flat.">Sheet size (mm)</span><span class="val"></span></div>
                       <input type="range" min="1.5" max="10.0" step="0.1" value="4.0">
                     </div>
                     <div class="field" data-slider="cartoon_tube">
-                      <div class="slider-row"><span class="name" title="Thickness of the round tube used for the loops between the ribbons.">Tube thickness (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="How thick the tube for the loops between the ribbons is.">Tube thickness (mm)</span><span class="val"></span></div>
                       <input type="range" min="0.6" max="6.0" step="0.1" value="1.8">
                     </div>
                     <!-- No title on the .seg itself: the help harvester appends a
@@ -1512,7 +1581,7 @@
                          group that is a sixth option nobody asked for. It goes on
                          the label, the same as every slider's .name. -->
                     <div class="sub-grp">
-                      <p class="lbl" title="Adds a rung across each hydrogen bond in the backbone, so the print comes out stiffer. None, then the helices only, the sheets only, both, or every bond in the chain. Loops have no hydrogen bonds, so they never change. The build takes about twice as long.">Hydrogen bonds</p>
+                      <p class="lbl" title="Adds a rung across each backbone hydrogen bond, which makes the print stiffer. The build takes about twice as long." data-more="g-style">Hydrogen bonds</p>
                       <div class="seg" data-group="cartoon_hbonds">
                         <button data-value="none" class="active">None</button>
                         <button data-value="helix">Helices</button>
@@ -1527,11 +1596,11 @@
                     <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
                   </div>
                   <div class="field" data-slider="probe_radius">
-                    <div class="slider-row"><span class="name" title="Size of the ball that rolls over the atoms to trace the surface. 1.4 Å is a water molecule. Bigger smooths it out and fills in small pockets. It does not make the model bigger. Use Surface padding for that.">Probe radius (Å)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Size of the ball rolled over the atoms to trace the surface. Bigger is smoother and fills small pockets. 1.4 Å is a water molecule.">Probe radius (Å)</span><span class="val"></span></div>
                     <input type="range" min="1.4" max="2.0" step="0.1" value="1.4">
                   </div>
                   <div class="field" data-slider="protein_tube_radius">
-                    <div class="slider-row"><span class="name" title="Radius of the protein backbone tube">Tube thickness (mm)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Radius of the backbone tube. The tube comes out twice this thick.">Tube radius (mm)</span><span class="val"></span></div>
                     <input type="range" min="0.4" max="8.0" step="0.1" value="1.2">
                   </div>
                 </div>
@@ -1541,9 +1610,9 @@
 
           <!-- ---- DNA / RNA ---- -->
           <div class="grp">
-            <p class="grp-h" title="All the DNA and RNA chains. Surface wraps the lot in one solid skin, so there is nothing thin to snap off. Tube-slab draws the two strands as tubes with the bases as rungs between them. It looks like a double helix but breaks more easily.">DNA / RNA</p>
+            <p class="grp-h" title="How DNA and RNA are drawn. Surface is one solid, sturdy skin. Tube-slab looks like a double helix but breaks more easily." data-more="g-style">DNA / RNA</p>
             <div class="seg pick" data-group="nucleic_rep">
-              <button data-value="surface" title="A solid skin over the whole molecule."><span class="t">Surface</span></button>
+              <button data-value="surface" title="A solid skin over the whole molecule. The easiest to print."><span class="t">Surface</span></button>
               <button data-value="tube_slab" class="active" title="Strands as tubes, bases as rungs between them."><span class="t">Tube-slab</span></button>
             </div>
 
@@ -1583,7 +1652,7 @@
                     <input type="range" min="0.2" max="8.0" step="0.1" value="1.2">
                   </div>
                   <div class="field" data-slider="plate_size">
-                    <div class="slider-row"><span class="name" title="Sizes the flat plate at the end of each base, area and thickness together.">Plate size</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Size of the flat plate on each base. Area and thickness change together.">Plate size</span><span class="val"></span></div>
                     <input type="range" min="0.3" max="3.0" step="0.05" value="1.0">
                   </div>
                   <div class="field" data-slider="connector_radius">
@@ -1610,7 +1679,7 @@
 
           <!-- ---- ligands ---- -->
           <div class="grp" id="grp-ligands">
-            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand has its own probe and padding, under Advanced settings here. They start where the protein's start, so the two match until you change one.">Ligands</p>
+            <p class="grp-h" title="Drugs, hemes and metals bound to the structure. Each prints as its own object in a pocket cut to fit it. Water and additives are skipped." data-more="g-ligands">Ligands</p>
             <label class="switch">
               <input type="checkbox" id="include_ligands"><span class="track"></span>
               <span class="sw-text"><span>Include ligands</span></span>
@@ -1619,8 +1688,8 @@
               <div class="field">
                 <p class="field-label">Style</p>
                 <div class="seg pick" data-group="ligand_style">
-                  <button data-value="ball_stick" class="active" title="Balls for the atoms, sticks for the bonds. Looks like the molecule."><span class="t">Ball &amp; stick</span></button>
-                  <button data-value="spacefill" title="Atoms as overlapping spheres, fused into one lump. The most reliable to print."><span class="t">Spacefill</span></button>
+                  <button data-value="ball_stick" class="active" title="Balls for the atoms, sticks for the bonds. Reads as chemistry."><span class="t">Ball &amp; stick</span></button>
+                  <button data-value="spacefill" title="Atoms as overlapping spheres fused into one lump. The most reliable to print."><span class="t">Spacefill</span></button>
                   <button data-value="surface" title="The same solid skin the protein uses, so the two match."><span class="t">Surface</span></button>
                   <button data-value="sticks" title="Bonds only, no balls. Clearest to read, easiest to break."><span class="t">Sticks</span></button>
                 </div>
@@ -1632,7 +1701,7 @@
                 </summary>
                 <div class="drawer">
                   <div class="field" data-slider="ligand_atom">
-                    <div class="slider-row"><span class="name" title="Ball diameter, in millimetres. The gaps between the atoms follow Scale but this does not, so raise both together or you get pinheads on long sticks.">Ligand atoms (mm)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Ball diameter. Atom spacing follows Scale but this does not, so raise both together." data-more="g-ligands">Ligand atoms (mm)</span><span class="val"></span></div>
                     <input type="range" min="0.8" max="8.0" step="0.1" value="2.2">
                   </div>
                   <div class="field" data-slider="ligand_bond">
@@ -1640,7 +1709,7 @@
                     <input type="range" min="0.6" max="6.0" step="0.1" value="1.4">
                   </div>
                   <div class="field" data-slider="ligand_vdw_scale">
-                    <div class="slider-row"><span class="name" title="Spacefill only: multiplies the real van der Waals radii. 1.0 is chemically honest; higher fuses the spheres into one lump.">Spacefill fullness</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Spacefill only. 1.0 is true atom size; higher fuses the spheres into a sturdier lump.">Spacefill fullness</span><span class="val"></span></div>
                     <input type="range" min="0.6" max="1.6" step="0.05" value="1.0">
                   </div>
                   <!-- The ligand's own pair, not the ones under Protein. Same
@@ -1648,11 +1717,11 @@
                        absolute size in ångström and a drug is a hundredth the
                        size of what it is bound to. -->
                   <div class="field" data-slider="ligand_probe_radius">
-                    <div class="slider-row"><span class="name" title="Surface only: the ball that rolls over the ligand. 1.4 is a water molecule. Larger smooths the surface and fills the rings in; smaller keeps the shape and can break thin parts off.">Ligand probe radius (Å)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Surface only. Bigger smooths the ligand and fills its rings; smaller keeps the shape but can leave thin parts.">Ligand probe radius (Å)</span><span class="val"></span></div>
                     <input type="range" min="0.6" max="3.0" step="0.1" value="1.4">
                   </div>
                   <div class="field" data-slider="ligand_surface_padding">
-                    <div class="slider-row"><span class="name" title="Surface only: grows every atom before the surface is made. Closes hairline gaps that will not print. A ligand is small, so a little goes a long way here.">Ligand surface padding (Å)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Surface only. Grows every atom a little to close gaps too thin to print. A ligand is small, so a little goes a long way.">Ligand surface padding (Å)</span><span class="val"></span></div>
                     <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
                   </div>
                 </div>
@@ -1674,7 +1743,7 @@
 
           <!-- ---- size ---- -->
           <div class="grp">
-            <p class="grp-h" title="Scale sets how big the print comes out: millimetres of print per ångström of structure. Set it roughly and generate, and the real measurements appear under the slider.">Size</p>
+            <p class="grp-h" title="How big the print comes out, in millimetres per ångström. The real dimensions appear under the slider after a build." data-more="g-size">Size</p>
             <div class="field" data-slider="scale">
               <div class="slider-row"><span class="name">Scale (mm/Å)</span><span class="val"></span></div>
               <input type="range" min="0.2" max="6.0" step="0.1" value="1.5">
@@ -1687,11 +1756,11 @@
               </summary>
               <div class="drawer">
                 <div class="field" data-slider="grid_spacing">
-                  <div class="slider-row"><span class="name" title="How finely the model is measured out before it is built. Smaller is more detailed and slower. It works against Scale, so doubling both changes nothing.">Grid spacing (mm)</span><span class="val"></span></div>
+                  <div class="slider-row"><span class="name" title="Mesh detail. Smaller is finer and slower. If a build fails, try a larger value first." data-more="g-trouble">Grid spacing (mm)</span><span class="val"></span></div>
                   <input type="range" min="0.2" max="1.5" step="0.05" value="0.5">
                 </div>
                 <div class="field" data-slider="min_wall">
-                  <div class="slider-row"><span class="name" title="Nothing gets built thinner than this. Tubes, rungs, connectors and cartoon ribbons are all held up to it. Surfaces ignore it, they are thick everywhere anyway.">Min wall (mm)</span><span class="val"></span></div>
+                  <div class="slider-row"><span class="name" title="Nothing is built thinner than this. Surfaces ignore it; they are thick everywhere anyway.">Min wall (mm)</span><span class="val"></span></div>
                   <input type="range" min="0.0" max="5.0" step="0.1" value="1.0">
                 </div>
                 <!-- The "Min-wall mode" control (uniform / selective) was removed
@@ -1728,7 +1797,7 @@
                 <div class="seg" data-group="no_magnet_method">
                   <button data-value="inflate" class="active" title="Grows the chains until the gap closes. Nothing to set.">Inflate</button>
                   <button data-value="bridge" title="Puts a rod of a size you choose across the gap.">Bridges</button>
-                  <button data-value="overlap" title="Leaves the chains exactly where the structure puts them. Nothing is grown and nothing is cut, so the parts that already overlap come out fused. Parts that only come close are listed in the report and will be loose.">Overlap</button>
+                  <button data-value="overlap" title="Leaves the chains exactly as in the structure. Parts that overlap come out fused; parts that only touch come out loose.">Overlap</button>
                 </div>
               </div>
             </div>
@@ -1739,7 +1808,7 @@
                  button labelled Nothing is a checkbox that has been made to
                  look like a decision. -->
             <div class="branch-kids" id="asm-apart">
-              <label class="switch" title="Cuts a matching pocket in each side of every join for an embedded magnet, so the parts snap together and come apart again. Off, they just sit against each other.">
+              <label class="switch" title="Cuts a pocket on both sides of each joint for a magnet, so the parts snap together and come apart again." data-more="g-magnets">
                 <input type="checkbox" id="magnets"><span class="track"></span>
                 <span class="sw-text"><span>Magnets</span></span>
               </label>
@@ -1756,13 +1825,13 @@
                      the magnet's packet, so they are read as one row. -->
                 <div class="pair" id="magnet-size">
                   <div class="field" data-slider="magnet_thickness">
-                    <div class="slider-row"><span class="name" title="Depth of the magnet pocket. A thick magnet needs the model to be thick too: it wants about this much solid plastic behind each face, plus the collar. Past that the seat search runs out of material and says so in Chains &amp; joints.">Thickness (mm)</span><span class="val"></span></div>
+                    <div class="slider-row"><span class="name" title="Depth of the pocket, so set it to your magnet. A thick magnet needs a thick model; where one won't fit, Chains &amp; joints says so.">Thickness (mm)</span><span class="val"></span></div>
                     <input type="range" min="0.5" max="10.0" step="0.5" value="2.0">
                   </div>
                 </div>
 
                 <div class="field">
-                  <p class="field-label">Magnets per interface</p>
+                  <p class="field-label" title="How many magnets go into each joint, by kind of joint. Change single joints in Chains &amp; joints." data-more="g-joints">Magnets per interface</p>
                   <div class="count-grid">
                     <span class="count-lbl">Protein–protein</span>
                     <div class="seg" data-group="magnet_count">
@@ -1786,12 +1855,12 @@
                   </div>
                 </div>
 
-                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and where there is not enough material for a seat the search refuses it and says so in Chains &amp; joints — which a thin style or a small ligand often will be.">
+                <label class="switch" id="ligand-magnet-row" hidden title="Adds a magnet to the ligand on top of its fitted pocket, where one fits. Thin styles and small ligands often have no room." data-more="g-magnets">
                   <input type="checkbox" id="ligand_magnets"><span class="track"></span>
                   <span class="sw-text"><span>Magnet on ligands</span></span>
                 </label>
 
-                <label class="switch" title="Raises a flat collar on both parts so they meet on one clean disc, instead of on whatever shape the two surfaces make.">
+                <label class="switch" title="Raises a flat collar on both parts so they meet on one clean disc.">
                   <input type="checkbox" id="socket" checked><span class="track"></span>
                   <span class="sw-text"><span>Flush socket</span></span>
                 </label>
@@ -1802,7 +1871,7 @@
                   </summary>
                   <div class="drawer">
                     <div class="field" data-slider="magnet_fit_clearance">
-                      <div class="slider-row"><span class="name" title="Extra width on the pocket over the magnet&#39;s stated size, because printed holes come out undersize. 0.2 mm is a fit you still have to push. Raise it if the magnets will not go in, lower it if they fall out.">Press-fit clearance (mm)</span><span class="val"></span></div>
+                      <div class="slider-row"><span class="name" title="Extra room in the pocket, because printed holes come out small. Raise it if magnets won&#39;t go in, lower it if they fall out." data-more="g-magnets">Press-fit clearance (mm)</span><span class="val"></span></div>
                       <input type="range" min="0.0" max="0.6" step="0.05" value="0.2">
                     </div>
                     <div id="socket-opts" class="switch-body">
@@ -1850,7 +1919,7 @@
             </div>
 
             <div class="conn-sep">
-              <label class="switch" title="Fuses the two strands to each other at every base pair, so the helix holds together instead of arriving as two loose spirals.">
+              <label class="switch" title="Joins the two strands at every base pair, so the helix holds together instead of printing as two loose spirals.">
                 <input type="checkbox" id="basepair_connect"><span class="track"></span>
                 <span class="sw-text"><span>Connect DNA base pairs</span></span>
               </label>
@@ -1888,7 +1957,7 @@
         ====================================================================== -->
         
         <div class="dl-group">
-          <a id="dl-3mf" class="dl-top" aria-disabled="true" download title="Multi-object 3MF — one coloured object per chain, for PrusaSlicer">
+          <a id="dl-3mf" class="dl-top" aria-disabled="true" download title="One file with one coloured object per chain. Opens in PrusaSlicer, Bambu Studio and OrcaSlicer.">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
             <span>Download 3MF</span>
           </a>
@@ -1903,7 +1972,7 @@
         </div>
         <div class="stand-group">
           <button id="stand-btn" class="stand-btn" type="button" hidden
-                  title="Generate a display stand matching the orientation you are looking at">
+                  title="Mounts the model on a plate with columns and a plaque, in the pose you see now.">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M7 21v-7"/><path d="M17 21v-7"/><path d="M5 14h14"/><circle cx="12" cy="7" r="4"/></svg>
             <span>Create display stand</span>
           </button>
@@ -1911,7 +1980,7 @@
                and this is a list you only open when something about the joints
                is wrong. -->
           <button id="joints-btn" class="stand-btn subtle" type="button" hidden
-                  title="Which chains to build, and the joints between the ones you keep">
+                  title="Leave chains out, or change how each pair of chains is joined.">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><path d="M9 12h6"/></svg>
             <span>Chains &amp; joints</span>
             <span class="stand-badge" id="joints-count"></span>
@@ -1978,12 +2047,12 @@
         <!-- Chains first: what to build at all comes before how the built
              things are joined, and switching one off removes joints below. -->
         <div class="sp-sect-row">
-          <p class="sp-sect" title="A chain switched off is not built at all — not meshed, not exported, and not there for the others to be carved to fit. Switch one back on to get it back.">Build these chains</p>
+          <p class="sp-sect" title="A chain you remove is not built at all, and the others are not carved to fit it." data-more="g-joints">Build these chains</p>
           <button id="chains-all" class="sp-link" type="button" hidden>Select all</button>
         </div>
         <div id="chain-list"></div>
 
-        <p class="sp-sect" id="joints-head" title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. The arrow opens a count for that one joint, which replaces the number set under Magnets. A ligand takes one magnet, so it has no arrow.">Joints</p>
+        <p class="sp-sect" id="joints-head" title="Default follows the Assembly setting. None leaves a pair apart, Join fuses it. The arrow sets this joint&#39;s magnet count." data-more="g-joints">Joints</p>
         <div id="joint-list"></div>
         <p class="sp-note" id="joints-empty" hidden></p>
       </div>
@@ -2098,7 +2167,7 @@
               <input type="range" min="2" max="12" step="0.2" value="4">
             </div>
             <div class="sp-slider" data-f="plate_corner">
-              <div class="lab"><span class="name" title="A big radius moves the lettering inwards to clear the curve and widens the plate to make room, so nothing runs off the corner.">Corner radius</span><span class="val"></span></div>
+              <div class="lab"><span class="name" title="Rounds the plate corners. The lettering moves inwards to stay clear of the curve.">Corner radius</span><span class="val"></span></div>
               <input type="range" min="0" max="14" step="0.5" value="4">
             </div>
            </div>
@@ -2138,7 +2207,7 @@
                    legend that is not being printed is a control with nothing on
                    the other end of it. -->
               <div id="sp-legend-box">
-                <p class="field-label" style="margin:11px 0 5px" title="Taken from the file header, which often gives a class of molecule instead of a name. Type over any of them. Empty a box to drop that chain from the legend; the rows below move up.">Chain names</p>
+                <p class="field-label" style="margin:11px 0 5px" title="Taken from the file, which often names a class of molecule rather than the protein. Type over any; empty a box to drop that chain.">Chain names</p>
                 <div id="sp-legend-edit"></div>
               </div>
 
@@ -2162,7 +2231,7 @@
               <p class="sp-note" id="sp-relief-hint"></p>
 
               <div class="sp-slider" data-f="plaque_text">
-                <div class="lab"><span class="name" title="Sets the size of all the lettering. The name is the biggest line, at a little over half of this; everything else is sized from it too. Below 5 mm the letters have to be thickened to survive printing, and stop looking like the typeface.">Text size</span><span class="val"></span></div>
+                <div class="lab"><span class="name" title="Size of all the lettering. Below 5 mm the letters are thickened so they survive printing.">Text size</span><span class="val"></span></div>
                 <input type="range" min="5" max="11" step="0.25" value="9">
               </div>
               <div class="sp-slider" data-f="apron_rake">
@@ -2192,7 +2261,7 @@
               <input type="range" min="2" max="24" step="0.5" value="5">
             </div>
             <div class="sp-slider" data-f="plaque_info_mm">
-              <div class="lab"><span class="name" title="How much of the plaque the left block gets. Auto gives it half. The chain names on the right always keep the width they need, so the plate gets wider instead of either side being squeezed.">Width of the left block</span><span class="val"></span></div>
+              <div class="lab"><span class="name" title="Share of the plaque for the left block. Auto gives it half; the plate widens rather than squeeze either side.">Width of the left block</span><span class="val"></span></div>
               <input type="range" min="0" max="140" step="2" value="0">
             </div>
             <div class="sp-slider" data-f="cradle_clearance">
@@ -2200,7 +2269,7 @@
               <input type="range" min="0.1" max="0.8" step="0.05" value="0.35">
             </div>
             <div class="sp-slider" data-f="cradle_depth">
-              <div class="lab"><span class="name" title="How far the seat wraps up around the model. Deeper stops it rocking. Too deep and the pocket needs supports of its own, and starts hiding the structure. 4 mm suits almost everything.">Cradle depth</span><span class="val"></span></div>
+              <div class="lab"><span class="name" title="How far the seat wraps up the model. Deeper stops rocking; too deep needs supports. 4 mm suits almost everything.">Cradle depth</span><span class="val"></span></div>
               <input type="range" min="1.5" max="9" step="0.5" value="4">
             </div>
             <div class="sp-slider" data-f="column_edge_frac">
@@ -2210,7 +2279,7 @@
 
             <!-- Last, and its two numbers only once it is on: the same shape as
                  the ligand block in the main panel. -->
-            <label class="sp-switch" style="margin-bottom:0" title="Splits the plate from the columns and joins them with a peg, so you can print the plate upside down. Lettering printed face-down against the build sheet comes out much cleaner. Push the two together afterwards."><input type="checkbox" id="sp-pins"><span class="track"></span>Pin the columns to the plate</label>
+            <label class="sp-switch" style="margin-bottom:0" title="Prints the plate on its own, upside down, so the lettering comes out cleaner. The columns attach with a peg afterwards." data-more="g-stand"><input type="checkbox" id="sp-pins"><span class="track"></span>Pin the columns to the plate</label>
             <div id="sp-pin-opts" class="switch-body" hidden>
               <div class="sp-slider" data-f="pin_diameter">
                 <div class="lab"><span class="name">Pin &Oslash;</span><span class="val"></span></div>
@@ -2329,124 +2398,282 @@
 
 
   <div id="manual" class="manual" hidden>
-    
-    <div class="manual-inner">
+
+  <div class="manual-inner">
     <button id="manual-close" class="manual-close" type="button" title="Close (Esc)" aria-label="Close">&times;</button>
-      <h3>How this works</h3>
-      <p class="lede">Type a PDB ID, pick a style, download a file your slicer understands.
-      Leave this open while you work down the settings &mdash; Generate closes it.</p>
+    <h3>Guide</h3>
+    <p class="lede">Type a PDB ID, press Generate, download the 3MF and open it in
+    your slicer. Everything else here is optional.</p>
 
-      <h4><span class="n">1</span> Load a structure</h4>
-      <p>Type a 4-character PDB ID and press Enter, or upload a <code>.pdb</code>,
-      <code>.cif</code>, <code>.mmcif</code> or <code>.bcif</code>. The examples load
-      with one click &mdash; <b>1UBQ</b> for a small protein, <b>1BNA</b> for a DNA
-      duplex, <b>1ZAA</b> for both together.</p>
+    <nav class="m-toc" aria-label="Guide sections">
+      <a href="#g-page">The page</a>
+      <a href="#g-start">Load</a>
+      <a href="#g-style">Style</a>
+      <a href="#g-size">Size &amp; assembly</a>
+      <a href="#g-magnets">Magnets</a>
+      <a href="#g-joints">Chains &amp; joints</a>
+      <a href="#g-ligands">Ligands</a>
+      <a href="#g-slicer">Slicing</a>
+      <a href="#g-share">Sharing</a>
+      <a href="#g-stand">Stand</a>
+      <a href="#g-trouble">If it fails</a>
+      <a href="#g-words">Words</a>
+    </nav>
 
-      <h4><span class="n">2</span> Pick a style</h4>
-      <dl>
-        <dt>Surface</dt>
-        <dd>Solid molecular surface. Chunky, robust, prints without supports. Use it unless you have a reason not to.</dd>
-        <dt>Cartoon / Tubes</dt>
-        <dd>Textbook ribbons, or the backbone alone. Both are delicate &mdash; plan on supports, ideally resin.</dd>
-        <dt>Tube-slab</dt>
-        <dd>For DNA and RNA: a backbone with one rung per base. Backbone and bases are set separately, and the sizes behind Advanced settings follow whichever pair you pick until you move them yourself.</dd>
-      </dl>
-
-      <h4>Ligands</h4>
-      <p>Bound molecules &mdash; hemes, drugs, metal ions &mdash; are off by default.
-      Turn on <b>Include ligands</b> and each one becomes its own object with its own
-      filament, sitting in a pocket carved to its shape. Four styles:</p>
-      <dl>
-        <dt>Ball &amp; stick</dt>
-        <dd>Atoms as spheres, bonds as rods. Atom and bond size are set independently.</dd>
-        <dt>Spacefill</dt>
-        <dd>Van der Waals spheres fused into one solid. The chunkiest option and the easiest print.</dd>
-        <dt>Surface</dt>
-        <dd>The same molecular surface the protein uses, so the drug and its pocket are built the same way and match. Sized by probe radius and surface padding under Protein.</dd>
-        <dt>Sticks</dt>
-        <dd>Bonds only, atoms just large enough to join them. Delicate.</dd>
-      </dl>
-      <p>Only the sliders the chosen style actually reads are shown, so the panel
-      changes as you switch between them.</p>
-
-      <h4><span class="n">3</span> Set the size</h4>
-      <dl>
-        <dt>Scale (mm/&#8491;)</dt>
-        <dd>How big it comes out. Estimated dimensions appear under the slider after the first build.</dd>
-        <dt>Grid spacing</dt>
-        <dd>Mesh resolution &mdash; smaller is finer and slower.</dd>
-        <dt>Min wall</dt>
-        <dd>Under Advanced: the thinnest feature allowed, grown to size as the model is built. Surface ignores it, being thick everywhere already.</dd>
-      </dl>
-      <p>What actually matters is grid spacing divided by scale, so dropping the
-      scale coarsens the mesh even though you never touched the grid.</p>
-
-      <h4><span class="n">4</span> Connect the chains</h4>
-      <p>Under <b>Printability &rarr; Assembly</b>. <b>One piece</b> joins the chains
-    in plastic, either by <b>Inflate</b> (grow the gap closed, nothing to size)
-    or <b>Bridges</b> (a rod of the diameter you set). <b>Takes apart</b> keeps the
-    chains as separate objects, held by <b>Magnets</b> in a pocket cut into each
-    side, or by <b>Nothing</b> at all &mdash; which is the default.</p>
-    <p><b>Press-fit clearance</b> defaults to 0.2&nbsp;mm, which is right for most
-    FDM printers: a nominal pocket prints undersize and will not take the magnet.
-    Raise it if the magnets will not go in, lower it if they fall out.</p>
-    <p><b>Connect DNA base pairs</b> fuses the two strands of a duplex at every
-    base pair, so the helix holds itself together.</p>
-    <h4><span class="n">5</span> Download and slice</h4>
-      <p>Take the <b>3MF</b>. In PrusaSlicer each chain opens as its own named object:
-      right-click one, <b>Change extruder</b>, assign a filament, slice. Per-chain STLs
-      come as a zip if you would rather. With magnets, push one into each pocket after
-      printing.</p>
-
-      <h4><span class="n">6</span> Put it on a display stand</h4>
-      <p>Optional, and only after a build. <b>Create display stand</b> adds a plate,
-      one to three columns whose tops are carved to fit the underside of the model,
-      and a front apron carrying an engraved plaque.</p>
-      <p>Turn the model to the pose you want <i>first</i>: whatever ends up
-      <b>down on your screen</b> becomes down on the desk. <b>Roll</b> spins the
-      view in place &mdash; the one turn orbiting cannot do &mdash; but while it is
-      off zero, dragging follows the rolled picture, so aim first and roll last.
-      Then lock the view and the settings panel opens on the right, with a live
-      sketch of the stand at the top that redraws as you change things.</p>
-      <dl>
-        <dt>Columns</dt>
-        <dd>Square, round, fluted or tapered, with an optional flared foot. Where they stand is worked out for you: a column can only go where nothing else is underneath it, and they are kept in from the silhouette edge.</dd>
-        <dt>Plaque</dt>
-        <dd>PDB ID, structure name, a scale bar with the &#8491;&rarr;mm ratio, a colour-matched chain legend, and a line of your own. Two bundled bold faces, or the stroke font when the lettering gets small.</dd>
-        <dt>Cradle</dt>
-        <dd>Each column top is hollowed to the model with a clearance you can set. The 0.35&nbsp;mm default is a starting point, not a measured value &mdash; the first print will tell you.</dd>
-      </dl>
-      <p>The stand comes out in the <b>same 3MF</b> as the model, as separate objects,
-      so plate, columns and lettering can each take their own filament. Printed in one
-      material the raised letters sit loose in their recesses &mdash; glue them, or
-      assign a second filament.</p>
-      <p>Stands are never cached: they are keyed to a pose nobody else will repeat,
-      so each one is solved fresh. Expect a few seconds on a small structure.</p>
-
-      <h4>How long it takes</h4>
-      <p>Finished builds are cached, so a structure someone has already made at the
-      same settings comes back immediately. If you are the first to ask, a small
-      protein takes about a minute and a large complex several &mdash; it is a small
-      server and the meshing is the slow part.</p>
-
-      <h4>If it fails</h4>
-      <p>Try going coarser, not finer. A coarse grid smooths a thin neck shut; a fine
-      one can resolve it into two surfaces meeting at a point, which is not printable
-      and gets rejected. Meshes are checked before export, so you get a message rather
-      than a broken file.</p>
-
-      <p class="m-foot">Free and open source, MIT &mdash;
-      <a href="https://github.com/davidtheadmin/pdb2print" target="_blank" rel="noopener">source on GitHub</a>.
-      Structures from the <a href="https://www.rcsb.org/" target="_blank" rel="noopener">RCSB PDB</a>.</p>
+    <h4 id="g-page">The page at a glance</h4>
+    <figure class="m-shot">
+        <img class="sh-l" src="img/guide/overview-light.webp" width="1280" height="800" alt="The whole pdb2print page after a build: settings on the left, the 3D preview on the right" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/overview-dark.webp" width="1280" height="800" alt="The whole pdb2print page after a build: settings on the left, the 3D preview on the right" loading="lazy" decoding="async">
+        <svg viewBox="0 0 1280 800" aria-hidden="true"><rect x="23" y="241" width="379" height="256" rx="9"/><g class="b"><circle cx="402" cy="241" r="14"/><text x="402" y="241">1</text></g><rect x="10" y="511" width="405" height="54" rx="9"/><g class="b"><circle cx="415" cy="511" r="14"/><text x="415" y="511">2</text></g><rect x="10" y="565" width="405" height="54" rx="9"/><g class="b"><circle cx="415" cy="565" r="14"/><text x="415" y="565">3</text></g><rect x="11" y="49" width="403" height="54" rx="9"/><g class="b"><circle cx="414" cy="49" r="14"/><text x="414" y="49">4</text></g><rect x="438" y="24" width="298" height="57" rx="9"/><g class="b"><circle cx="438" cy="24" r="14"/><text x="438" y="24">5</text></g><rect x="734" y="24" width="57" height="57" rx="9"/><g class="b"><circle cx="791" cy="24" r="14"/><text x="791" y="24">6</text></g><rect x="1069" y="24" width="187" height="50" rx="9"/><g class="b"><circle cx="1069" cy="24" r="14"/><text x="1069" y="24">7</text></g><rect x="1116" y="72" width="140" height="46" rx="9"/><g class="b"><circle cx="1116" cy="72" r="14"/><text x="1116" y="72">8</text></g><rect x="436" y="558" width="449" height="36" rx="9"/><g class="b"><circle cx="885" cy="558" r="14"/><text x="885" y="558">9</text></g><rect x="423" y="621" width="848" height="158" rx="9"/><g class="b"><circle cx="423" cy="621" r="14"/><text x="423" y="621">10</text></g><rect x="118" y="13" width="100" height="36" rx="9"/><g class="b"><circle cx="218" cy="17" r="14"/><text x="218" y="17">11</text></g></svg>
+      </figure>
+    <ol class="m-callouts">
+      <li><b>Load a structure:</b> type a PDB ID, upload a file, or pick an example.</li>
+      <li><b>Style:</b> how protein, DNA and ligands are drawn.</li>
+      <li><b>Printability:</b> how big it comes out, and whether it comes apart.</li>
+      <li><b>Generate</b> builds the model. The line under it sums up your settings.</li>
+      <li><b>Download</b> the 3MF, one coloured object per chain, or a zip of STLs.</li>
+      <li><b>Copy a link</b> that reopens this build with the same settings.</li>
+      <li><b>Display stand:</b> a plate, columns and an engraved plaque for the model.</li>
+      <li><b>Chains &amp; joints:</b> leave chains out, or change single joints.</li>
+      <li><b>Colour key:</b> each chain's colour, name and chain letter.</li>
+      <li><b>Build report:</b> what was made, and any warnings.</li>
+      <li>Light or dark theme, this guide, and privacy and licence.</li>
+    </ol>
+    <div class="m-fig side narrow-img">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/tooltip-light.webp" width="722" height="270" alt="A setting with its explanation shown in a box beside the panel" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/tooltip-dark.webp" width="722" height="270" alt="A setting with its explanation shown in a box beside the panel" loading="lazy" decoding="async">
+      </figure>
+      <p>Settings with an <span class="m-i">i</span> have a short explanation. Hover
+      over it, or tap it on a phone. Where the guide says more, click the
+      <span class="m-i">i</span> (or tap it again) to jump here.</p>
     </div>
+
+    <h4 id="g-start"><span class="n">1</span> Load a structure</h4>
+    <p>Type a PDB ID and press Enter or Generate. The usual 4-character codes
+    (<code>1UBQ</code>) work, and so do the newer 12-character ones
+    (<code>pdb_00001ubq</code>). You find IDs on
+    <a href="https://www.rcsb.org/" target="_blank" rel="noopener">rcsb.org</a>.
+    You can also upload a <code>.pdb</code>, <code>.cif</code>, <code>.mmcif</code>
+    or <code>.bcif</code> file; it is deleted once the build is done.</p>
+    <p>The examples load with one click: <b>1UBQ</b> a small protein,
+    <b>1BNA</b> a stretch of DNA, <b>1ZAA</b> and <b>1TUP</b> proteins on DNA,
+    <b>2HHB</b> haemoglobin with its four haems, <b>1AOI</b> a nucleosome.</p>
+
+    <h4 id="g-style"><span class="n">2</span> Pick a style</h4>
+    <div class="m-fig side">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/style-light.webp" width="397" height="812" alt="The Style step: buttons for the protein style, the DNA style, and ligands" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/style-dark.webp" width="397" height="812" alt="The Style step: buttons for the protein style, the DNA style, and ligands" loading="lazy" decoding="async">
+        <svg viewBox="0 0 397 812" aria-hidden="true"><rect x="9" y="85" width="379" height="59" rx="9"/><g class="b"><circle cx="380" cy="85" r="14"/><text x="380" y="85">1</text></g><rect x="12" y="148" width="375" height="44" rx="9"/><g class="b"><circle cx="380" cy="148" r="14"/><text x="380" y="148">2</text></g><rect x="9" y="245" width="379" height="59" rx="9"/><g class="b"><circle cx="380" cy="245" r="14"/><text x="380" y="245">3</text></g><rect x="9" y="308" width="379" height="214" rx="9"/><g class="b"><circle cx="380" cy="308" r="14"/><text x="380" y="308">4</text></g><rect x="9" y="574" width="379" height="167" rx="9"/><g class="b"><circle cx="380" cy="574" r="14"/><text x="380" y="574">5</text></g></svg>
+      </figure>
+      <ol class="m-callouts">
+        <li><b>Protein.</b> <i>Surface</i> is a solid skin: sturdy, and prints
+        without supports. Use it unless you have a reason not to. <i>Cartoon</i>
+        (ribbons) and <i>Tubes</i> (the backbone) show the fold, but they are thin:
+        plan on supports, ideally a resin printer.</li>
+        <li><b>Advanced settings</b> hold the finer sizes. The number says how many.
+        The defaults are fine to start with.</li>
+        <li><b>DNA / RNA.</b> <i>Surface</i> again, or <i>Tube-slab</i>: the strands
+        as tubes, the bases as rungs between them.</li>
+        <li><b>Tube-slab parts.</b> The backbone as a smooth tube or as balls and
+        sticks; the bases as plates, rods, or balls and sticks. Rods are the
+        sturdiest.</li>
+        <li><b>Ligands</b>, off by default. See <a href="#g-ligands">Ligands</a>.</li>
+      </ol>
+    </div>
+    <p>Cartoon has one more choice, <b>Hydrogen bonds</b>: a rung across each
+    hydrogen bond in the backbone: for the helices, the sheets, both, or every bond. It makes the
+    print stiffer, and the build takes about twice as long.</p>
+
+    <h4 id="g-size"><span class="n">3</span> Size and assembly</h4>
+    <div class="m-fig side">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/print-light.webp" width="397" height="915" alt="The Printability step: the Scale slider, Assembly choice, and the magnet settings" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/print-dark.webp" width="397" height="915" alt="The Printability step: the Scale slider, Assembly choice, and the magnet settings" loading="lazy" decoding="async">
+        <svg viewBox="0 0 397 915" aria-hidden="true"><rect x="9" y="83" width="379" height="68" rx="9"/><g class="b"><circle cx="380" cy="83" r="14"/><text x="380" y="83">1</text></g><rect x="12" y="155" width="375" height="44" rx="9"/><g class="b"><circle cx="380" cy="155" r="14"/><text x="380" y="155">2</text></g><rect x="9" y="252" width="379" height="59" rx="9"/><g class="b"><circle cx="380" cy="252" r="14"/><text x="380" y="252">3</text></g><rect x="22" y="323" width="353" height="31" rx="9"/><g class="b"><circle cx="375" cy="323" r="14"/><text x="375" y="323">4</text></g><rect x="22" y="578" width="353" height="49" rx="9"/><g class="b"><circle cx="375" cy="578" r="14"/><text x="375" y="578">5</text></g><rect x="22" y="649" width="353" height="90" rx="9"/><g class="b"><circle cx="375" cy="649" r="14"/><text x="375" y="649">6</text></g><rect x="22" y="752" width="353" height="31" rx="9"/><g class="b"><circle cx="375" cy="752" r="14"/><text x="375" y="752">7</text></g><rect x="9" y="873" width="379" height="31" rx="9"/><g class="b"><circle cx="380" cy="873" r="14"/><text x="380" y="873">8</text></g></svg>
+      </figure>
+      <ol class="m-callouts">
+        <li><b>Scale</b> is millimetres of print per ångström of structure. After a
+        build the real dimensions appear here.</li>
+        <li><b>Advanced settings:</b> <i>Grid spacing</i> sets the mesh detail;
+        <i>Min wall</i> is the thinnest part it will build.</li>
+        <li><b>Takes apart</b> keeps each chain its own object, so you can print
+        them in different colours. <b>One piece</b> joins them in plastic.</li>
+        <li><b>Magnets</b> cut a pocket on both sides of every joint.</li>
+        <li><b>Magnet size:</b> set Ø and thickness to the magnets you have.</li>
+        <li><b>Magnets per interface:</b> how many go into each joint.</li>
+        <li><b>Flush socket</b> gives both parts a flat collar where they meet.</li>
+        <li><b>Connect DNA base pairs</b> joins the two strands, so the helix holds
+        together instead of printing as two loose spirals.</li>
+      </ol>
+    </div>
+    <p><b>One piece</b> has three ways to join the chains: <i>Inflate</i> grows
+    them until the gaps close; <i>Bridges</i> puts a rod of the size you choose
+    across each gap; <i>Overlap</i> leaves everything exactly where the structure
+    has it, so only chains that already overlap end up fused.</p>
+    <p>Grid spacing and Scale work against each other: what counts is one divided
+    by the other. Lowering the scale makes the mesh coarser, even if you never
+    touch the grid.</p>
+
+    <h4 id="g-magnets">Magnets</h4>
+    <p>Round disc magnets, 4&nbsp;&times;&nbsp;2&nbsp;mm, are the default; set the
+    size to whatever you bought. <b>Press-fit clearance</b>, under Advanced settings
+    in the magnet box, starts at 0.2&nbsp;mm. Raise it if the magnets will not go
+    in, lower it if they fall out.</p>
+    <p>After printing, push one magnet into each pocket. Before pushing in the
+    second magnet of a joint, stick it onto the first one: that way round the two
+    parts attract instead of pushing each other away.</p>
+    <p>A ligand sits in a pocket cut to its shape and needs no magnet. With ligands
+    on, <b>Magnet on ligands</b> adds one where there is room. When a joint has no
+    room for a magnet, <a href="#g-joints">Chains &amp; joints</a> says so and that
+    joint gets none.</p>
+
+    <h4 id="g-joints">Chains &amp; joints</h4>
+    <div class="m-fig side">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/joints-light.webp" width="390" height="800" alt="The Chains and joints panel: a list of chains with Remove buttons, and a list of joints" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/joints-dark.webp" width="390" height="800" alt="The Chains and joints panel: a list of chains with Remove buttons, and a list of joints" loading="lazy" decoding="async">
+        <svg viewBox="0 0 390 800" aria-hidden="true"><rect x="25" y="111" width="342" height="185" rx="9"/><g class="b"><circle cx="25" cy="111" r="14"/><text x="25" y="111">1</text></g><rect x="170" y="330" width="134" height="44" rx="9"/><g class="b"><circle cx="170" cy="330" r="14"/><text x="170" y="330">2</text></g><rect x="331" y="338" width="36" height="29" rx="9"/><g class="b"><circle cx="367" cy="338" r="14"/><text x="367" y="338">3</text></g><rect x="26" y="735" width="340" height="43" rx="9"/><g class="b"><circle cx="26" cy="735" r="14"/><text x="26" y="735">4</text></g></svg>
+      </figure>
+      <div>
+        <p>Opens from the button over the preview after a build. Use it when one
+        chain or one joint should be different from the rest.</p>
+        <ol class="m-callouts">
+          <li><b>Remove</b> a chain to leave it out. It is not built, and nothing is
+          carved to fit it.</li>
+          <li><b>Each joint</b> between two chains: <i>Default</i> follows the
+          Assembly setting, <i>None</i> leaves the pair apart, <i>Join</i> fuses
+          them.</li>
+          <li><b>The arrow</b> sets how many magnets this one joint gets. It shows
+          the number once you have set one.</li>
+          <li><b>Regenerate</b> builds again with your changes.</li>
+        </ol>
+      </div>
+    </div>
+
+    <h4 id="g-ligands">Ligands</h4>
+    <p>Drugs, haems and metals bound to the protein. Turn on <b>Include
+    ligands</b> and each one becomes its own object, in its own filament, sitting in
+    a pocket carved to its shape. Water, lone ions and leftovers from
+    crystallisation are always skipped.</p>
+    <dl>
+      <dt>Spacefill</dt><dd>Atoms as fused spheres. The sturdiest.</dd>
+      <dt>Surface</dt><dd>The same skin the protein uses, so ligand and pocket match.</dd>
+      <dt>Ball &amp; stick</dt><dd>Reads as chemistry. Atom and bond size are set separately.</dd>
+      <dt>Sticks</dt><dd>Bonds only. Clearest to read, easiest to break.</dd>
+    </dl>
+    <p>Two things to know. The pocket in the protein is often sealed, so the slicer
+    fills it with support. And ligand sizes are in millimetres while atom spacing
+    follows Scale, so when you raise the scale, raise the ligand size with it.</p>
+
+    <h4 id="g-slicer"><span class="n">4</span> Download and slice</h4>
+    <p>Take the <b>3MF</b>. Each chain opens as its own named object, ready for a
+    filament of its own:</p>
+    <ul>
+      <li><b>PrusaSlicer:</b> right-click an object, <i>Change extruder</i>, pick one.</li>
+      <li><b>Bambu Studio / OrcaSlicer:</b> pick the filament for each object in the
+      object list.</li>
+    </ul>
+    <p>Only one filament? Print all of it in one colour, or the chains one after the
+    other. The <b>STL</b> button gives one file per chain in a zip, for slicers
+    without 3MF.</p>
+
+    <h4 id="g-share">Sharing a build</h4>
+    <p>The button next to the downloads copies a link. It holds the PDB ID and every
+    setting, so whoever opens it gets the same build, and it is also the most
+    useful thing to put in a bug report. A build from an uploaded file cannot be
+    shared this way. A link from an older version of the site shows a message
+    instead of opening.</p>
+
+    <h4 id="g-stand"><span class="n">5</span> Put it on a display stand</h4>
+    <p>Optional, and only after a build. <b>Create display stand</b> asks for a
+    pose first:</p>
+    <div class="m-fig">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/stand-lock-light.webp" width="836" height="586" alt="The display stand prompt over the 3D preview, with a Roll slider and a Lock this view button" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/stand-lock-dark.webp" width="836" height="586" alt="The display stand prompt over the 3D preview, with a Roll slider and a Lock this view button" loading="lazy" decoding="async">
+        <svg viewBox="0 0 836 586" aria-hidden="true"><rect x="25" y="65" width="480" height="446" rx="9"/><g class="b"><circle cx="25" cy="65" r="14"/><text x="25" y="65">1</text></g><rect x="536" y="216" width="280" height="46" rx="9"/><g class="b"><circle cx="536" cy="216" r="14"/><text x="536" y="216">2</text></g><rect x="542" y="329" width="268" height="43" rx="9"/><g class="b"><circle cx="542" cy="329" r="14"/><text x="542" y="329">3</text></g></svg>
+      </figure>
+      <ol class="m-callouts">
+        <li><b>Drag</b> to turn the model. Whatever ends up down on your screen
+        becomes down on the desk.</li>
+        <li><b>Roll</b> spins the view in place. Aim first, roll last: while roll
+        is not zero, dragging follows the rolled picture.</li>
+        <li><b>Lock this view</b> when it looks right.</li>
+      </ol>
+    </div>
+    <div class="m-fig side">
+      <figure class="m-shot">
+        <img class="sh-l" src="img/guide/stand-panel-light.webp" width="390" height="800" alt="The display stand panel: a live sketch of the stand, three setting sections and a Generate stand button" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/stand-panel-dark.webp" width="390" height="800" alt="The display stand panel: a live sketch of the stand, three setting sections and a Generate stand button" loading="lazy" decoding="async">
+        <svg viewBox="0 0 390 800" aria-hidden="true"><rect x="12" y="73" width="368" height="309" rx="9"/><g class="b"><circle cx="17" cy="73" r="14"/><text x="17" y="73">1</text></g><rect x="26" y="384" width="340" height="135" rx="9"/><g class="b"><circle cx="26" cy="384" r="14"/><text x="26" y="384">2</text></g><rect x="104" y="43" width="49" height="25" rx="9"/><g class="b"><circle cx="153" cy="43" r="14"/><text x="153" y="43">3</text></g><rect x="26" y="731" width="340" height="47" rx="9"/><g class="b"><circle cx="26" cy="731" r="14"/><text x="26" y="731">4</text></g></svg>
+      </figure>
+      <div>
+        <p>The stand settings open beside the preview.</p>
+        <ol class="m-callouts">
+          <li><b>Live sketch</b> of the stand. It redraws as you change things.</li>
+          <li><b>Style</b> (columns and plate), <b>Plaque</b> (the lettering) and
+          <b>Advanced</b>.</li>
+          <li><b>Unlock</b> to go back and change the pose.</li>
+          <li><b>Generate stand</b> builds it. Expect a few seconds.</li>
+        </ol>
+      </div>
+    </div>
+    <p>The plaque carries the structure name, the PDB ID, a scale bar and, if you
+    want, a colour key of the chains and a line of your own. The stand comes out in
+    the <b>same 3MF</b> as separate objects: plate, columns and lettering can each
+    have a filament. Printed in one material the letters come out loose; glue them
+    in, or give them a second colour. The seat on top of each column is cut with a
+    clearance of 0.35&nbsp;mm; your first print tells you whether to change it.</p>
+
+    <h4 id="g-time">How long it takes</h4>
+    <p>Builds are cached, so a structure someone already made with the same settings
+    comes back straight away. If you are the first, a small protein takes about a
+    minute and a large complex several. When the server is busy your build waits in
+    a queue and the page tells you where you are.</p>
+
+    <h4 id="g-trouble">If it fails</h4>
+    <ul>
+      <li><b>The build is rejected:</b> go coarser, not finer. Raise Grid spacing
+      under Printability &rarr; Advanced settings. A fine grid can turn a thin neck
+      into two surfaces touching at a point, which cannot be printed.</li>
+      <li><b>Parts are too thin to print:</b> use Surface, raise Scale, or raise Min
+      wall.</li>
+      <li><b>Magnets do not fit:</b> raise Press-fit clearance, or check that the
+      magnet size matches yours.</li>
+      <li><b>A structure will not load:</b> check the ID on rcsb.org. Large
+      complexes take several minutes; try a coarser grid first.</li>
+    </ul>
+    <p>Every model is checked before export, so you get a message rather than a
+    broken file. Still stuck? Copy the share link and open an issue on
+    <a href="https://github.com/davidtheadmin/pdb2print/issues" target="_blank" rel="noopener">GitHub</a>.</p>
+
+    <h4 id="g-words">Words used here</h4>
+    <dl>
+      <dt>PDB ID</dt><dd>The code of an entry in the Protein Data Bank, the public archive of molecular structures.</dd>
+      <dt>Chain</dt><dd>One continuous molecule in an entry: a protein chain, or one DNA strand.</dd>
+      <dt>Ligand</dt><dd>A small molecule bound to the structure, such as a drug or a haem.</dd>
+      <dt>Å (ångström)</dt><dd>0.1 nanometres. A bond between two carbon atoms is about 1.5&nbsp;Å long.</dd>
+      <dt>Scale</dt><dd>Millimetres of print per ångström. At 1.5, a protein 40&nbsp;Å wide prints 60&nbsp;mm wide.</dd>
+      <dt>3MF</dt><dd>A 3D print file that keeps several named objects in one file, unlike STL.</dd>
+      <dt>Slicer</dt><dd>The program that turns a model into instructions for your printer, such as PrusaSlicer or Bambu Studio.</dd>
+      <dt>Supports</dt><dd>Temporary plastic the slicer adds under overhangs, removed after printing.</dd>
+      <dt>Watertight</dt><dd>A closed mesh without holes. Slicers need it; pdb2print checks every part.</dd>
+    </dl>
+
+    <p class="m-foot">Free and open source, MIT &mdash;
+    <a href="https://github.com/davidtheadmin/pdb2print" target="_blank" rel="noopener">source on GitHub</a>.
+    Structures from the <a href="https://www.rcsb.org/" target="_blank" rel="noopener">RCSB PDB</a>.</p>
   </div>
+</div>
 
 
   <!-- ============ WELCOME =====================================================
        Shown until it is dismissed with the checkbox ticked. What is stored is the
        release string, not a boolean, so bumping WELCOME_VERSION in the script
        brings the dialog back for everyone who ticked it — which is what "until
-       there's something new" promises. Keep the "New in this release" list in
+       there's something new" promises. Keep the "New since" list in
        step with that bump; a version bump with a stale list is worse than not
        bumping at all.
   ======================================================================= -->
@@ -2455,24 +2682,32 @@
     <div class="wel">
       <button id="wel-close" class="wel-close" type="button" title="Close (Esc)" aria-label="Close">&times;</button>
       <h3 id="wel-title">Welcome to pdb2print</h3>
-      <p class="lede">Turn a protein or DNA structure into something you can hold
-      &mdash; free, no account, nothing to install.</p>
+      <p class="lede">Turn a protein or DNA structure into a model you can 3D print.
+      Free, no account, nothing to install.</p>
 
       <h4>Quick start</h4>
-      <ol>
-        <li>Enter a PDB ID, upload a <code>.pdb</code>/<code>.cif</code>, or click one of the examples.</li>
-        <li>Pick a style &mdash; surface for a robust print, cartoon or tubes for ribbons, tube-slab for DNA.</li>
-        <li>Set the size, and choose whether it comes apart or prints as one piece.</li>
-        <li>Generate, then download the 3MF and open it in your slicer.</li>
+      <figure class="m-shot wel-shot">
+        <img class="sh-l" src="img/guide/overview-light.webp" width="1280" height="800" alt="The pdb2print page with the four steps marked: structure, style and printability on the left, Generate at the top, downloads over the preview" loading="lazy" decoding="async">
+        <img class="sh-d" src="img/guide/overview-dark.webp" width="1280" height="800" alt="The pdb2print page with the four steps marked: structure, style and printability on the left, Generate at the top, downloads over the preview" loading="lazy" decoding="async">
+        <svg viewBox="0 0 1280 800" aria-hidden="true"><rect x="22" y="240" width="381" height="258" rx="12"/><g class="b"><circle cx="403" cy="240" r="30"/><text x="403" y="240">1</text></g><rect x="9" y="510" width="407" height="56" rx="12"/><g class="b"><circle cx="416" cy="510" r="30"/><text x="416" y="510">2</text></g><rect x="9" y="564" width="407" height="56" rx="12"/><g class="b"><circle cx="416" cy="564" r="30"/><text x="416" y="564">3</text></g><rect x="10" y="48" width="405" height="56" rx="12"/><g class="b"><circle cx="415" cy="48" r="30"/><text x="415" y="48">4</text></g><rect x="437" y="23" width="300" height="59" rx="12"/><g class="b"><circle cx="737" cy="33" r="30"/><text x="737" y="33">4</text></g></svg>
+      </figure>
+      <ol class="wel-steps">
+        <li><b>Load a structure.</b> Type a PDB ID, upload a file, or click an example.</li>
+        <li><b>Pick a style.</b> Surface is the easiest to print.</li>
+        <li><b>Set the size</b>, and choose whether the chains come apart.</li>
+        <li><b>Generate</b>, then download the 3MF and open it in your slicer.</li>
       </ol>
+      <div class="wel-actions">
+        <button id="wel-try" class="wel-ok" type="button">Try it with 1ZAA</button>
+        <button id="wel-guide" class="wel-link" type="button">Open the full guide</button>
+      </div>
 
-      <h4>New in this release <span class="when">&mdash; July 2026</span></h4>
+      <h4>New since July</h4>
       <ul class="new">
-        <li><b>Display stands</b> &mdash; after a build, mount the model on a plate with
-        carved columns and an engraved plaque: PDB ID, name, scale bar and a
-        colour-matched chain legend. Three column styles.</li>
-        <li><b>Ligand styles</b> &mdash; hemes, drugs and metals in ball &amp; stick,
-        spacefill, surface or sticks, each in its own carved pocket.</li>
+        <li><b>Chains &amp; joints:</b> leave chains out, and set the magnets joint by joint.</li>
+        <li><b>Share links</b> that reopen a build with the same settings.</li>
+        <li><b>Magnets on ligands</b>, magnets up to 10&nbsp;mm thick, and
+        hydrogen-bond struts for cartoons.</li>
       </ul>
 
       <div class="wel-foot">
@@ -2480,12 +2715,12 @@
           <input type="checkbox" id="wel-skip">
           Don&rsquo;t show this again until there&rsquo;s something new
         </label>
-        <button id="wel-ok" class="wel-ok" type="button">Got it</button>
+        <button id="wel-ok" class="wel-ok quiet" type="button">Got it</button>
       </div>
     </div>
   </div>
 
-<script>
+  <script>
 (function () {
   "use strict";
 
@@ -3865,8 +4100,8 @@
     if (h) btn.style.width = h + 'px';
     const ready = !!builtShare && !downloadsHeld;
     btn.setAttribute('aria-disabled', ready ? 'false' : 'true');
-    btn.title = builtShare
-      ? 'Copy a link that carries these settings'
+    btn.dataset.help = builtShare
+      ? 'Copy a link that reopens this build with these settings'
       : (fileInput.files.length
          ? 'A link can only carry a PDB ID — an uploaded file cannot be shared'
          : 'Available once a model has been built');
@@ -6032,6 +6267,13 @@
     if (on) setPanel(legalEl, legalBtn, false);
     setPanel(manualEl, helpBtn, on);
   }
+  // Open the guide at one section. Used by the "i" markers that carry a
+  // data-more, and by the welcome card's links.
+  function openGuide(id) {
+    showManual(true);
+    const sec = id && document.getElementById(id);
+    if (sec) requestAnimationFrame(() => sec.scrollIntoView({ block: 'start' }));
+  }
   function showLegal(on) {
     if (on) setPanel(manualEl, helpBtn, false);
     setPanel(legalEl, legalBtn, on);
@@ -6048,7 +6290,7 @@
   // Bump WELCOME_VERSION when the "New in this release" list changes: the stored
   // value is compared against it, so a bump re-shows the dialog once to everyone
   // who ticked the box, and to nobody twice.
-  const WELCOME_VERSION = '2026-07';
+  const WELCOME_VERSION = '2026-09';
   const WELCOME_KEY = 'pdb2print.welcome';
   const welEl = $('#welcome'), welSkip = $('#wel-skip');
   // localStorage throws rather than returning null in a few configurations
@@ -6068,9 +6310,18 @@
   }
   if (lsGet(WELCOME_KEY) !== WELCOME_VERSION) {
     welEl.hidden = false;
-    $('#wel-ok').focus();
+    $('#wel-try').focus();
   }
   $('#wel-ok').addEventListener('click', closeWelcome);
+  // The quick start's own first step, done for you: load the example most
+  // likely to be cached and build it, so the first thing you see is a model.
+  $('#wel-try').addEventListener('click', () => {
+    closeWelcome();
+    $('#pdb-id').value = '1ZAA';
+    clearFile();
+    generate();
+  });
+  $('#wel-guide').addEventListener('click', () => { closeWelcome(); openGuide('g-page'); });
   $('#wel-close').addEventListener('click', closeWelcome);
   welEl.addEventListener('click', e => { if (e.target === welEl) closeWelcome(); });
 
@@ -6275,6 +6526,7 @@
     tip.setAttribute('role', 'tooltip');
     document.body.appendChild(tip);
     let cur = null;
+    let lastPointer = 'mouse', shownAtDown = null;
 
     function hide() {
       if (!cur) return;
@@ -6288,6 +6540,16 @@
       cur = el;
       el.classList.add('on');
       tip.textContent = el.dataset.help;
+      // An "i" with somewhere to go says so. Wording follows what the person
+      // is holding: a mouse clicks, a finger taps the marker a second time.
+      if (el.classList.contains('hx') && el.dataset.more) {
+        const m = document.createElement('span');
+        m.className = 'tip-more';
+        m.textContent = lastPointer === 'touch'
+          ? 'Tap the i again for more in the guide'
+          : 'Click the i for more in the guide';
+        tip.appendChild(m);
+      }
       tip.classList.add('show');
       // Beside the panel, never on top of it. A tooltip that drops below its
       // own control covers the next control down — usually the very thing the
@@ -6314,19 +6576,25 @@
     // Harvest. A control that is itself a button becomes its own target;
     // anything else gets a small marker appended, so the affordance only
     // exists where there is something to say.
-    [$('.settings'), $('#stand-panel'), $('#joints-panel')].filter(Boolean).forEach(root => {
+    // The toolbar over the viewer is harvested too: those are all buttons and
+    // links, so they carry the popover themselves and get no marker. The share
+    // button writes its own data-help as its state changes (syncShareBtn).
+    [$('.settings'), $('#stand-panel'), $('#joints-panel'),
+     $('.dl-group'), $('.stand-group')].filter(Boolean).forEach(root => {
       $$('[title]', root).forEach(el => {
         if (el.id === 'upload-btn' || el.classList.contains('icon-btn')
-            || el.classList.contains('support-btn')) return;
+            || el.classList.contains('support-btn')
+            || el.classList.contains('sp-close')) return;
         const txt = (el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
         if (!txt) return;
         el.removeAttribute('title');
-        if (el.tagName === 'BUTTON') { el.dataset.help = txt; return; }
+        if (el.tagName === 'BUTTON' || el.tagName === 'A') { el.dataset.help = txt; return; }
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'hx';
         b.textContent = 'i';
         b.dataset.help = txt;
+        if (el.dataset.more) b.dataset.more = el.dataset.more;
         b.setAttribute('aria-label', 'Explain this setting');
         el.appendChild(b);
       });
@@ -6342,6 +6610,21 @@
     });
     document.addEventListener('keydown', e => { if (e.key === 'Escape') hide(); });
     document.addEventListener('scroll', hide, true);
+
+    // An "i" with a data-more opens the guide at its section. A mouse click
+    // opens it straight away; on a touch screen the first tap is the only way
+    // to read the popover at all, so it takes a second tap on the same marker.
+    document.addEventListener('pointerdown', e => {
+      lastPointer = e.pointerType || 'mouse';
+      shownAtDown = cur;
+    }, true);
+    document.addEventListener('click', e => {
+      const t = e.target.closest && e.target.closest('.hx[data-more]');
+      if (!t) return;
+      if (lastPointer === 'touch' && shownAtDown !== t) { show(t); return; }
+      hide();
+      openGuide(t.dataset.more);
+    });
   })();
 
   /* ---- Advanced: depth you can see without opening it ---------------

@@ -1,0 +1,9 @@
+{
+  "name": "pdb2print-guide-screens",
+  "private": true,
+  "type": "module",
+  "description": "Screenshots for the in-app guide. See capture.mjs.",
+  "dependencies": {
+    "playwright": "^1.55.0"
+  }
+}
