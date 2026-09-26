@@ -39,8 +39,7 @@ def figures(B):
     corner its number sits on)."""
     ov, jo, sl, sp = B["overview"], B["joints"], B["stand_lock"], B["stand_panel"]
     es, ep = B["el_style"], B["el_print"]
-    v, sh = sl["viewer"], sl["sheet"]
-    model = [v[0] + 30, v[1] + 70, sh[0] - v[0] - 60, v[3] - 150]   # left of the prompt
+    v = sl["viewer"]
     dp = es["dnaparts"]
     return {
         "overview": ("overview.png", None, 1600, [
@@ -52,8 +51,8 @@ def figures(B):
         "joints": ("joints.png", [890, 0, 390, 800], 780, [
             (1, jo["chains"], "tl"), (2, jo["seg"], "tl"), (3, jo["arrow"], "tr"), (4, jo["go"], "tl")]),
         "stand-lock": ("stand_lock.png", v, 1254, [
-            (1, model, "tl"), (2, [sl["roll"][0] - 6, sl["roll"][1] - 26, sl["roll"][2] + 12, 36], "tl"),
-            (3, sl["lock"], "tl")]),
+            (1, [sl["roll"][0] - 6, sl["roll"][1] - 26, sl["roll"][2] + 12, 36], "tl"),
+            (2, sl["lock"], "tl")]),
         "stand-panel": ("stand_panel.png", [890, 0, 390, 800], 780, [
             (1, sp["sketch"], "tl"), (2, union(sp["sec1"], sp["sec3"]), "tl"),
             (3, sp["unlock"], "tr"), (4, sp["go"], "tl")]),
@@ -70,10 +69,10 @@ def figures(B):
 
 
 def welcome_marks(B):
-    """The welcome card's small copy of the overview: four steps, big numbers."""
+    """The welcome card's small copy of the overview: five steps, big numbers."""
     ov = B["overview"]
     return [(1, union(ov["pdb"], ov["examples"])), (2, ov["style"]), (3, ov["print"]),
-            (4, ov["generate"]), (4, union(ov["dl3mf"], ov["dlstl"]))]
+            (4, ov["generate"]), (5, union(ov["dl3mf"], ov["dlstl"]))]
 
 
 def svg_marks(marks, off, w, h, pad=5, r=14, rx=9):
