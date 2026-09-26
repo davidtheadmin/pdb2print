@@ -90,6 +90,7 @@ from scipy.spatial import cKDTree
 from .config import (
     PrintParams, ConnectionParams, NoMagnetMethod, MagnetShape,
     MoleculeType, BaseStyle, InterferenceRule, Representation,
+    MAGNETABLE_LIGAND_STYLES,
 )
 from .chains import Chain
 from .representations import _manifold, tube_slab
@@ -126,6 +127,12 @@ class Connection:
     #: pair, as opposed to falling out of a global setting.  Only the first is
     #: something the front end should show as a choice already made.
     by_hand: bool = False
+    #: The count the user asked for on this pair, or 0 when they asked for
+    #: nothing and the global setting decided.  Separate from :attr:`count`,
+    #: which is how many seats actually took: asking for three and getting two
+    #: is a fine outcome, and a row that compared the two would read as
+    #: "changed, not built yet" for as long as the setting stood.
+    asked: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -133,6 +140,7 @@ class Connection:
             "method": self.method, "gap_mm": round(float(self.gap_mm), 2),
             "count": self.count, "applied": self.applied, "note": self.note,
             "ai": self.ai, "bi": self.bi, "by_hand": self.by_hand,
+            "asked": self.asked,
         }
 
 
@@ -176,14 +184,32 @@ def _min_wall_radius(params: PrintParams, r: float) -> float:
     return r
 
 
-#: The two things a user can say about one pair.  Not a method picker: a pair
-#: with no override follows the global setting, so this can only ever remove a
-#: joint the build would have made, never contradict the control that made it.
+#: The two *word* things a user can say about one pair.  A third form, a
+#: decimal count, is accepted alongside these — see :func:`joint_overrides`.
 JOINT_MODES = ("none", "join")
+
+#: How many magnets one interface of each kind will accept from a per-pair
+#: override.  These are the ranges the front end offers, repeated here because
+#: the field is free text on the wire and a crafted line must not be able to ask
+#: for a thousand seats.  A ligand is capped at one: the interface is a few
+#: millimetres of drug and a second seat could never clear the spacing rule.
+MAX_JOINT_COUNT = {
+    "protein-protein": 5,
+    "dna-protein": 2,
+    "dna-dna": 2,
+    "ligand": 1,
+}
+_MAX_JOINT_COUNT_ANY = max(MAX_JOINT_COUNT.values())
 
 
 def joint_overrides(raw: str) -> Dict[Tuple[int, int], str]:
     """Parse ``i<TAB>j<TAB>mode`` lines into ``{(i, j): mode}`` with ``i < j``.
+
+    ``mode`` is ``none``, ``join``, or a decimal count for that pair alone.  A
+    count replaces the global "magnets per interface" on this one interface and
+    nothing else; it is clamped again at the point of use, because the ceiling
+    depends on what kind of interface it turns out to be and that is not known
+    here.  ``0`` is accepted and behaves as ``none``.
 
     Best-effort by design, like :func:`stand.legend_overrides`: a malformed line
     is skipped rather than raised on, because one typo must not cost the user
@@ -191,9 +217,9 @@ def joint_overrides(raw: str) -> Dict[Tuple[int, int], str]:
 
     The pair is normalised to ``i < j`` so a caller that wrote it the other way
     round still addresses the row it meant.  A pair naming the same index twice
-    is dropped — there is no such joint.  A pair that is not offered at all (a
-    ligand, two DNA strands, two parts that never touch) is left in the mapping
-    and simply never looked up.
+    is dropped — there is no such joint.  A pair that is not offered at all (two
+    DNA strands, two parts that never touch) is left in the mapping and simply
+    never looked up.
     """
     out: Dict[Tuple[int, int], str] = {}
     for line in (raw or "").splitlines():
@@ -204,9 +230,15 @@ def joint_overrides(raw: str) -> Dict[Tuple[int, int], str]:
             i, j = int(parts[0].strip()), int(parts[1].strip())
         except ValueError:
             continue
-        mode = parts[2].strip().lower()
-        if mode not in JOINT_MODES or i == j or i < 0 or j < 0:
+        if i == j or i < 0 or j < 0:
             continue
+        mode = parts[2].strip().lower()
+        if mode not in JOINT_MODES:
+            # ``isdigit`` and not ``int()``: a sign or a decimal point is a
+            # malformed line, not a number to be rounded into something.
+            if not mode.isdigit() or int(mode) > _MAX_JOINT_COUNT_ANY:
+                continue
+            mode = str(int(mode))       # canonical, so "01" and "1" agree
         out[(min(i, j), max(i, j))] = mode
     return out
 
@@ -225,23 +257,39 @@ def _is_ligand(chain: Chain) -> bool:
     return chain.mtype == MoleculeType.LIGAND
 
 
-def _joinable(a: Chain, b: Chain) -> bool:
+def _joinable(a: Chain, b: Chain, ligands: bool = False) -> bool:
     """True if this pair should be offered a chain-to-chain joint at all.
 
-    **Ligands never are.**  Not one of the three methods makes sense on one:
+    **A ligand is refused unless ``ligands`` says otherwise**, and that flag is
+    passed at exactly one of this function's call sites: the magnet loop.  The
+    reasoning splits three ways, and only the first of the three has an answer.
 
-    * a *magnet* is bigger than the molecule.  A 4 mm disc against a drug that is
-      12 Å across — 18 mm at the default scale, and only a few millimetres thick
-      through the ring — means a pocket wider and deeper than the part it is cut
-      into, so ``_commit`` rejects it and the joint is lost anyway;
+    * a *magnet* is usually bigger than the molecule.  A 4 mm disc against a drug
+      that is 12 Å across — 18 mm at the default scale, and only a few
+      millimetres thick through the ring — means a pocket wider and deeper than
+      the part it is cut into, so ``_commit`` rejects it and the joint is lost.
+      That is a *seat* question, though, not a rule: the seat search already
+      answers it per interface, and on a big cofactor meshed as one closed lump
+      the answer can be yes.  So when the user asks for it, the pair is offered
+      and the existing footprint, fill and depth tests decide.
     * a *bridge* or an *inflate* weld would fuse the ligand to its host, which
       destroys the only interesting thing about printing it separately: that it
-      comes out and goes back in;
-    * and none of it is needed.  The fit pass has already carved the host into an
+      comes out and goes back in.  Those two call sites never pass the flag, so
+      that stays true whatever the user asks for.
+    * and it is never *needed*.  The fit pass has already carved the host into an
       exact negative of the ligand, so the pocket grips it on every face at the
-      print clearance.  Friction is the joint.
+      print clearance.  Friction is the joint, it is left in place, and a magnet
+      is only ever added on top of it.
+
+    Two ligands touching each other are refused either way.  Neither one is a
+    host, so there is no carved pocket to add to and nothing to hold a seat.
     """
-    return not (_is_ligand(a) or _is_ligand(b))
+    a_lig, b_lig = _is_ligand(a), _is_ligand(b)
+    if a_lig and b_lig:
+        return False
+    if a_lig or b_lig:
+        return bool(ligands)
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -1290,7 +1338,8 @@ _STOCK_MAGNET_MM = (8.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.5)
 _SOCKET_SPAN_WARN = 0.25
 
 
-def _socket_scale_note(built, cp: ConnectionParams) -> str:
+def _socket_scale_note(built, cp: ConnectionParams,
+                       ligand_joints: bool = False) -> str:
     """One line when the magnet is simply too big for the model at this scale.
 
     Nothing anywhere related the connector diameter to
@@ -1306,6 +1355,12 @@ def _socket_scale_note(built, cp: ConnectionParams) -> str:
     that is the one the socket has to fit inside, and against the smallest part,
     because the joint is only as good as its thinner half.
 
+    Ligands are skipped unless ``ligand_joints`` says they can take a magnet.  A
+    small ligand is almost always the narrowest part in the build, so with them
+    included this fired on nearly every ligand model — naming a part that could
+    not be given a magnet under any setting, about a joint that was never going
+    to be cut into it.
+
     Advisory only. The joint search may well still find somewhere good, and
     refusing to build would be worse than building something the user can look
     at and judge.
@@ -1316,6 +1371,8 @@ def _socket_scale_note(built, cp: ConnectionParams) -> str:
         (2.0 * cp.socket_wall_mm if cp.socket else 0.0)
     narrowest, where = None, ""
     for chain, mesh in built:
+        if _is_ligand(chain) and not ligand_joints:
+            continue
         try:
             span = float(np.min(mesh.bounds[1] - mesh.bounds[0]))
         except Exception:
@@ -1981,9 +2038,16 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     applied: List[Connection] = []
     markers: list = []   # magnet positions for the preview highlight
     fit_notes: List[str] = []
+    # Ligands are offered a magnet only when every one of these is true, and the
+    # flag reaches exactly one call site: the magnet loop below.  Bridge, inflate
+    # and overlap all weld, and a welded ligand is not a ligand any more.
+    lig_joints = bool(getattr(cp, "ligand_magnets", False)
+                      and cp.use_magnets
+                      and params.include_ligands
+                      and params.ligand_style in MAGNETABLE_LIGAND_STYLES)
     # Said once for the whole build rather than per interface: it is a fact
     # about the settings, not about any one pair.
-    _scale_note = _socket_scale_note(built, cp)
+    _scale_note = _socket_scale_note(built, cp, lig_joints)
     if _scale_note:
         fit_notes.append(_scale_note)
     inflate = cp.connect and not cp.use_magnets \
@@ -2015,8 +2079,22 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         a, b = src[i], src[j]
         return (min(a, b), max(a, b))
 
+    def _kind_count(kind: str) -> int:
+        """How many magnets the global controls ask for on this kind of pair.
+
+        A ligand interface is one, always.  It has no global control of its own —
+        the switch that reaches here is a yes/no — and it is not the DNA count
+        either, which is what it would silently have picked up by falling
+        through, since ``"ligand"`` is not ``"protein-protein"``.
+        """
+        if kind == "protein-protein":
+            return int(cp.magnet_count)
+        if kind == "ligand":
+            return 1
+        return int(cp.dna_magnet_count)
+
     def _override(i: int, j: int, kind: str) -> str:
-        """The mode in force for one pair: ``none``, ``join``, or ``""``.
+        """The mode in force for one pair: ``none``, ``join``, a count, or ``""``.
 
         A count of zero is folded in here rather than at the count's own site,
         so "none on every protein interface" and "none on this one" take the
@@ -2027,13 +2105,12 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         mode = overrides.get(_pair(i, j), "")
         if mode:
             return mode
-        n = cp.magnet_count if kind == "protein-protein" else cp.dna_magnet_count
         # ``zero`` takes the same skip as ``none`` but is not the same claim:
         # nobody said anything about *this* pair, the count says none of them.
         # Reporting it as a hand veto would be a lie, and the front end would
         # show every row as changed-but-not-built against a panel nobody has
         # touched.
-        return "zero" if n <= 0 else ""
+        return "zero" if _kind_count(kind) <= 0 else ""
 
     # 1a) Inflate is the one mode that *wants* the parts to overlap — it grows
     #     neighbouring surfaces until they weld into one body — so the fit pass
@@ -2232,7 +2309,7 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
     if cp.connect and not inflate and not overlap_only:
         n = len(built)
         todo = [(i, j) for i in range(n) for j in range(i + 1, n)
-                if _joinable(chains[i], chains[j])
+                if _joinable(chains[i], chains[j], lig_joints)
                 and not (cp.basepair_connect
                          and chains[i].mtype == MoleculeType.NUCLEIC
                          and chains[j].mtype == MoleculeType.NUCLEIC)]
@@ -2245,11 +2322,6 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                      f"Connecting {chains[i].display_name()} ↔ "
                      f"{chains[j].display_name()} ({done + 1}/{len(todo)})…")
                 kind = _kind(chains[i], chains[j])
-                # Protein↔protein and DNA↔protein each get their own count; the
-                # bridge reuses the same counts, since it is now the same joint
-                # minus the magnet pocket.
-                n_joints = (cp.magnet_count if kind == "protein-protein"
-                            else cp.dna_magnet_count)
                 # Two DNA strands get nothing unless the base-pair control
                 # asked for it. They used to be silently bridged here, which is
                 # a joint nobody requested appearing between two strands -- and
@@ -2257,7 +2329,31 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 # them, so it should be the only thing that does.
                 if kind == "dna-dna":
                     continue
+                # Protein↔protein and DNA↔protein each get their own count, a
+                # ligand gets one, and any of them can be overridden for this
+                # pair alone; the bridge reuses whatever comes out, since it is
+                # now the same joint minus the magnet pocket.
+                #
+                # The override is read *before* the count rather than nine lines
+                # after it: a per-pair count has to be able to replace the
+                # global, and reading them the other way round meant the number
+                # was already decided by the time anyone asked.
                 mode = _override(i, j, kind)
+                asked = 0
+                if mode.isdigit():
+                    # Clamped against the kind, not against the widest range:
+                    # the parser cannot know what sort of interface a pair turns
+                    # out to be, so it lets the widest through and this is where
+                    # a 5 asked of a ligand becomes a 1.
+                    n_joints = min(int(mode), MAX_JOINT_COUNT.get(kind, 5))
+                    asked = n_joints
+                    # Zero by hand and "none" by hand are the same instruction
+                    # written two ways, and they have to report the same or the
+                    # panel shows a row as unbuilt against a build that did
+                    # exactly what it was told.
+                    mode = "" if n_joints > 0 else "none"
+                else:
+                    n_joints = _kind_count(kind)
                 if mode in ("none", "zero"):
                     # Checked *after* the contact test, so the list only ever
                     # carries pairs the build would really have joined. The fit
@@ -2322,10 +2418,18 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
                 # it has to come apart — so it is left to the sweep as before.
                 if ok and method == "bridge":
                     fused.add((i, j))
+                # A refused seat on a ligand is not the failure it is anywhere
+                # else. The fit pass has already carved the host into an exact
+                # negative of it, nothing here has changed that, and the part
+                # still comes out and goes back in — so say what is holding it
+                # rather than leaving a bare "every candidate was refused"
+                # against a joint that was optional in the first place.
+                if not ok and kind == "ligand":
+                    note = f"no seat for a magnet — the pocket holds it ({note})"
                 applied.append(Connection(
                     chains[i].chain_id, chains[j].chain_id, kind, method,
                     gap_mm=gap, count=placed, applied=ok, note=note,
-                    ai=src[i], bi=src[j]))
+                    ai=src[i], bi=src[j], by_hand=bool(asked), asked=asked))
 
     # 2) DNA interstrand base-pair connect.
     if cp.basepair_connect:
@@ -2391,6 +2495,54 @@ def apply(built: List[Tuple[Chain, "object"]], params: PrintParams,
         # confirming a known negative.
         if _again:
             fit_notes.extend(interference.audit(mans, chains, ignore=fused))
+
+    # 2c) Every pair the user set by hand keeps its row, whatever the build did
+    #     with it.
+    #
+    #     A row is the only way to change a setting back, so a row that vanishes
+    #     takes the setting with it: the panel drops overrides for pairs the
+    #     build did not list, and the next Generate reverts to the default
+    #     without saying anything.  Set a pair to Join and it came back as a
+    #     magnet.
+    #
+    #     Each pass above reports the pairs *it* handled, and between them they
+    #     miss any pair that is overridden but never reaches one.  Two ways in
+    #     today: the fit pass is off (``resolve_interference`` is None, or the
+    #     assembly is overlap-only), so there is no carve to skip and the join
+    #     pass never runs; or the pair is a ligand, which ``join`` refuses by
+    #     design — a welded ligand is not a ligand.  Both then fall through the
+    #     joint loop's ``if mode == "join": continue``, which assumes the join
+    #     pass already reported.  This is the backstop rather than a fix at each
+    #     of those two sites, so a third one cannot reintroduce the bug.
+    #
+    #     Leaving a chain out of the build is the one case where forgetting is
+    #     right, and it falls out of this for free: an excluded chain has no
+    #     built position, so its pairs are never reconciled and the panel is
+    #     free to drop them.
+    _listed = {(c.ai, c.bi) for c in applied} | {(c.bi, c.ai) for c in applied}
+    _built_at = {s: k for k, s in enumerate(src)}
+    for (_a, _b), _mode in sorted(overrides.items()):
+        if not _mode or (_a, _b) in _listed:
+            continue
+        _i, _j = _built_at.get(_a), _built_at.get(_b)
+        if _i is None or _j is None:
+            continue                  # a chain this build did not include
+        if _is_ligand(chains[_i]) or _is_ligand(chains[_j]):
+            _why = ("a ligand is held by the pocket cut to fit it, and welding "
+                    "it in would defeat that")
+        elif not do_fit:
+            _why = ("nothing was carved apart in this build, so there is "
+                    "nothing to fuse")
+        else:
+            _why = "this build made no joint here"
+        applied.append(Connection(
+            chains[_i].chain_id, chains[_j].chain_id,
+            _kind(chains[_i], chains[_j]),
+            "join" if _mode == "join" else "none",
+            gap_mm=0.0, count=0, applied=False,
+            ai=_a, bi=_b, by_hand=True,
+            asked=int(_mode) if _mode.isdigit() else 0,
+            note=f"left as it is — {_why}"))
 
     # 3) Back to meshes; repair fast-path keeps the already-watertight results.
     step(0.97, "Rebuilding meshes…")

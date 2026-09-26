@@ -54,7 +54,17 @@ mimetypes.add_type("model/gltf-binary", ".glb")
 
 # Every generation writes its outputs into a fresh sub-directory here, which is
 # served read-only at /files/<token>/... for both <model-viewer> and downloads.
-OUTPUT_ROOT = tempfile.mkdtemp(prefix="pdb2print_out_")
+#
+# The root has a **fixed name**, deliberately. It used to be a fresh
+# ``mkdtemp`` per process, and ``_sweep_output_root`` only ever looks inside the
+# root the current process made -- so every restart orphaned the entire previous
+# tree, and no code anywhere could reclaim it. In the container the system temp
+# directory is part of the writable layer, i.e. the host disk: 45.6 GB of
+# orphans had collected there by 2026-09-02, which filled the disk and took the
+# site down. One stable root means the TTL sweep below also collects whatever a
+# previous process left behind.
+OUTPUT_ROOT = os.path.join(tempfile.gettempdir(), "pdb2print_out")
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
 # The build cache. Shipped entries live in the repo and survive a restart, which
 # the temp directory above deliberately does not.
@@ -104,7 +114,15 @@ _PARAM_BOUNDS = {
     "grid_spacing": (0.2, 1.5),
     "min_wall": (0.0, 5.0),
     "probe_radius": (0.6, 5.0),
+    # The ligand's own pair. Same bounds as the polymer's, because they are the
+    # same two physical quantities measured on a smaller molecule.
+    "ligand_probe_radius": (0.6, 5.0),
+    "ligand_surface_padding": (0.0, 2.0),
     "connector_diameter": (1.5, 12.0),
+    # Never clamped at all until now — a bare ``float()``, on a public endpoint,
+    # feeding a pocket depth that is subtracted from both halves of every joint.
+    # The slider reaches 10.0 and nothing above that is a real magnet.
+    "magnet_thickness": (0.5, 10.0),
     "surface_padding": (0.0, 2.0),
 }
 
@@ -713,13 +731,15 @@ def _map_connections(fields: dict) -> ConnectionParams:
         no_magnet_method=NoMagnetMethod(fields.get("no_magnet_method", "inflate")),
         connector_diameter_mm=(_bounded(fields, "connector_diameter")
                                if "connector_diameter" in fields else 4.0),
-        magnet_thickness_mm=float(fields.get("magnet_thickness", 2.0)),
+        magnet_thickness_mm=(_bounded(fields, "magnet_thickness")
+                             if "magnet_thickness" in fields else 2.0),
         magnet_shape=MagnetShape(fields.get("magnet_shape", "round")),
         # Floored at zero rather than at one: zero now means "no joint on these
         # interfaces" and has to survive, but a negative count is nonsense that
         # would read as a veto by accident.
         magnet_count=max(0, int(float(fields.get("magnet_count", 1)))),
         dna_magnet_count=max(0, int(float(fields.get("dna_magnet_count", 1)))),
+        ligand_magnets=_bool(fields.get("ligand_magnets", False)),
         # Capped like every other free-text field that reaches the builder: one
         # line per joint, and a structure has a handful, so 2000 characters is
         # far more than any real model needs and still bounds the field.
@@ -768,8 +788,17 @@ def _map_params(fields: dict) -> PrintParams:
         exclude_chains=str(fields.get("exclude_chains", "") or "")[:2000],
         ligand_style=LigandStyle(fields.get("ligand_style", "ball_stick")),
         ligand_atom_mm=float(fields.get("ligand_atom", 2.2)),
-        ligand_bond_mm=float(fields.get("ligand_bond", 1.2)),
+        # 1.4, not 1.2: the config default and the slider both say 1.4, and this
+        # branch is only reached by a caller that omits the field entirely.
+        ligand_bond_mm=float(fields.get("ligand_bond", 1.4)),
         ligand_vdw_scale=float(fields.get("ligand_vdw_scale", 1.0)),
+        # Bounded like the polymer's pair, and defaulted to the same numbers, so
+        # a caller that says nothing about them builds what it always built.
+        ligand_probe_radius_ang=(_bounded(fields, "ligand_probe_radius")
+                                 if "ligand_probe_radius" in fields else 1.4),
+        ligand_surface_atom_padding_ang=(
+            _bounded(fields, "ligand_surface_padding")
+            if "ligand_surface_padding" in fields else 0.0),
         connections=_map_connections(fields),
     )
 
@@ -812,6 +841,50 @@ def _sweep_output_root(now: Optional[float] = None) -> int:
         shutil.rmtree(path, ignore_errors=True)
         removed += 1
     return removed
+
+
+def _sweep_stale_temp_dirs(now: Optional[float] = None) -> int:
+    """Remove ``pdb2print_*`` temp directories left by an earlier process.
+
+    Three things put them there. Until 2026-09-02 ``OUTPUT_ROOT`` was a fresh
+    ``mkdtemp`` per process, so every restart orphaned a whole tree of build
+    outputs; ``export.write_stl_zip`` never removed its scratch directory; and
+    ``io.fetch_pdb_id`` leaves one small directory per structure it downloads,
+    held for the life of the process by the ``_FETCHED`` memo. The first two are
+    fixed now, but a deployment that has been running the old code has a
+    backlog -- and once the temp directory is a host mount, that backlog
+    outlives a container rebuild.
+
+    **Call this at startup only.** It is guarded by the same TTL as the
+    per-build sweep, which makes it safe against a second process, but not
+    against this one: ``_FETCHED`` holds paths under here for as long as the
+    process lives, and at import time that memo is still empty.
+    """
+    now = time.time() if now is None else now
+    root = tempfile.gettempdir()
+    keep = os.path.abspath(OUTPUT_ROOT)
+    removed = 0
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.startswith("pdb2print_"):
+            continue
+        path = os.path.join(root, name)
+        try:
+            if os.path.abspath(path) == keep or not os.path.isdir(path):
+                continue
+            if now - os.path.getmtime(path) < OUTPUT_TTL_SECONDS:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+_sweep_stale_temp_dirs()
 
 
 # --------------------------------------------------------------------------
@@ -1262,8 +1335,10 @@ async def generate(
     exclude_chains: str = Form(""),
     ligand_style: str = Form("ball_stick"),
     ligand_atom: float = Form(2.2),
-    ligand_bond: float = Form(1.2),
+    ligand_bond: float = Form(1.4),
     ligand_vdw_scale: float = Form(1.0),
+    ligand_probe_radius: float = Form(1.4),
+    ligand_surface_padding: float = Form(0.0),
     # --- connector / joinery system ---
     connect: str = Form("false"),
     use_magnets: str = Form("false"),
@@ -1273,6 +1348,7 @@ async def generate(
     magnet_shape: str = Form("round"),
     magnet_count: int = Form(1),
     dna_magnet_count: int = Form(1),
+    ligand_magnets: str = Form("false"),
     socket: str = Form("true"),
     socket_wall: float = Form(1.5),
     magnet_fit_clearance: float = Form(0.2),
@@ -1358,11 +1434,14 @@ async def generate(
             "ligand_style": ligand_style, "ligand_atom": ligand_atom,
             "ligand_bond": ligand_bond,
             "ligand_vdw_scale": ligand_vdw_scale,
+            "ligand_probe_radius": ligand_probe_radius,
+            "ligand_surface_padding": ligand_surface_padding,
             "connect": connect, "use_magnets": use_magnets,
             "no_magnet_method": no_magnet_method,
             "connector_diameter": connector_diameter,
             "magnet_thickness": magnet_thickness, "magnet_shape": magnet_shape,
             "magnet_count": magnet_count, "dna_magnet_count": dna_magnet_count,
+            "ligand_magnets": ligand_magnets,
             "socket": socket, "socket_wall": socket_wall,
             "magnet_fit_clearance": magnet_fit_clearance,
             "joint_overrides": joint_overrides,

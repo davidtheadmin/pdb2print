@@ -547,6 +547,35 @@
   .joint-seg { flex: none; }
   .joint-seg button { padding: 4px 8px; font-size: 10.5px; }
 
+  /* How many magnets on this one joint. A row is already three buttons wide and
+     a fourth through eighth would push the names off the panel, so the numbers
+     live behind a caret and the caret shows the one in force. Closed, a row
+     still reads without opening anything. */
+  .joint-count { flex: none; position: relative; }
+  .joint-caret {
+    display: flex; align-items: center; gap: 3px;
+    padding: 4px 6px; font-size: 10.5px; line-height: 1;
+    color: var(--text2); background: var(--s2); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .joint-caret:hover { color: var(--text); }
+  .joint-caret.set { color: var(--accent); border-color: var(--accent-mid); }
+  .joint-caret svg { transition: transform .12s ease; }
+  .joint-caret[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .joint-menu {
+    position: absolute; right: 0; top: calc(100% + 4px); z-index: 30;
+    display: flex; flex-direction: column; padding: 3px;
+    background: var(--s1); border: 1px solid var(--border-2);
+    border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,.22);
+  }
+  .joint-menu button {
+    padding: 4px 14px; font-size: 10.5px; text-align: center;
+    color: var(--text2); background: none; border: 0; border-radius: 5px;
+    cursor: pointer;
+  }
+  .joint-menu button:hover { background: var(--s2); color: var(--text); }
+  .joint-menu button.active { color: var(--accent); background: var(--accent-soft); }
+
   /* Two lists in one panel, so each says what it is. */
   .sp-sect {
     margin: 4px 0 0; font-size: 11px; font-weight: 650; color: var(--text2);
@@ -1581,7 +1610,7 @@
 
           <!-- ---- ligands ---- -->
           <div class="grp" id="grp-ligands">
-            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand uses the probe and padding set under Protein, so it matches its host.">Ligands</p>
+            <p class="grp-h" title="The small molecules bound to the structure: drugs, hemes, metals. Each one prints as its own object in its own colour, in a pocket cut to fit it. Water, single ions and crystallisation leftovers are always skipped. A surface ligand has its own probe and padding, under Advanced settings here. They start where the protein's start, so the two match until you change one.">Ligands</p>
             <label class="switch">
               <input type="checkbox" id="include_ligands"><span class="track"></span>
               <span class="sw-text"><span>Include ligands</span></span>
@@ -1613,6 +1642,18 @@
                   <div class="field" data-slider="ligand_vdw_scale">
                     <div class="slider-row"><span class="name" title="Spacefill only: multiplies the real van der Waals radii. 1.0 is chemically honest; higher fuses the spheres into one lump.">Spacefill fullness</span><span class="val"></span></div>
                     <input type="range" min="0.6" max="1.6" step="0.05" value="1.0">
+                  </div>
+                  <!-- The ligand's own pair, not the ones under Protein. Same
+                       two numbers, a different molecule: the probe is an
+                       absolute size in ångström and a drug is a hundredth the
+                       size of what it is bound to. -->
+                  <div class="field" data-slider="ligand_probe_radius">
+                    <div class="slider-row"><span class="name" title="Surface only: the ball that rolls over the ligand. 1.4 is a water molecule. Larger smooths the surface and fills the rings in; smaller keeps the shape and can break thin parts off.">Ligand probe radius (Å)</span><span class="val"></span></div>
+                    <input type="range" min="0.6" max="3.0" step="0.1" value="1.4">
+                  </div>
+                  <div class="field" data-slider="ligand_surface_padding">
+                    <div class="slider-row"><span class="name" title="Surface only: grows every atom before the surface is made. Closes hairline gaps that will not print. A ligand is small, so a little goes a long way here.">Ligand surface padding (Å)</span><span class="val"></span></div>
+                    <input type="range" min="0.0" max="2.0" step="0.05" value="0.0">
                   </div>
                 </div>
               </details>
@@ -1715,8 +1756,8 @@
                      the magnet's packet, so they are read as one row. -->
                 <div class="pair" id="magnet-size">
                   <div class="field" data-slider="magnet_thickness">
-                    <div class="slider-row"><span class="name" title="Depth of the magnet pocket">Thickness (mm)</span><span class="val"></span></div>
-                    <input type="range" min="0.5" max="6.0" step="0.5" value="2.0">
+                    <div class="slider-row"><span class="name" title="Depth of the magnet pocket. A thick magnet needs the model to be thick too: it wants about this much solid plastic behind each face, plus the collar. Past that the seat search runs out of material and says so in Chains &amp; joints.">Thickness (mm)</span><span class="val"></span></div>
+                    <input type="range" min="0.5" max="10.0" step="0.5" value="2.0">
                   </div>
                 </div>
 
@@ -1744,6 +1785,11 @@
                     </div>
                   </div>
                 </div>
+
+                <label class="switch" id="ligand-magnet-row" hidden title="A ligand is already held by the pocket cut to fit it. This adds a magnet on top of that, where one fits. A ligand takes one magnet at most, and where there is not enough material for a seat the search refuses it and says so in Chains &amp; joints — which a thin style or a small ligand often will be.">
+                  <input type="checkbox" id="ligand_magnets"><span class="track"></span>
+                  <span class="sw-text"><span>Magnet on ligands</span></span>
+                </label>
 
                 <label class="switch" title="Raises a flat collar on both parts so they meet on one clean disc, instead of on whatever shape the two surfaces make.">
                   <input type="checkbox" id="socket" checked><span class="track"></span>
@@ -1937,7 +1983,7 @@
         </div>
         <div id="chain-list"></div>
 
-        <p class="sp-sect" id="joints-head" title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic.">Joints</p>
+        <p class="sp-sect" id="joints-head" title="Default is whatever the Assembly setting does for that pair. None leaves the pair unjoined. Join leaves the pair fused in plastic. The arrow opens a count for that one joint, which replaces the number set under Magnets. A ligand takes one magnet, so it has no arrow.">Joints</p>
         <div id="joint-list"></div>
         <p class="sp-note" id="joints-empty" hidden></p>
       </div>
@@ -2464,7 +2510,13 @@
      every entry unreachable, so a link posted before a release is a miss by
      the time anyone clicks it. It rebuilds, and warms the entry for whoever
      is behind them. */
-  const SHARE_FORMAT = 1;
+  // 2: per-pair magnet counts. The joint mode went from one bit to three and
+  // the thickness slider from twelve steps to twenty, so a format-1 code reads
+  // its joints and its magnet thickness against fields that have moved
+  // underneath it. Both would decode to something structurally valid and wrong,
+  // which is the one failure a share link must not have, so a format-1 code is
+  // refused with a message rather than read.
+  const SHARE_FORMAT = 2;
 
   /* SHARE-TABLE-BEGIN — generated by scripts/build_share_table.py */
   // Do not edit by hand — see scripts/build_share_table.py.
@@ -2504,11 +2556,14 @@
     {"k":"scale","t":"s","lo":0.2,"st":0.1,"n":59,"d":13},
     {"k":"grid_spacing","t":"s","lo":0.2,"st":0.05,"n":27,"d":6},
     {"k":"min_wall","t":"s","lo":0.0,"st":0.1,"n":51,"d":10},
-    {"k":"magnet_thickness","t":"s","lo":0.5,"st":0.5,"n":12,"d":3},
+    {"k":"magnet_thickness","t":"s","lo":0.5,"st":0.5,"n":20,"d":3},
     {"k":"magnet_fit_clearance","t":"s","lo":0.0,"st":0.05,"n":13,"d":4},
     {"k":"socket_wall","t":"s","lo":0.4,"st":0.1,"n":37,"d":11},
     {"k":"connector_diameter","t":"s","lo":1.5,"st":0.5,"n":22,"d":5},
     {"k":"cartoon_hbonds","t":"g","v":["none","helix","sheet","both","all"],"d":0},
+    {"k":"ligand_magnets","t":"b","d":0},
+    {"k":"ligand_probe_radius","t":"s","lo":0.6,"st":0.1,"n":25,"d":8},
+    {"k":"ligand_surface_padding","t":"s","lo":0.0,"st":0.05,"n":41,"d":0},
   ];
   /* SHARE-TABLE-END */
 
@@ -2609,6 +2664,23 @@
     return h;
   }
 
+  // Three bits per joint: 0 is none, 1 is join, and anything above that is a
+  // count written as n + 1. One bit was enough while a row could only say none
+  // or join. A count needs the width, and widening it is what SHARE_FORMAT 2
+  // is: a code minted at format 1 decodes its joints against a field that has
+  // since moved, so it is refused outright rather than read wrong.
+  const JOINT_CODE_BITS = 3;
+  function jointModeCode(mode) {
+    if (mode === 'join') return 1;
+    const n = parseInt(mode, 10);
+    return (n >= 1 && n <= 5) ? n + 1 : 0;
+  }
+  function jointModeFromCode(code) {
+    if (code === 1) return 'join';
+    if (code >= 2 && code <= 6) return String(code - 1);
+    return 'none';
+  }
+
   function encodeShare(state) {
     const w = BitWriter();
     w.push(SHARE_FORMAT, 4);
@@ -2623,7 +2695,8 @@
     ex.forEach(n => w.push(n, 8));
     const jo = (state.joints || []).slice(0, 31);
     w.push(jo.length, 5);
-    jo.forEach(([a, b, mode]) => { w.push(a, 8); w.push(b, 8); w.push(mode, 1); });
+    jo.forEach(([a, b, mode]) => { w.push(a, 8); w.push(b, 8);
+                                   w.push(mode, JOINT_CODE_BITS); });
     w.push(state.fingerprint & 0xffff, 16);
     const vals = w.finish();
     const all = vals.concat([shareSum(vals) >> 6, shareSum(vals) & 0x3f]);
@@ -2662,7 +2735,7 @@
     for (let k = 0; k < ne; k++) state.exclude.push(r.take(8));
     const nj = r.take(5);
     for (let k = 0; k < nj; k++) {
-      const a = r.take(8), b = r.take(8), m = r.take(1);
+      const a = r.take(8), b = r.take(8), m = r.take(JOINT_CODE_BITS);
       state.joints.push([a, b, m]);
     }
     state.fingerprint = r.take(16);
@@ -2792,6 +2865,29 @@
   // describing something the protein was not doing. Moved rather than
   // duplicated, because two controls for one number is two chances to disagree
   // about what it is.
+  // Every style is offered. Whether a particular ligand has the material for a
+  // seat depends on its size and the scale, not on which style drew it, and the
+  // seat search answers that per interface -- refusing Ball & stick and Sticks
+  // here refused the thick ones too, with no way to ask. Mirrors
+  // MAGNETABLE_LIGAND_STYLES in config.py.
+  const LIGAND_MAGNET_STYLES = ['surface', 'spacefill', 'ball_stick', 'sticks'];
+  function ligandTakesMagnets() {
+    const box = $('#include_ligands');
+    return !!(box && box.checked
+              && LIGAND_MAGNET_STYLES.includes(groups.ligand_style()));
+  }
+  // The row sits inside the Magnets well, so "connect is on and magnets are the
+  // method" is already answered by the block it lives in. This only adds the
+  // ligand half of the question.
+  function updateLigandMagnetRow() {
+    const row = $('#ligand-magnet-row');
+    if (row) row.hidden = !ligandTakesMagnets();
+  }
+  // A ligand is not a third card that can ask for these. It has its own pair,
+  // under Ligands, because the probe is an absolute size in ångström and a drug
+  // is not a protein: the radius that rounds off a protein's crevices closes a
+  // drug's rings, and the padding that saves a hairline gap on a surface a
+  // hundred ångström across is a bulge on one twelve across.
   function homeSurfaceFields(pRep, nRep) {
     const host = pRep === 'surface' ? $('#advanced-surface .drawer')
                : (nRep === 'surface' ? $('#advanced-dna .drawer') : null);
@@ -2814,7 +2910,7 @@
     // Show only the protein shape control relevant to the chosen style.
     const anySurface = pRep === 'surface' || nRep === 'surface';
     const show = (key, on) => { const f = $(`[data-slider="${key}"]`); if (f) f.hidden = !on; };
-    show('surface_padding',     anySurface);      // used by any molecular surface
+    show('surface_padding',     anySurface);      // used by any polymer surface
     show('probe_radius',        anySurface);
     show('protein_tube_radius', pRep === 'tubes');
     homeSurfaceFields(pRep, nRep);
@@ -2830,6 +2926,18 @@
     // The "delicate to print" note is only for the ribbon/tube styles.
     const exp = $('#protein-exp-note'); if (exp) exp.hidden = (pRep === 'surface');
     updateDnaDims();
+  }
+
+  // A drawer holding nothing still opens, and the badge that would have read
+  // zero is suppressed — so an empty one looks exactly like a populated one.
+  // That is what Surface used to do here, before the style got a probe and a
+  // padding of its own; every style now populates it, and this is the check
+  // that keeps that true rather than a sentence claiming it does.
+  function syncLigandDrawer() {
+    const adv = $('#advanced-ligand');
+    if (!adv) return;
+    const drawer = adv.querySelector('.drawer');
+    adv.hidden = !drawer || !$$('.field', drawer).some(f => !f.hidden);
   }
   updateReps();
 
@@ -2964,25 +3072,27 @@
   //   ball & stick — atom size, bond size
   //   spacefill    — atom size (as a floor), vdW fullness
   //   sticks       — bond size only
-  //   surface      — neither; it is sized by the probe and padding controls,
-  //                  which live under Protein
+  //   surface      — its own probe and padding, not the ones under Protein
   const LIGAND_FIELDS = {
     ball_stick: ['ligand_atom', 'ligand_bond'],
     spacefill: ['ligand_atom', 'ligand_vdw_scale'],
     sticks: ['ligand_bond'],
-    surface: [],
+    surface: ['ligand_probe_radius', 'ligand_surface_padding'],
   };
+  const LIGAND_KEYS = ['ligand_atom', 'ligand_bond', 'ligand_vdw_scale',
+                       'ligand_probe_radius', 'ligand_surface_padding'];
 
   function updateLigandOpts() {
     const on = $('#include_ligands').checked;
     $('#ligand-opts').hidden = !on;
-    if (!on) return;
-    const style = groups.ligand_style();
+    const style = on ? groups.ligand_style() : 'ball_stick';
     const shown = LIGAND_FIELDS[style] || LIGAND_FIELDS.ball_stick;
-    ['ligand_atom', 'ligand_bond', 'ligand_vdw_scale'].forEach(key => {
+    LIGAND_KEYS.forEach(key => {
       const field = $(`.field[data-slider="${key}"]`);
       if (field) field.hidden = !shown.includes(key);
     });
+    syncLigandDrawer();
+    updateLigandMagnetRow();
   }
   $('#include_ligands').addEventListener('change', updateLigandOpts);
   $('.seg[data-group="ligand_style"]').addEventListener('click', updateLigandOpts);
@@ -3023,10 +3133,21 @@
     const dia = parseFloat(sliders.connector_diameter.value);
     const thick = parseFloat(sliders.magnet_thickness.value);
 
-    const PXMM = 6;
+    // The box is a fixed 230x122 and the caption owns the bottom two lines, so
+    // a magnet 10 mm thick does not fit at a fixed six pixels per millimetre —
+    // the body ran through its own dimension label and into the text. Scale to
+    // fit and pin the top edge instead. Six is still the scale at ordinary
+    // settings, so nothing moves until the magnet is genuinely large; and the
+    // numbers on the callouts were always the answer, not the picture.
+    const TOP = 10, FLOOR = 74;                // px the body may occupy
+    const span = (shape === 'round' ? 0.32 * dia : 0.5 * dia) + thick;
+    const PXMM = Math.min(6, (FLOOR - TOP) / Math.max(span, 0.5));
     const D = Math.max(14, dia * PXMM);        // footprint size in px
     const T = Math.max(7, thick * PXMM);       // thickness in px
-    const cx = 92, cyTop = 34;                 // top-face reference point
+    // How far the top face reaches above its own reference point: half the
+    // ellipse for a disc, half the isometric diagonal for a block.
+    const rise = D / 2 * (shape === 'round' ? 0.32 : 0.5);
+    const cx = 92, cyTop = TOP + rise;         // top-face reference point
     let s = '';
 
     if (shape === 'round') {
@@ -3454,6 +3575,17 @@
   const JOINT_KIND = {
     'protein-protein': 'protein–protein',
     'dna-protein': 'DNA–protein',
+    'ligand': 'ligand',
+  };
+
+  // The most magnets one interface of each kind will take, mirroring the
+  // clamp in connections.py. A ligand is one: the interface is a few
+  // millimetres of drug and a second seat could never clear the spacing rule.
+  const JOINT_MAX = {
+    'protein-protein': 5,
+    'dna-protein': 2,
+    'dna-dna': 2,
+    'ligand': 1,
   };
 
   function renderJoints(conns) {
@@ -3508,8 +3640,14 @@
       // what Default does there, so Default is what is selected — otherwise
       // every row on such a build would read as changed-but-not-built against a
       // panel nobody had touched.
-      was.dataset.built = (c.by_hand
-        && (c.method === 'none' || c.method === 'join')) ? c.method : '';
+      //
+      // ``asked`` and not ``count``: the count is how many seats took, and
+      // asking for three on an interface that fits two is a fine result. A row
+      // that compared the two would sit at "not built yet" for as long as the
+      // setting stood, which is a lie about a build that did as it was told.
+      was.dataset.built = c.asked ? String(c.asked)
+        : ((c.by_hand && (c.method === 'none' || c.method === 'join'))
+           ? c.method : '');
       who.appendChild(pair);
       who.appendChild(was);
 
@@ -3526,6 +3664,36 @@
 
       row.appendChild(who);
       row.appendChild(seg);
+      // The count menu, on rows where there is a count to pick. A ligand takes
+      // one magnet or none, and None is already a button, so it gets no menu.
+      const max = JOINT_MAX[c.kind] || 0;
+      if (max > 1) {
+        const wrap = document.createElement('div');
+        wrap.className = 'joint-count';
+        const caret = document.createElement('button');
+        caret.type = 'button';
+        caret.className = 'joint-caret';
+        caret.setAttribute('aria-expanded', 'false');
+        caret.setAttribute('aria-haspopup', 'true');
+        caret.setAttribute('aria-label', 'How many magnets on this joint');
+        caret.innerHTML = '<span class="n"></span>'
+          + '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" '
+          + 'stroke="currentColor" stroke-width="3" stroke-linecap="round" '
+          + 'stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+        const menu = document.createElement('div');
+        menu.className = 'joint-menu';
+        menu.hidden = true;
+        for (let k = 1; k <= max; k++) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.dataset.value = String(k);
+          b.textContent = String(k);
+          menu.appendChild(b);
+        }
+        wrap.appendChild(caret);
+        wrap.appendChild(menu);
+        row.appendChild(wrap);
+      }
       box.appendChild(row);
       paintJoint(row);
     });
@@ -3533,29 +3701,75 @@
     syncJointsPanel();
   }
 
-  // One row's control and its status line, from the veto currently held.
+  // Only one open at a time, and never left open behind a click that landed
+  // somewhere else. A popover that outlives its row is a control pointing at
+  // nothing.
+  function closeJointMenus(except) {
+    $$('#joint-list .joint-menu').forEach(m => {
+      if (m === except) return;
+      m.hidden = true;
+      const c = m.parentElement && m.parentElement.querySelector('.joint-caret');
+      if (c) c.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  // One row's control and its status line, from the override currently held.
   function paintJoint(row) {
     const mode = jointOverrides.get(row.dataset.joint) || '';
     $$('button', row).forEach(b =>
       b.classList.toggle('active', b.dataset.value === mode));
+    // The caret carries the number when there is one, so a closed menu still
+    // says what this joint is set to.
+    const caret = $('.joint-caret', row);
+    if (caret) {
+      const n = $('.n', caret);
+      if (n) n.textContent = /^\d+$/.test(mode) ? mode : '';
+      caret.classList.toggle('set', /^\d+$/.test(mode));
+    }
     const was = $('.joint-was', row);
     const built = was.dataset.was;
     // The arrow is the whole of "you have changed this and it is not built
     // yet". Nothing is rebuilt on a click; the next Generate applies it.
     const pending = mode !== (was.dataset.built || '');
     row.classList.toggle('pending', pending);
-    was.textContent = pending ? `${built} → ${mode || 'default'}` : built;
+    const says = /^\d+$/.test(mode)
+      ? (mode === '1' ? '1 magnet' : `${mode} magnets`)
+      : (mode || 'default');
+    was.textContent = pending ? `${built} → ${says}` : built;
   }
 
   $('#joint-list').addEventListener('click', e => {
     const btn = e.target.closest('button');
     const row = e.target.closest('.joint-row');
-    if (!btn || !row) return;
+    // ``.hx`` is the help harvester's own button. It carries no data-value, so
+    // reaching the branch below would clear the row's override — the same trap
+    // the segmented groups guard against.
+    if (!btn || !row || btn.classList.contains('hx')) return;
+    // The caret opens the menu and says nothing about the joint. Handled first
+    // and returned on, because it carries no data-value and would otherwise
+    // fall through to the branch that clears the override.
+    if (btn.classList.contains('joint-caret')) {
+      const menu = $('.joint-menu', row);
+      const open = menu && menu.hidden;
+      closeJointMenus(open ? menu : null);
+      if (menu) {
+        menu.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      }
+      return;
+    }
+    closeJointMenus();
     const v = btn.dataset.value;
     if (v) jointOverrides.set(row.dataset.joint, v);
     else jointOverrides.delete(row.dataset.joint);
     paintJoint(row);
     syncJointsPanel();          // the count on the button, and the note below
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.joint-count')) closeJointMenus();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeJointMenus();
   });
 
   // One click back to a whole structure. Only there when something is off —
@@ -3598,12 +3812,26 @@
       el.dispatchEvent(new Event('input'));
     });
 
+    // The panel wipes both lists whenever the structure changes, and it checks
+    // at the top of every build. A page opening a link is the largest change
+    // there is — no structure at all, then "1BNA" — so left to itself it
+    // cleared the two lists this is about to restore, on the very next build,
+    // before anything could read them. A shared chain exclusion or joint veto
+    // has never survived a link because of it. Run the reset here, ahead of the
+    // restore, so the build that follows finds the panel already about this
+    // structure and leaves what the link put in it alone.
+    resetPanelIfStructureChanged();
     excludedChains.clear();
     (state.exclude || []).forEach(n => excludedChains.add(n));
     jointOverrides.clear();
     (state.joints || []).forEach(([a, b, m]) =>
-      jointOverrides.set(a + ',' + b, m ? 'join' : 'none'));
+      jointOverrides.set(a + ',' + b, jointModeFromCode(m)));
     sharedFingerprint = state.fingerprint || 0;
+    // A link applied on top of a build leaves that build's rows on screen, and
+    // they are painted from a map this has just replaced.
+    closeJointMenus();
+    $$('#joint-list .joint-row').forEach(r => paintJoint(r));
+    syncJointsPanel();
 
     updateMagnetDiagram();
     refreshUI();
@@ -3812,6 +4040,8 @@
     fd.append('ligand_atom', sliders.ligand_atom.value);
     fd.append('ligand_bond', sliders.ligand_bond.value);
     fd.append('ligand_vdw_scale', sliders.ligand_vdw_scale.value);
+    fd.append('ligand_probe_radius', sliders.ligand_probe_radius.value);
+    fd.append('ligand_surface_padding', sliders.ligand_surface_padding.value);
     fd.append('connect', $('#connect').checked);
     fd.append('use_magnets', groups.use_magnets());
     fd.append('no_magnet_method', groups.no_magnet_method());
@@ -3820,6 +4050,7 @@
     fd.append('magnet_shape', groups.magnet_shape());
     fd.append('magnet_count', groups.magnet_count());
     fd.append('dna_magnet_count', groups.dna_magnet_count());
+    fd.append('ligand_magnets', $('#ligand_magnets').checked);
     fd.append('socket', $('#socket').checked);
     fd.append('socket_wall', sliders.socket_wall.value);
     fd.append('magnet_fit_clearance', sliders.magnet_fit_clearance.value);
@@ -3834,7 +4065,7 @@
         exclude: Array.from(excludedChains).sort((a, b) => a - b),
         joints: Array.from(jointOverrides.entries()).map(([k, mode]) => {
           const [a, b] = k.split(',').map(Number);
-          return [a, b, mode === 'join' ? 1 : 0];
+          return [a, b, jointModeCode(mode)];
         }).sort((x, y) => x[0] - y[0] || x[1] - y[1]),
         fingerprint: 0,
       };

@@ -6,12 +6,102 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
-## Unreleased
+## [Unreleased]
 
-Not mesh-affecting for models: only the display stand changed, and stands are
-never cached. `CACHE_VERSION` stays at 6.
+Not mesh-affecting, and `CACHE_VERSION` stays at 6: every new setting is dropped
+from the key when it is off, so the entries already in `cache/` — including the
+2.2 GB shipped in the repo — stay reachable.
 
-### Changed
+**Share links minted before this release no longer open.** `SHARE_FORMAT` goes
+1 → 2. A per-joint count needs three bits where there was one, and the magnet
+thickness slider now has twenty steps where it had twelve, so a format-1 code
+reads both against fields that have moved under it. Either would decode to
+something structurally valid and wrong, which is the one failure a share link
+must not have, so an old code is refused with a message instead of read.
+
+### Added
+
+- **Magnets per joint, one joint at a time.** Each row in Chains & joints keeps
+  Default, None and Join, and gains a small arrow that opens a count. Set it and
+  that interface uses that number instead of the one under Magnets. Protein
+  interfaces offer 1–5, DNA 1–2, a ligand one. The arrow shows the number when
+  one is set, so a row still reads without opening it.
+- **A magnet on a ligand.** A switch in the Magnets well, shown when ligands are
+  on, **whichever style they are drawn in**. The pocket cut to fit the ligand is
+  unchanged and is still what holds it; this adds a magnet on top of that where
+  one fits. Whether one fits is a question about this ligand at this scale, and
+  the seat search answers it from the real geometry, per interface: where there
+  is not enough material no seat passes, the row says so in Chains & joints, and
+  the friction fit is left exactly as it was. Ball & stick and Sticks are
+  usually too thin — but only usually, and the earlier style gate refused the
+  thick ones too, at any scale, with no way to ask.
+- **Magnets up to 10 mm thick**, up from 6. A thick magnet needs a thick model:
+  it wants roughly its own thickness plus the collar in solid plastic behind
+  each face, and past that the seat search runs out of material and reports it.
+- **A surface ligand has its own probe radius and surface padding**, under
+  Advanced settings in the Ligands card. They used to be the protein's, which
+  meant a ligand could only be tuned by detuning its host — and on a cartoon
+  protein they were nowhere on the page at all, while the tooltip pointed at a
+  card that did not have them. The probe is an absolute size in ångström and a
+  ligand is a fraction of the size of what it is bound to: the radius that
+  rounds off a protein's crevices closes a drug's rings, and the padding that
+  saves a hairline gap on a surface a hundred ångström across is a visible bulge
+  on one twelve across. Both start at the protein's own defaults, so a build
+  that leaves them alone is the build it always was.
+
+### Fixed
+
+- **A joint set by hand keeps its row in Chains & joints.** Setting a pair to
+  Join and regenerating made the row disappear, and the panel drops overrides
+  for pairs the build did not list — so the setting went with it and the next
+  Generate quietly put the magnet back. Each pass reported the pairs *it*
+  handled, and a joined pair reached none of them when the fit pass was off
+  (interference set to None, or an overlap-only assembly) or when it was a
+  ligand, which Join refuses by design. Reconciled once at the end of the pass
+  instead of at each site, so a new mode cannot lose one. Leaving a chain out of
+  the build still drops its rows, which is the one case where forgetting is
+  right.
+- **Two temp-directory leaks that filled the server's disk and took the site
+  down on 2026-09-02.** `OUTPUT_ROOT` was a fresh `mkdtemp` per process, and the
+  TTL sweep only ever looks inside the root the *current* process made — so
+  every restart orphaned a whole tree of build outputs that nothing could
+  reclaim. Separately, `export.write_stl_zip` never removed the scratch
+  directory holding the loose STLs, leaking one per export. In the container
+  the system temp directory is part of the writable layer, i.e. the host disk,
+  where 45.6 GB of orphans had collected: `docker system df` was the only place
+  it was visible. `OUTPUT_ROOT` now has a fixed name, so the sweep also collects
+  what a previous process left; `write_stl_zip` cleans up in a `finally`; and a
+  startup sweep clears the backlog, including the per-structure directories
+  `io.fetch_pdb_id` leaves behind.
+- **The cache says so when it stops storing.** Below `MIN_FREE_BYTES` of free
+  disk it silently declines to write. Every build then becomes a cold build and
+  the only symptom is that the site feels slow — which is what hid the disk
+  filling up for weeks. The transition is logged in both directions now.
+- **A surface ligand's probe radius reached the cache key.** With neither
+  polymer set to Surface the probe radius and surface padding were dropped from
+  the key — but a surface ligand read both. Two builds differing only in probe
+  radius shared one entry, and the second was served the first one's geometry.
+  Both pairs are now keyed exactly where they are read.
+- **A chain exclusion or joint override in a share link survives the build.**
+  The panel wipes both lists whenever the structure changes and checks at the
+  top of every build; a page opening a link is the largest change there is, so
+  it cleared the two lists the link had just restored, before anything read
+  them. No shared veto had ever survived a link.
+- Magnet thickness is clamped to the slider's range on the way in. It was the
+  one slider that reached a bare `float()` on a public endpoint.
+- The "the magnet is large for this model" warning no longer measures a ligand.
+  A small ligand is nearly always the narrowest part in a build, so the line
+  named a part that could not be given a magnet under any setting.
+- `ligand_bond` defaulted to 1.2 in `server.py` against 1.4 in the config and
+  the slider. Invisible from the web UI, which always submits a value.
+- The empty Advanced settings drawer under Ligands is hidden rather than left
+  open on nothing.
+
+### Display stand
+
+Only the stand changed; stands are never cached.
+
+#### Changed
 
 - **Stand presets removed.** The stand opens on one default instead: round
   columns, no flared foot, 7 mm columns floating 5 mm, 5 mm margin, 9 mm text,
@@ -25,7 +115,7 @@ never cached. `CACHE_VERSION` stays at 6.
   tile 0.6 mm, letters 0.6 mm.
 - The support button reads "Support the project".
 
-### Fixed
+#### Fixed
 
 - A long structure name no longer squeezes the chain legend into an ellipsis:
   the legend gets its full width and the name wraps in what is left.

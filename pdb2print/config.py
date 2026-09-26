@@ -162,6 +162,22 @@ class LigandStyle(str, Enum):
     STICKS = "sticks"
 
 
+#: The ligand styles solid enough to have a magnet cut into them.
+#:
+#: Both are one closed lump with a face to seat against.  The other two are not:
+#: **Every style is offered.**  It used to be surface and spacefill only, on the
+#: reasoning that a ball-and-stick or sticks ligand is beads on rods a millimetre
+#: or two across, so a pocket would take the molecule apart rather than join it
+#: to anything.  That is true of a small one at a small scale — and it is a
+#: question about a *particular* ligand at a *particular* scale, which the seat
+#: search already answers, from the real geometry, per interface.  Refusing it
+#: here refused the thick ones too, at any scale, with no way to ask.  So the
+#: gate is gone and the footprint, fill and depth tests decide: where there is
+#: not enough material no seat passes, the row says so in Chains & joints, and
+#: the friction fit that has always held a ligand is left exactly as it was.
+MAGNETABLE_LIGAND_STYLES = frozenset(LigandStyle)
+
+
 class ColumnShape(str, Enum):
     """Cross-section — and profile — of a display-stand column.
 
@@ -338,16 +354,29 @@ class ConnectionParams:
     #: usually smaller than protein↔protein ones, so this is exposed separately
     #: and defaults to a single magnet.
     dna_magnet_count: int = 1
+    #: Whether a ligand may be given a magnet as well as the pocket it already
+    #: sits in.  Off by default, and offered for every style in
+    #: :data:`MAGNETABLE_LIGAND_STYLES`, which is now all four: whether one
+    #: particular ligand has the material for a seat is a question about its
+    #: geometry at the chosen scale, and the seat search answers it far better
+    #: than a list of styles can.  There is no count to go
+    #: with it — a ligand interface takes one magnet or none, and which of those
+    #: it is falls out of the seat search rather than a setting.  When no seat
+    #: passes, the friction fit that has always held a ligand is left exactly as
+    #: it was.
+    ligand_magnets: bool = False
 
-    #: Per-pair vetoes supplied by the user, as ``i<TAB>j<TAB>mode`` lines with
-    #: ``i < j`` (built indices, not chain ids) and mode ``none`` or ``join``.
-    #: A pair with no line follows whatever the global setting says, so this
-    #: never contradicts the control above it — it only removes joints the build
-    #: would otherwise have made.
+    #: Per-pair overrides supplied by the user, as ``i<TAB>j<TAB>mode`` lines
+    #: with ``i < j`` (``Chain.index`` values, not built positions) and mode
+    #: ``none``, ``join``, or a decimal count.  A pair with no line follows
+    #: whatever the global setting says.
     #:
     #: ``none`` leaves the pair carved apart with nothing joining it. ``join``
     #: leaves the pair's overlap uncarved, so the two parts stay welded; it adds
-    #: no geometry and is not the inflate path.
+    #: no geometry and is not the inflate path.  A count replaces the global
+    #: "magnets per interface" on that one interface, and is clamped to what the
+    #: kind of interface will take — five on protein↔protein, two on anything
+    #: with DNA in it, one on a ligand.
     #:
     #: Kept as the raw string rather than a mapping so it canonicalises into the
     #: cache key by itself, the way ``plaque_legend_labels`` does.
@@ -814,6 +843,23 @@ class PrintParams:
     #: pre-scale).  0 gives a true van-der-Waals-based SES; a small positive
     #: value smooths hairline gaps for a more print-robust shell.
     surface_atom_padding_ang: float = 0.0
+
+    #: The same two numbers again, for a ligand meshed as a surface, and
+    #: deliberately its own pair rather than the polymer's.
+    #:
+    #: A ligand is one or two orders of magnitude smaller than the thing it is
+    #: bound to, and the probe is an absolute size in ångström: the radius that
+    #: rounds off a protein's crevices without touching its shape will close a
+    #: drug's rings entirely, and the padding that saves a hairline gap on a
+    #: surface a hundred ångström across is a visible bulge on one twelve across.
+    #: Sharing them meant a ligand could only be tuned by detuning its host.
+    #:
+    #: They default to the polymer's defaults, so a build that sets neither is
+    #: the build it always was.  ``ligand.build`` substitutes them into a copy of
+    #: the params before handing the ligand to ``surface.build``, which asks for
+    #: the polymer names and needs to know nothing about any of this.
+    ligand_probe_radius_ang: float = 1.4
+    ligand_surface_atom_padding_ang: float = 0.0
 
     # --- tube-and-slab tuning ------------------------------------------
     nucleic_radius_mm: float = 1.2       # backbone tube radius at print scale

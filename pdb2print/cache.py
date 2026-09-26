@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 from dataclasses import asdict, dataclass, is_dataclass
@@ -38,9 +39,16 @@ from typing import Dict, List, Optional
 
 from .config import (
     PrintParams, Representation, BaseStyle, BackboneStyle, MoleculeType,
-    LigandStyle, HBondMode,
+    LigandStyle, HBondMode, MAGNETABLE_LIGAND_STYLES,
 )
+
 from .io import looks_like_pdb_id, canonical_pdb_id
+
+logger = logging.getLogger(__name__)
+
+#: ``_plain`` has already turned every enum into its value by the time the
+#: pruning runs, so this comparison is against strings.
+_MAGNETABLE_STYLE_VALUES = frozenset(s.value for s in MAGNETABLE_LIGAND_STYLES)
 
 #: Where the shipped cache lives.  A directory inside the repo (rather than a
 #: temp dir) is the whole point: a free Space's filesystem resets on restart, so
@@ -198,21 +206,34 @@ def canonical_params(params: PrintParams) -> dict:
     if not data.get("exclude_chains"):
         data.pop("exclude_chains", None)
 
+    # Read here, before the block below starts removing the fields it is
+    # computed from.  The connections block further down needs it.
+    lig_magnetable = (bool(data.get("include_ligands"))
+                      and data.get("ligand_style") in _MAGNETABLE_STYLE_VALUES)
+
     if not data.get("include_ligands"):
         drop("ligand_style", "ligand_atom_mm", "ligand_bond_mm",
-             "ligand_vdw_scale")
+             "ligand_vdw_scale", "ligand_probe_radius_ang",
+             "ligand_surface_atom_padding_ang")
     else:
         # Each ligand style reads a different subset, so the rest can merge.
         style = data.get("ligand_style")
         if style == LigandStyle.SURFACE.value:
-            # Sized entirely by the surface controls, which are keyed already.
+            # Sized entirely by the ligand's own probe and padding, which are
+            # the two fields *not* dropped here.  They are the ligand's, not the
+            # polymer's: a surface ligand no longer reads ``probe_radius_ang``
+            # at all, so keying it off that would be keying it off a number it
+            # does not use.
             drop("ligand_atom_mm", "ligand_bond_mm", "ligand_vdw_scale")
-        elif style == LigandStyle.SPACEFILL.value:
-            drop("ligand_bond_mm")
-        elif style == LigandStyle.STICKS.value:
-            drop("ligand_atom_mm", "ligand_vdw_scale")
         else:
-            drop("ligand_vdw_scale")
+            # Every other style is beads and sticks. Nothing reads a probe.
+            drop("ligand_probe_radius_ang", "ligand_surface_atom_padding_ang")
+            if style == LigandStyle.SPACEFILL.value:
+                drop("ligand_bond_mm")
+            elif style == LigandStyle.STICKS.value:
+                drop("ligand_atom_mm", "ligand_vdw_scale")
+            else:
+                drop("ligand_vdw_scale")
 
     # min_wall_mode selects a branch inside meshops.enforce_min_wall, and that
     # pass returns early for every representation there is (MIN_WALL_EXEMPT
@@ -241,7 +262,13 @@ def canonical_params(params: PrintParams) -> dict:
     if data.get("cartoon_hbonds") in (None, HBondMode.NONE.value):
         data.pop("cartoon_hbonds", None)
 
-    # Surface tuning is read only when something is meshed as a surface.
+    # Surface tuning is read only when a *polymer* is meshed as a surface.  A
+    # surface ligand does not read these — it has its own pair, keyed in the
+    # ligand block above — which is what makes this condition true again.  It was
+    # not before that pair existed: ``ligand_style`` is not a ``Representation``
+    # and was never in ``reps``, so a cartoon protein with a surface ligand
+    # dropped the two controls that were shaping the ligand, and two builds at
+    # different probe radii shared one key.
     if Representation.SURFACE.value not in reps:
         drop("probe_radius_ang", "surface_atom_padding_ang")
 
@@ -299,6 +326,17 @@ def canonical_params(params: PrintParams) -> dict:
         if _overrides:
             reduced["joint_overrides"] = _overrides
         return reduced
+
+    # ``ligand_magnets`` is read by one loop, under four conditions, and it is
+    # kept in the key under exactly those four.  Anywhere else it changes
+    # nothing, so leaving it in would split one build across two entries — and
+    # dropping it while it is off is what keeps every entry already in
+    # ``cache/`` reachable, which is why this feature needs no ``CACHE_VERSION``
+    # bump either.  The two branches below that replace the whole dict are all
+    # ``connect`` off, so they drop it on their own.
+    if not (conn.get("ligand_magnets") and lig_magnetable
+            and conn.get("connect") and conn.get("use_magnets")):
+        conn.pop("ligand_magnets", None)
 
     if not (conn.get("connect") or conn.get("basepair_connect")):
         data["connections"] = _keep_overrides(
@@ -535,6 +573,9 @@ class Cache:
         self.root = os.path.abspath(root)
         self.read_only = read_only
         self.max_bytes = DEFAULT_MAX_BYTES if max_bytes is None else max_bytes
+        #: Whether the last headroom check found the disk too full to store.
+        #: Only used to log the transition once rather than on every build.
+        self._out_of_headroom = False
 
     # -- paths ----------------------------------------------------------
     def entry_dir(self, key: str) -> str:
@@ -600,9 +641,26 @@ class Cache:
             return None
 
     def has_headroom(self) -> bool:
-        """True if there is enough free disk to be worth writing another entry."""
+        """True if there is enough free disk to be worth writing another entry.
+
+        Logs the transition in each direction. Without that the floor is a
+        silent failure: the cache simply stops storing, every build becomes a
+        cold build, and the only symptom is that the site feels slow. That is
+        what hid the disk filling up before the 2026-09-02 outage.
+        """
         free = self.free_bytes()
-        return free is None or free > MIN_FREE_BYTES
+        ok = free is None or free > MIN_FREE_BYTES
+        if not ok and not self._out_of_headroom:
+            logger.warning(
+                "cache: only %.1f GB free on %s (floor is %.1f GB) -- not "
+                "storing new builds until there is more room; every build is "
+                "now a cold build",
+                (free or 0) / 1024 ** 3, self.root, MIN_FREE_BYTES / 1024 ** 3)
+        elif ok and self._out_of_headroom:
+            logger.warning("cache: %.1f GB free on %s -- storing again",
+                           (free or 0) / 1024 ** 3, self.root)
+        self._out_of_headroom = not ok
+        return ok
 
     def last_used(self, key: str) -> float:
         """When this entry was last served, as a POSIX timestamp.

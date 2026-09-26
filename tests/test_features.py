@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -1869,3 +1870,483 @@ def test_a_bad_id_says_what_a_good_one_looks_like():
         io.resolve_source("not-an-id")
     text = str(err.value)
     assert "1UBQ" in text and "pdb_00001ubq" in text
+
+
+# --------------------------------------------------------------------------
+# Per-pair magnet counts
+# --------------------------------------------------------------------------
+def test_joint_override_parser_accepts_a_count():
+    """A mode may be a number, and only a plain in-range number."""
+    from pdb2print.connections import joint_overrides
+    got = joint_overrides(
+        "0\t1\t3\n"
+        "2\t3\t01\n"          # canonicalised, so it hashes as one thing
+        "4\t5\t0\n"           # zero is a real answer: no joint on this pair
+        "6\t7\t9\n"           # past what any interface will take
+        "8\t9\t-1\n"          # a sign is a malformed line, not a number
+        "10\t11\t2.0\n"       # so is a decimal point
+        "12\t13\tnone\n"      # the two words still work
+        "14\t15\tjoin\n"
+    )
+    assert got == {(0, 1): "3", (2, 3): "1", (4, 5): "0",
+                   (12, 13): "none", (14, 15): "join"}
+
+
+def test_a_per_pair_count_replaces_the_global():
+    """Two magnets everywhere, one on the pair that asked for one.
+
+    The count used to be read nine lines before the override was consulted, so
+    a number set on a row could not reach the seat search at all.
+    """
+    settings = dict(connect=True, use_magnets=True, contact_threshold_mm=3.5,
+                    connector_diameter_mm=2.5, magnet_thickness_mm=1.5,
+                    magnet_count=2, dna_magnet_count=2)
+    base = build_all(OVERLAP, _params(**settings))
+    two = [c for c in base.connections
+           if c["method"] == "magnet" and c["applied"] and c["count"] == 2]
+    assert two, "no interface took two magnets in the baseline build"
+    i, j = two[0]["ai"], two[0]["bi"]
+
+    cut = build_all(OVERLAP, _params(
+        **settings, joint_overrides=f"{i}\t{j}\t1"))
+    row = [c for c in cut.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1
+    assert row[0]["count"] == 1, "the per-pair count did not reach the search"
+    # ``asked`` is what the user said, not what seated: a row that compared the
+    # two would read as unbuilt whenever an interface took fewer than it offered.
+    assert row[0]["asked"] == 1 and row[0]["by_hand"] is True
+    # Every other pair still follows the global.
+    for c in cut.connections:
+        if (c["ai"], c["bi"]) != (i, j):
+            assert c["asked"] == 0
+    assert _all_watertight_single(cut)
+
+
+def test_a_per_pair_count_is_clamped_to_what_the_kind_takes():
+    """The parser lets the widest range through; the clamp is per interface.
+
+    It cannot be anywhere else — the parser has two indices and no idea what
+    sort of pair they name.  Five on a DNA interface is two, the same way five
+    on a ligand is one.
+    """
+    from pdb2print.connections import MAX_JOINT_COUNT
+    assert MAX_JOINT_COUNT["ligand"] == 1
+
+    base = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=2.5, magnet_thickness_mm=1.5))
+    rows = [c for c in base.connections if c["kind"] == "dna-protein"]
+    if not rows:
+        pytest.skip("no DNA-protein interface in the baseline build")
+    i, j = rows[0]["ai"], rows[0]["bi"]
+
+    asked5 = build_all(COMPLEX, _params(
+        connect=True, use_magnets=True, contact_threshold_mm=3.5,
+        connector_diameter_mm=2.5, magnet_thickness_mm=1.5,
+        joint_overrides=f"{i}\t{j}\t5"))
+    row = [c for c in asked5.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert row and row[0]["asked"] == MAX_JOINT_COUNT["dna-protein"] == 2
+
+
+def test_a_count_of_zero_by_hand_is_the_same_as_none():
+    """Written two ways, reported one way, or the panel lies about the build."""
+    report = build_all(OVERLAP, _params(connect=True, use_magnets=True))
+    magnets = [c for c in report.connections if c["method"] == "magnet"
+               and c["applied"]]
+    assert magnets, "nothing to veto in the baseline build"
+    i, j = magnets[0]["ai"], magnets[0]["bi"]
+
+    zero = build_all(OVERLAP, _params(
+        connect=True, use_magnets=True, joint_overrides=f"{i}\t{j}\t0"))
+    row = [c for c in zero.connections if (c["ai"], c["bi"]) == (i, j)]
+    assert len(row) == 1
+    assert row[0]["method"] == "none" and row[0]["count"] == 0
+    assert row[0]["by_hand"] is True, "zero by hand is still a hand veto"
+    assert "set by hand" in row[0]["note"]
+
+
+# --------------------------------------------------------------------------
+# Magnets on ligands
+# --------------------------------------------------------------------------
+def _fake_chain(mtype):
+    from pdb2print.chains import Chain
+    from pdb2print.config import MoleculeType
+    return Chain(chain_id="X", atoms=None, mtype=getattr(MoleculeType, mtype))
+
+
+def test_a_ligand_is_offered_a_joint_only_when_asked():
+    """One gate, four call sites, and the flag reaches exactly one of them."""
+    from pdb2print.connections import _joinable
+    lig, prot, dna = (_fake_chain("LIGAND"), _fake_chain("PROTEIN"),
+                      _fake_chain("NUCLEIC"))
+
+    assert _joinable(prot, dna) is True
+    assert _joinable(lig, prot) is False
+    assert _joinable(prot, lig) is False
+    assert _joinable(lig, prot, True) is True
+    assert _joinable(prot, lig, True) is True
+    # Neither one is a host, so there is no carved pocket to add a magnet to.
+    assert _joinable(lig, lig, True) is False
+
+
+def test_every_ligand_style_may_be_offered_a_magnet():
+    """The style gate is gone; the seat search decides per interface.
+
+    It was surface and spacefill only, which refused a thick ball-and-stick
+    ligand at any scale with no way to ask. Whether *this* ligand has the
+    material for a seat is a geometry question, and the footprint, fill and
+    depth tests already answer it.
+    """
+    from pdb2print.config import LigandStyle, MAGNETABLE_LIGAND_STYLES
+
+    assert MAGNETABLE_LIGAND_STYLES == frozenset(LigandStyle)
+    for style in LigandStyle:
+        assert style in MAGNETABLE_LIGAND_STYLES
+
+
+def test_ligand_magnets_need_every_one_of_their_four_conditions():
+    """The switch alone is not enough, and the joint loop is what reads it."""
+    from pdb2print.config import (
+        LigandStyle, NoMagnetMethod, MAGNETABLE_LIGAND_STYLES)
+
+    def offered(**kw):
+        p = _params(connect=True, use_magnets=True, ligand_magnets=True)
+        p.include_ligands = True
+        p.ligand_style = LigandStyle.SURFACE
+        for k, v in kw.items():
+            if hasattr(p.connections, k):
+                setattr(p.connections, k, v)
+            else:
+                setattr(p, k, v)
+        cp = p.connections
+        return bool(cp.ligand_magnets and cp.use_magnets and p.include_ligands
+                    and p.ligand_style in MAGNETABLE_LIGAND_STYLES)
+
+    assert offered() is True
+    assert offered(ligand_style=LigandStyle.SPACEFILL) is True
+    # Every style is offered now. A thin one simply loses at the seat search,
+    # which is a per-interface answer rather than a blanket refusal.
+    assert offered(ligand_style=LigandStyle.BALL_STICK) is True
+    assert offered(ligand_style=LigandStyle.STICKS) is True
+    assert offered(ligand_magnets=False) is False
+    assert offered(include_ligands=False) is False
+    # Bridge and inflate weld, and a welded ligand is not a ligand.
+    assert offered(use_magnets=False,
+                   no_magnet_method=NoMagnetMethod.BRIDGE) is False
+
+
+def test_the_narrowest_part_warning_skips_a_ligand_it_cannot_apply_to():
+    """A small ligand is nearly always the narrowest part in the build.
+
+    With them counted, the "the magnet is large for this model" line named a
+    part that could not be given a magnet under any setting.
+    """
+    import trimesh
+    from pdb2print.connections import _socket_scale_note
+    from pdb2print.config import ConnectionParams
+
+    big = trimesh.creation.box(extents=(40.0, 40.0, 40.0))
+    small = trimesh.creation.box(extents=(3.0, 8.0, 8.0))
+    built = [(_fake_chain("PROTEIN"), big), (_fake_chain("LIGAND"), small)]
+    cp = ConnectionParams(connect=True, use_magnets=True,
+                          connector_diameter_mm=4.0)
+
+    assert _socket_scale_note(built, cp) == ""
+    assert "large" in _socket_scale_note(built, cp, True)
+
+
+# --------------------------------------------------------------------------
+# A surface ligand's own probe and padding
+# --------------------------------------------------------------------------
+def _synthetic_ligand(n=10, spacing=1.5):
+    """A ``Chain`` of ``n`` carbons in a line, classified as a ligand.
+
+    Enough to mesh as a surface and nothing more.  Real ligands live in real
+    structures; this exists because none of the bundled fixtures carries one
+    past the six-heavy-atom floor, and what the test below is about is *which
+    two numbers reach the mesher*, not what the molecule is.
+    """
+    import biotite.structure as struc
+    import numpy as np
+    from pdb2print.chains import Chain
+    from pdb2print.config import MoleculeType
+
+    atoms = struc.AtomArray(n)
+    atoms.coord = np.array([[i * spacing, 0.0, 0.0] for i in range(n)], float)
+    atoms.chain_id = np.array(["A"] * n)
+    atoms.res_id = np.array([1] * n)
+    atoms.res_name = np.array(["LIG"] * n)
+    atoms.atom_name = np.array([f"C{i}" for i in range(n)])
+    atoms.element = np.array(["C"] * n)
+    atoms.hetero = np.array([True] * n)
+    return Chain(chain_id="A", atoms=atoms, mtype=MoleculeType.LIGAND,
+                 name="Ligand LIG 1", res_name="LIG", res_id=1, index=0)
+
+
+def test_a_surface_ligand_has_its_own_probe_and_padding():
+    """The polymer's pair does not reach the ligand, and the ligand's does.
+
+    The probe is an absolute size in angstrom and a ligand is a hundredth the
+    size of what it is bound to, so one pair of numbers could not describe both.
+    """
+    import dataclasses
+    from pdb2print import geometry, meshops
+    from pdb2print.config import LigandStyle
+
+    # Built here rather than read from a fixture: none of the bundled
+    # structures carries a ligand past the six-heavy-atom floor, and what this
+    # is about is which two numbers reach the mesher, not what the molecule is.
+    lig = _synthetic_ligand()
+
+    base = PrintParams(scale_mm_per_angstrom=1.2, grid_spacing_mm=0.6,
+                       include_ligands=True, ligand_style=LigandStyle.SURFACE)
+
+    def volume(**kw):
+        p = dataclasses.replace(base, **kw)
+        return meshops.repair(geometry.generate_chain_mesh(lig, p)).volume
+
+    plain = volume()
+    # The ligand's own padding grows it; the polymer's does not touch it.
+    assert volume(ligand_surface_atom_padding_ang=0.8) > plain * 1.05
+    assert volume(surface_atom_padding_ang=0.8) == pytest.approx(plain)
+    # Same for the probe: the ligand's changes the mesh, the polymer's does not.
+    assert volume(ligand_probe_radius_ang=2.6) != pytest.approx(plain)
+    assert volume(probe_radius_ang=2.6) == pytest.approx(plain)
+
+
+def test_the_two_surface_pairs_are_keyed_apart():
+    """Each pair is in the key exactly where it is read, and nowhere else."""
+    from pdb2print import cache
+    from pdb2print.config import LigandStyle, Representation
+
+    def key(**kw):
+        p = PrintParams(protein_representation=Representation.CARTOON,
+                        include_ligands=True,
+                        ligand_style=LigandStyle.SURFACE)
+        for k, v in kw.items():
+            setattr(p, k, v)
+        return cache.key_for(BNA, p)
+
+    # Read by the ligand, so they split the key.
+    assert key() != key(ligand_probe_radius_ang=2.0)
+    assert key() != key(ligand_surface_atom_padding_ang=0.5)
+    # The polymer is a cartoon and the ligand no longer reads its pair, so it
+    # must not split the key at all.
+    assert key() == key(probe_radius_ang=2.0)
+    assert key() == key(surface_atom_padding_ang=0.5)
+    # And a ligand that is not a surface reads neither pair.
+    beads = dict(ligand_style=LigandStyle.BALL_STICK)
+    assert key(**beads) == key(**beads, ligand_probe_radius_ang=2.0)
+    off = dict(include_ligands=False)
+    assert key(**off) == key(**off, ligand_surface_atom_padding_ang=0.5)
+
+
+def test_ligand_magnets_move_the_key_only_where_they_are_read():
+    """Off must hash as it always did, or every shipped cache entry is orphaned."""
+    from pdb2print import cache
+    from pdb2print.config import LigandStyle
+
+    def key(style=LigandStyle.SURFACE, **conn):
+        p = _params(**conn)
+        p.include_ligands = True
+        p.ligand_style = style
+        return cache.key_for(BNA, p)
+
+    on = dict(connect=True, use_magnets=True)
+    # Every style may be offered a magnet now, so every style splits the key
+    # when the switch is on -- and none of them when it is off, which is what
+    # keeps the shipped entries reachable.
+    for style in LigandStyle:
+        assert key(style, **on) != key(style, **on, ligand_magnets=True), style
+        # Off is today's key, whatever else is set.
+        assert key(style, **on) == key(style, **on, ligand_magnets=False), style
+    # Nor does anything outside the loop that reads it.
+    for branch in (dict(connect=False), dict(connect=True, use_magnets=False)):
+        assert key(**branch) == key(**branch, ligand_magnets=True), branch
+
+
+# --------------------------------------------------------------------------
+# Magnet thickness
+# --------------------------------------------------------------------------
+def test_magnet_thickness_is_clamped_like_every_other_slider():
+    """It reached a bare ``float()`` on a public endpoint until now."""
+    import server
+
+    def thickness(v):
+        return server._map_connections({"magnet_thickness": v}).magnet_thickness_mm
+
+    assert thickness("10.0") == 10.0
+    assert thickness("2.0") == 2.0
+    assert thickness("500") == 10.0
+    assert thickness("-4") == 0.5
+    # An omitted field still gets the form's own default rather than a clamp.
+    assert server._map_connections({}).magnet_thickness_mm == 2.0
+
+
+# --------------------------------------------------------------------------
+# Disk hygiene (the 2026-09-02 outage)
+# --------------------------------------------------------------------------
+def test_write_stl_zip_removes_its_scratch_directory(tmp_path):
+    """It used to leak one directory of full-resolution STLs per download.
+
+    Nothing swept them: ``_sweep_output_root`` only looks inside ``OUTPUT_ROOT``,
+    and these were siblings of it. In the container that is the writable layer,
+    so they accumulated on the host disk until it was full.
+    """
+    import glob
+    import tempfile as _tempfile
+    import trimesh
+    from pdb2print import export
+
+    class _Chain:
+        def label(self):
+            return "chain_A_protein"
+
+    built = [(_Chain(), trimesh.creation.box(extents=(1.0, 1.0, 1.0)))]
+    before = set(glob.glob(os.path.join(_tempfile.gettempdir(), "pdb2print_stl_*")))
+    out = export.write_stl_zip(built, str(tmp_path / "chains.zip"))
+    after = set(glob.glob(os.path.join(_tempfile.gettempdir(), "pdb2print_stl_*")))
+
+    assert os.path.isfile(out)
+    assert after == before, f"leaked {after - before}"
+
+
+def test_output_root_has_a_stable_name():
+    """A fresh ``mkdtemp`` per process orphaned the whole tree on every restart.
+
+    The TTL sweep only ever looks inside the root the current process made, so
+    with a random name nothing could reclaim what the previous one left. A fixed
+    name is what lets the sweep collect it.
+    """
+    import server
+    assert os.path.basename(server.OUTPUT_ROOT) == "pdb2print_out"
+    assert os.path.isdir(server.OUTPUT_ROOT)
+
+
+def test_sweep_stale_temp_dirs_takes_old_siblings_and_spares_the_rest(monkeypatch,
+                                                                     tmp_path):
+    """Old ``pdb2print_*`` siblings go; the live root and anything recent stay."""
+    import tempfile as _tempfile
+    import server
+
+    fake_tmp = tmp_path / "tmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(fake_tmp))
+
+    old_out = fake_tmp / "pdb2print_out_abcd1234"     # a previous process's root
+    old_stl = fake_tmp / "pdb2print_stl_deadbeef"     # a leaked STL scratch dir
+    old_fetch = fake_tmp / "pdb2print_xyz"            # a leaked RCSB download
+    fresh = fake_tmp / "pdb2print_stl_fresh"          # someone is using this now
+    other = fake_tmp / "not_ours"                     # nothing to do with us
+    for d in (old_out, old_stl, old_fetch, fresh, other):
+        d.mkdir()
+        (d / "f.bin").write_bytes(b"x")
+
+    stale = time.time() - server.OUTPUT_TTL_SECONDS - 60
+    for d in (old_out, old_stl, old_fetch, other):
+        os.utime(d, (stale, stale))
+
+    # The live root is old too, and must still survive on identity alone.
+    live = fake_tmp / "pdb2print_out"
+    live.mkdir()
+    os.utime(live, (stale, stale))
+    monkeypatch.setattr(server, "OUTPUT_ROOT", str(live))
+
+    removed = server._sweep_stale_temp_dirs()
+
+    assert removed == 3
+    assert not old_out.exists() and not old_stl.exists() and not old_fetch.exists()
+    assert fresh.exists(), "a directory inside the TTL is in use"
+    assert live.exists(), "the live output root must never be swept"
+    assert other.exists(), "only pdb2print_* is ours to delete"
+
+
+def test_cache_says_so_when_it_stops_storing_on_a_full_disk(tmp_path, caplog):
+    """The floor was silent, which is why the disk filling up went unnoticed.
+
+    Every build became a cold build and the only symptom was that the site felt
+    slow. The transition is logged in both directions now.
+    """
+    import logging
+    from pdb2print import cache as cache_mod
+
+    c = cache_mod.Cache(root=str(tmp_path))
+    monkey = {"free": cache_mod.MIN_FREE_BYTES // 2}
+    c.free_bytes = lambda: monkey["free"]
+
+    with caplog.at_level(logging.WARNING, logger="pdb2print.cache"):
+        assert c.has_headroom() is False
+        assert c.has_headroom() is False          # logged once, not per build
+        assert sum("not storing new builds" in r.message for r in caplog.records) == 1
+
+        caplog.clear()
+        monkey["free"] = cache_mod.MIN_FREE_BYTES * 4
+        assert c.has_headroom() is True
+        assert any("storing again" in r.message for r in caplog.records)
+
+
+# --------------------------------------------------------------------------
+# A hand-set joint keeps its row
+# --------------------------------------------------------------------------
+def test_a_joined_pair_keeps_its_row_when_the_fit_pass_is_off():
+    """A row is how a setting is changed back, so it has to survive the build.
+
+    With ``resolve_interference`` off there is no carve to skip, so the join
+    pass never ran and the joint loop skipped the pair on the assumption that
+    it had. The row vanished, the panel dropped the override with it, and the
+    next Generate silently put the magnet back.
+    """
+    from pdb2print.config import InterferenceRule
+
+    p = _params(connect=True, use_magnets=True, joint_overrides="2\t3\tjoin")
+    p.resolve_interference = InterferenceRule.NONE
+    report = build_all(OVERLAP, p)
+
+    rows = [c for c in report.connections if (c["ai"], c["bi"]) == (2, 3)]
+    assert len(rows) == 1, "a hand-set joint must keep exactly one row"
+    assert rows[0]["method"] == "join"
+    assert rows[0]["by_hand"] is True
+    assert rows[0]["applied"] is False, "nothing was fused, and it should say so"
+
+
+def test_a_hand_set_joint_survives_every_assembly_mode():
+    """The backstop is per build, not per mode, so a new mode cannot lose one."""
+    from pdb2print.config import InterferenceRule, NoMagnetMethod
+
+    def row(**kw):
+        mutate = kw.pop("mutate", None)
+        p = _params(connect=True, joint_overrides="2\t3\tjoin", **kw)
+        if mutate:
+            mutate(p)
+        got = [c for c in build_all(OVERLAP, p).connections
+               if (c["ai"], c["bi"]) == (2, 3)]
+        assert len(got) == 1, f"lost the row for {kw}"
+        return got[0]
+
+    assert row(use_magnets=True)["method"] == "join"
+    assert row(use_magnets=False,
+               no_magnet_method=NoMagnetMethod.BRIDGE)["method"] == "join"
+    # These two weld the whole build; the pair is reported by the pass that
+    # handles them rather than by the join pass, which is fine — it is listed.
+    assert row(use_magnets=False, no_magnet_method=NoMagnetMethod.INFLATE)
+    assert row(use_magnets=False, no_magnet_method=NoMagnetMethod.OVERLAP)
+    assert row(use_magnets=True,
+               mutate=lambda p: setattr(p, "resolve_interference",
+                                        InterferenceRule.NONE))
+
+
+def test_leaving_a_chain_out_is_the_one_case_that_drops_a_row():
+    """Forgetting is right exactly once: when the chain is not in the build.
+
+    An excluded chain has no built position, so its pairs are never reconciled
+    and the panel is free to drop the override — which is what stops a veto
+    travelling to a pair it was never about.
+    """
+    p = _params(connect=True, use_magnets=True, joint_overrides="2\t3\tjoin")
+    p.exclude_chains = "3"
+    report = build_all(OVERLAP, p)
+
+    assert not [c for c in report.connections if 3 in (c["ai"], c["bi"])]
+    assert not [c for c in report.connections if (c["ai"], c["bi"]) == (2, 3)]
+    # The chains that are still in the build keep theirs.
+    assert [c for c in report.connections if (c["ai"], c["bi"]) == (0, 2)]

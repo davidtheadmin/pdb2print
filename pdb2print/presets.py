@@ -98,6 +98,10 @@ _UI_UNTOUCHED = dict(
     # moment the two sides silently diverged.
     ligand_atom_mm=2.2,             # the "Ligand atoms" slider's default
     ligand_bond_mm=1.4,             # the "Ligand bonds" slider's default
+    # The ligand's own surface pair, listed for the reason above: the form
+    # submits both whatever the style is set to.
+    ligand_probe_radius_ang=1.4,
+    ligand_surface_atom_padding_ang=0.0,
 )
 
 #: Joinery is off until the user asks for it, exactly as the form loads.
