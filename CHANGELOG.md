@@ -6,6 +6,32 @@ This project follows [Semantic Versioning](https://semver.org/). "Mesh-affecting
 below means the exported geometry changed, so cached builds from an earlier
 version are not interchangeable with new ones.
 
+## Unreleased
+
+Not mesh-affecting for models: only the display stand changed, and stands are
+never cached. `CACHE_VERSION` stays at 6.
+
+### Changed
+
+- **Stand presets removed.** The stand opens on one default instead: round
+  columns, no flared foot, 7 mm columns floating 5 mm, 5 mm margin, 9 mm text,
+  chain legend off.
+- **Plaque order.** The structure name is the headline; "PDB ID: 1UBQ" sits
+  under it, smaller. The PDB ID switch controls only that line.
+- **Raised lettering and the white tile are lifted clear of what they sit on**,
+  onto a 0.4 mm plinth of their own outline in the colour below, so the colour
+  change happens on a clean layer instead of inside the surface.
+- **Plaque heights are whole 0.2 mm layers**: plate thickness snaps to 0.2 mm,
+  tile 0.6 mm, letters 0.6 mm.
+- The support button reads "Support the project".
+
+### Fixed
+
+- A long structure name no longer squeezes the chain legend into an ellipsis:
+  the legend gets its full width and the name wraps in what is left.
+- Extended PDB IDs print as issued (`pdb_1000axyz`) and get their chain names on
+  a stand raised from the cache.
+
 ## [1.3.0] — 2026-08-05
 
 Not mesh-affecting: with nothing switched off and no override set, a build

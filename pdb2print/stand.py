@@ -140,6 +140,47 @@ _RAKE_MAX_RISE_MM = 10.0
 #: at a readable size beat one line nobody can read.
 _TITLE_MIN_CAP_MM = 1.9
 
+#: Raised lettering, and the white tile, start this far above whatever they sit
+#: on. The gap is filled by a plinth of exactly their outline in the colour of
+#: the part underneath, so the colour change happens in open air on a clean
+#: layer instead of inside the surface below, where it smeared. Two layers at
+#: 0.2 mm.
+_RAISED_LIFT_MM = 0.4
+
+#: Cap heights of the name and the ID line, as fractions of the text size.
+_TITLE_CAP = 0.56
+_ID_CAP = 0.42
+
+#: Every height a slicer turns into layers is a whole number of these, so no
+#: surface lands between two layers and gets rounded differently from its
+#: neighbour.
+_LAYER_MM = 0.2
+
+
+def _layers(mm: float, minimum: int = 1) -> float:
+    """``mm`` rounded to the nearest whole number of layers, at least ``minimum``."""
+    return max(minimum, round(float(mm) / _LAYER_MM + 1e-9)) * _LAYER_MM
+
+
+#: How far a plinth reaches down into the part it belongs to, so the union
+#: fuses rather than meeting on a shared face.
+_PLINTH_OVERLAP_MM = 0.2
+
+
+def _id_text(pdb_id) -> str:
+    """The ID as printed: ``1UBQ`` upper case, an extended ``pdb_`` ID as issued.
+
+    The wwPDB asks that the extended form not be altered, and the site already
+    shows it lower case; the plaque was the one place still shouting it.
+    """
+    text = str(pdb_id).strip()
+    return text.lower() if text.lower().startswith("pdb_") else text.upper()
+
+
+def _id_line(pdb_id) -> str:
+    """The plaque's ID row, label included."""
+    return "PDB ID: " + _id_text(pdb_id)
+
 
 # --------------------------------------------------------------------------
 # Stand parts travel through export as if they were chains
@@ -1391,14 +1432,12 @@ def _info_rows(stand: StandParams, params: PrintParams, meta: dict,
     cap = float(stand.plaque_text_mm)
     face = typeset.face(getattr(stand, "plaque_font", "sans"))
 
-    if stand.plaque_pdb_id and meta.get("pdb_id"):
-        text = str(meta["pdb_id"]).upper()
-        size = typeset.fit_cap_height(face, [text], width_mm, cap)
-        rows.append(_Row("text", text, size, size * 1.6))
-
+    # The name is the headline and the ID the caption under it. The name is
+    # always printed when there is one; the PDB ID switch governs only its own
+    # line.
     title = str(getattr(stand, "plaque_title_text", "") or "").strip()
     if title:
-        preferred = cap * 0.46
+        preferred = cap * _TITLE_CAP
         # One line if it can be had. A title set across three lines competes with
         # the ID above it for the eye; the same words on one line read as a
         # caption to it, which is what they are. Shrinking the type to buy that
@@ -1426,6 +1465,11 @@ def _info_rows(stand: StandParams, params: PrintParams, meta: dict,
                     break
             for line in lines:
                 rows.append(_Row("text", line, size, size * 1.55))
+
+    if stand.plaque_pdb_id and meta.get("pdb_id"):
+        text = _id_line(meta["pdb_id"])
+        size = typeset.fit_cap_height(face, [text], width_mm, cap * _ID_CAP)
+        rows.append(_Row("text", text, size, size * 1.6))
 
     note = str(getattr(stand, "plaque_note", "") or "").strip()
     if note:
@@ -1468,11 +1512,11 @@ def _info_natural_width(stand: StandParams, params: PrintParams,
     widest = 0.0
     if stand.plaque_pdb_id and meta.get("pdb_id"):
         widest = max(widest, typeset.text_width(
-            face, str(meta["pdb_id"]).upper(), cap))
+            face, _id_line(meta["pdb_id"]), cap * _ID_CAP))
     title = str(getattr(stand, "plaque_title_text", "") or "").strip()
     if title:
         # The size ``_info_rows`` sets a title at when it fits on one line.
-        widest = max(widest, typeset.text_width(face, title, cap * 0.46))
+        widest = max(widest, typeset.text_width(face, title, cap * _TITLE_CAP))
     note = str(getattr(stand, "plaque_note", "") or "").strip()
     if note:
         widest = max(widest, typeset.text_width(face, note, cap * 0.42))
@@ -1496,7 +1540,8 @@ def _info_floor_width(stand: StandParams, meta: dict) -> float:
     cap = float(stand.plaque_text_mm)
     wanted = 0.0
     if stand.plaque_pdb_id and meta.get("pdb_id"):
-        wanted = typeset.text_width(face, str(meta["pdb_id"]).upper(), cap)
+        wanted = typeset.text_width(face, _id_line(meta["pdb_id"]),
+                                    cap * _ID_CAP)
     return min(max(14.0, wanted + 1.0), 44.0)
 
 
@@ -1703,7 +1748,7 @@ def solve_layout(built, params: PrintParams,
     centre_xy = 0.5 * (model_min[:2] + model_max[:2])
     offset = np.array([-centre_xy[0], -centre_xy[1],
                        -model_min[2] + float(stand.stand_off_mm)
-                       + float(stand.plate_thickness_mm)])
+                       + _layers(stand.plate_thickness_mm)])
     for out in meshes:
         out.vertices = np.asarray(out.vertices, float) + offset
     oriented_built = [(chains[i], meshes[i]) for i in range(len(meshes))]
@@ -1713,7 +1758,7 @@ def solve_layout(built, params: PrintParams,
     model_min = lows.min(axis=0)
     model_max = highs.max(axis=0)
 
-    plate_top = float(stand.plate_thickness_mm)
+    plate_top = _layers(stand.plate_thickness_mm)
     margin = float(stand.plate_margin_mm)
 
     # ---- lay the plaque out first: it decides how deep the apron is --------
@@ -1814,7 +1859,15 @@ def solve_layout(built, params: PrintParams,
         info_width = natural_usable * 0.5
     if info_max > 0.0:
         info_width = min(info_width, info_max)
-    info_width = max(info_width, _info_floor_width(stand, meta))
+    # The chain names are never the ones to give way. A long structure name
+    # has a natural width of several hundred millimetres unwrapped, and asking
+    # for all of it pushed the plate into its ceiling and left the legend
+    # whatever scraps remained, cut short with an ellipsis. The left block can
+    # wrap; a chain name cannot. So the left block gets what is left of the
+    # widest plate once the legend has its full width, and wraps inside that.
+    info_floor = _info_floor_width(stand, meta)
+    room = max(_MAX_PLATE_MM, 2.0 * natural_half) - spare - legend_need
+    info_width = max(info_floor, min(info_width, room))
 
     half = max(natural_half, 0.5 * (info_width + legend_need + spare))
     # Grow to fit the names, but not past what will go on a bed. natural_half
@@ -2324,6 +2377,12 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
     relief = getattr(stand, "plaque_relief", PlaqueRelief.FLUSH)
     engrave = relief == PlaqueRelief.ENGRAVED
     flush = relief == PlaqueRelief.FLUSH
+    raised = not (engrave or flush)
+    lift = _RAISED_LIFT_MM if raised else 0.0
+    # Letter-shaped plinths for raised work, in the colour of what they stand
+    # on: the base's own, and the tile's own.
+    base_plinths: List = []
+    tile_plinths: List = []
 
     # Each entry is ``(part, solid, sits_on_a_tile)``.
     text_parts: List[Tuple[StandPart, "object", bool]] = []
@@ -2335,17 +2394,17 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         axis_u = np.array([1.0, 0.0, 0.0])
         axis_v = np.array([0.0, 1.0, 0.0])
         normal = np.array([0.0, 0.0, 1.0])
-        emboss = float(stand.plaque_emboss_mm)
+        emboss = _layers(stand.plaque_emboss_mm)
         stroke = float(stand.plaque_stroke_mm) * (0.7 + 0.3 * shrink)
         face = typeset.face(getattr(stand, "plaque_font", "sans"))
         min_stroke = float(getattr(stand, "plaque_min_stroke_mm", 0.45))
-        tile_h = float(stand.plaque_tile_mm)
-        sink = 0.5
+        tile_h = _layers(stand.plaque_tile_mm)
+        sink = 2 * _LAYER_MM
         tiled = bool(stand.plaque_tile)
         # Lettering on a tile can only sink as far as the tile is thick, or the
         # recess cut to receive it goes clean through and opens a letter-shaped
         # hole into the plate underneath.
-        tile_sink = min(sink, tile_h * 0.6)
+        tile_sink = min(sink, _layers(tile_h * 0.5))
 
         # Engraved, the cut wants to go *through* a tile and stop on the plate
         # beneath it: the letters then read in the plate's colour on a white
@@ -2359,10 +2418,16 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         # hollow, and the whole apron is one plane whose colour changes partway
         # through a layer — which is the thing a multi-material printer is
         # actually good at, and the thing a flat top surface prints best as.
-        flush_sink = min(emboss, tile_h * 0.75) if tiled else emboss
+        flush_sink = min(emboss, _layers(tile_h * 0.5)) if tiled else emboss
         # Where the tile sits relative to the face, and therefore what height
         # the lettering on it is measured from.
-        tile_lo, tile_hi = (-tile_h, 0.0) if flush else (-sink, tile_h)
+        if flush:
+            tile_lo, tile_hi = -tile_h, 0.0
+        elif raised:
+            tile_lo, tile_hi = lift, lift + tile_h
+        else:
+            tile_lo, tile_hi = -sink, tile_h
+        tile_plinth_parts: List = []
 
         info_text: List = []
         legend_solids: dict = {}
@@ -2370,8 +2435,11 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
 
         def _tile(x0, x1, y0, y1):
             """A white field for the lettering — proud of the face, or level with it."""
-            return _rounded_slab(x0, x1, y0, y1, tile_lo, tile_hi,
-                                 min(2.2, max(1e-3, (y1 - y0)) * 0.2))
+            r = min(2.2, max(1e-3, (y1 - y0)) * 0.2)
+            if raised:
+                tile_plinth_parts.append(_rounded_slab(
+                    x0, x1, y0, y1, -_PLINTH_OVERLAP_MM, lift, r))
+            return _rounded_slab(x0, x1, y0, y1, tile_lo, tile_hi, r)
 
         def _emit(rows, x_left, target, tiled):
             """Lay one block out from the back of the apron toward the front.
@@ -2406,6 +2474,21 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
             # half-plate-wide slot left most of its tile blank, which read as a
             # misprint rather than as margin.
             used = {"x0": None, "x1": None}
+            plinths = tile_plinths if tiled else base_plinths
+            plinth_sink = (min(_PLINTH_OVERLAP_MM, _layers(tile_h * 0.5))
+                           if tiled else _PLINTH_OVERLAP_MM)
+
+            def emit(row, build, ink=True):
+                """``build(below, above)`` makes the solids spanning that range
+                about ``base_z``. Raised work is lifted clear of the surface and
+                stood on a plinth of its own outline in the colour underneath."""
+                if raised:
+                    put(row, build(-lift, lift + rise_mm), ink)
+                    plinths.extend(build(plinth_sink, lift))
+                elif engrave:
+                    put(row, build(cut_depth, cut_proud), ink)
+                else:
+                    put(row, build(use_sink, rise_mm), ink)
 
             def put(row, solids, ink=True):
                 if ink and engrave:
@@ -2440,41 +2523,39 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                     # not already said. So it is cut like everything else, and
                     # whoever wants it coloured can put paint in it.
                     dot_r = row.cap_mm * 0.52
-                    dot_lo = base_z - (cut_depth if engrave else use_sink)
-                    dot_hi = base_z + (cut_proud if engrave else rise_mm)
-                    put(row, [_manifold.frustum(
-                        [x + dot_r, baseline + dot_r, dot_lo],
-                        [x + dot_r, baseline + dot_r, dot_hi],
-                        dot_r, dot_r)], ink=engrave)
+                    emit(row, lambda below, above, x=x, dot_r=dot_r, b=baseline: [
+                        _manifold.frustum(
+                            [x + dot_r, b + dot_r, base_z - below],
+                            [x + dot_r, b + dot_r, base_z + above],
+                            dot_r, dot_r)], ink=engrave)
                     x += row.cap_mm * 1.6
 
                 elif row.kind == "scalebar":
                     bar_h = max(0.8, row.cap_mm * 0.3)
-                    depth = cut_depth if engrave else use_sink
-                    rise = cut_proud if engrave else rise_mm
-                    bars = [_manifold.oriented_box(
-                        [x + row.bar_mm * 0.5, baseline + bar_h * 0.5,
-                         base_z + 0.5 * (rise - depth)],
-                        np.array([axis_u, axis_v, normal]),
-                        [row.bar_mm * 0.5, bar_h * 0.5, 0.5 * (rise + depth)])]
-                    for end in (0.0, row.bar_mm):
-                        bars.append(_manifold.oriented_box(
-                            [x + end, baseline + row.cap_mm * 0.4,
-                             base_z + 0.5 * (rise - depth)],
-                            np.array([axis_u, axis_v, normal]),
-                            [bar_h * 0.5, row.cap_mm * 0.4,
-                             0.5 * (rise + depth)]))
-                    put(row, bars)
+
+                    def _bars(depth, rise, x=x, row=row, bar_h=bar_h,
+                              baseline=baseline):
+                        frame = np.array([axis_u, axis_v, normal])
+                        zc = base_z + 0.5 * (rise - depth)
+                        hz = 0.5 * (rise + depth)
+                        out = [_manifold.oriented_box(
+                            [x + row.bar_mm * 0.5, baseline + bar_h * 0.5, zc],
+                            frame, [row.bar_mm * 0.5, bar_h * 0.5, hz])]
+                        for end in (0.0, row.bar_mm):
+                            out.append(_manifold.oriented_box(
+                                [x + end, baseline + row.cap_mm * 0.4, zc],
+                                frame, [bar_h * 0.5, row.cap_mm * 0.4, hz]))
+                        return out
+                    emit(row, _bars)
                     x += row.bar_mm + row.cap_mm * 0.7
 
                 if row.text:
-                    put(row, _text_solids(
-                        face, row.text, row.cap_mm,
-                        np.array([x, baseline, base_z]),
-                        axis_u, axis_v, normal, stroke,
-                        cut_proud if engrave else rise_mm,
-                        cut_depth if engrave else use_sink,
-                        typeset.grow_for(face, row.cap_mm, min_stroke)))
+                    grow = typeset.grow_for(face, row.cap_mm, min_stroke)
+                    emit(row, lambda below, above, x=x, row=row, b=baseline:
+                         _text_solids(face, row.text, row.cap_mm,
+                                      np.array([x, b, base_z]),
+                                      axis_u, axis_v, normal, stroke,
+                                      above, below, grow))
 
             if tiled and rows and used["x0"] is not None:
                 tiles.append(_tile(used["x0"] - pad * 0.5, used["x1"] + pad * 0.5,
@@ -2522,6 +2603,7 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
               tiled=tiled and bool(legend_rows))
 
         cutters = [_place(s, face_xf) for s in cutters]
+        tile_keep = None
         if tiles:
             tile_solid = _place(_manifold.union(tiles), face_xf)
             # The tile is cut to the lettering, which knows nothing about the
@@ -2541,8 +2623,12 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 clipped = _manifold.intersection(tile_solid, keep)
                 if not clipped.is_empty():
                     tile_solid = clipped
+                tile_keep = keep
             except Exception:
                 pass
+            if tile_plinths:
+                tile_solid = _manifold.union(
+                    [tile_solid] + [_place(s, face_xf) for s in tile_plinths])
             text_parts.append((StandPart("tile", "stand_plaque_tile", TILE_COLOR),
                                tile_solid, False))
         if info_text:
@@ -2550,6 +2636,20 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
                 StandPart("text", "stand_plaque_text",
                           TEXT_ON_TILE if tiled else TEXT_ON_PLATE),
                 _place(_manifold.union(info_text), face_xf), tiled))
+        # The plinths under a raised tile, and under raised work sitting straight
+        # on the plate, are part of the plate.
+        under = [_place(s, face_xf) for s in base_plinths]
+        if tile_plinth_parts:
+            slab = _place(_manifold.union(tile_plinth_parts), face_xf)
+            if tile_keep is not None:
+                try:
+                    kept = _manifold.intersection(slab, tile_keep)
+                    if not kept.is_empty():
+                        slab = kept
+                except Exception:
+                    pass
+            under.append(slab)
+        parts.extend(under)
         for built_index, solids in legend_solids.items():
             if not solids:
                 continue
@@ -2601,6 +2701,8 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
     # nothing at all on a one-material one — and not coming loose on a
     # one-material printer is the entire reason engraving is offered.
     for part, solid, on_tile in text_parts:
+        if raised:
+            continue
         try:
             if on_tile and tile_solid is not None:
                 trimmed = _manifold.difference(tile_solid, solid)

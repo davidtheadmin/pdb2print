@@ -661,13 +661,13 @@ class StandParams:
     plaque_tile: bool = True
     #: How far (mm) the white backing tile stands off the plate.  Lower than the
     #: lettering on it, so the text still reads as raised.
-    plaque_tile_mm: float = 0.45
+    plaque_tile_mm: float = 0.6
     #: Cap height (mm) of the largest line of plaque text.  Everything else is a
     #: fixed fraction of it, and it shrinks automatically to fit the panel width.
     plaque_text_mm: float = 5.0
     #: How far (mm) the raised text stands off the plate — or, engraved, how
     #: deep it is cut into it.
-    plaque_emboss_mm: float = 0.7
+    plaque_emboss_mm: float = 0.6
     #: How the lettering meets the apron.  See :class:`PlaqueRelief`.
     plaque_relief: PlaqueRelief = PlaqueRelief.RAISED
     #: Tilt (degrees) of the plaque face toward the viewer.

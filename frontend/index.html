@@ -1087,29 +1087,6 @@
   }
   .sp-seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 
-  /* The stand presets are the one place a preset still earns its keep: a
-     stand has fourteen numbers and no obvious starting point, so being handed
-     three finished ones is the whole value. They get the card treatment —
-     scoped to #sp-presets, because .sp-chip is also the plaque content
-     toggles, which are ticks and should stay small. */
-  .sp-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  #sp-presets .sp-chip {
-    display: block; text-align: left; padding: 7px 9px; border-radius: var(--r2);
-    background: var(--s2); border: 1px solid var(--border); cursor: pointer;
-    font-family: inherit; transition: border-color .12s, background .12s;
-  }
-  #sp-presets .sp-chip .t {
-    display: block; font-size: 12px; font-weight: 600; color: var(--text); letter-spacing: -0.01em;
-  }
-  #sp-presets .sp-chip .d {
-    display: block; font-size: 9.5px; line-height: 1.3; color: var(--muted); margin-top: 1px;
-  }
-  #sp-presets .sp-chip:hover { border-color: var(--border-2); background: var(--sunken); }
-  #sp-presets .sp-chip[aria-pressed="true"] {
-    border-color: var(--accent); background: var(--accent-soft);
-    box-shadow: inset 0 0 0 1px var(--accent);
-  }
-  #sp-presets .sp-chip[aria-pressed="true"] .t { color: var(--accent); }
   .sp-go {
     width: 100%; padding: 11px 0; border: none; border-radius: var(--r2);
     background: var(--accent); color: var(--accent-fg); font: 650 13px/1 inherit;
@@ -1413,7 +1390,7 @@
              target="_blank" rel="noopener noreferrer"
              title="Support pdb2print on Ko-fi — it pays for the server">
             <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.8 5.6a5 5 0 0 0-7.1 0L12 7.3l-1.7-1.7a5 5 0 1 0-7.1 7.1l8.8 8.8 8.8-8.8a5 5 0 0 0 0-7.1Z"/></svg>
-            Buy me a Club-Mate
+            Support the project
           </a>
         </div>
         <button id="generate" class="btn-generate">
@@ -2001,20 +1978,6 @@
            are as separable as the stages of a build, so they get the same
            treatment and there is one interaction to learn, not two. -->
       <div class="sp-body">
-        <!-- These are worth clicking, so they are shaped like something you
-             would click: what each one gives you, in the words the controls
-             below use. Custom is not a style, it is where you end up. -->
-        <div class="sp-presets" id="sp-presets">
-          <button class="sp-chip" type="button" data-preset="museum" aria-pressed="false">
-            <span class="t">Museum</span><span class="d">grooved columns, bold text</span></button>
-          <button class="sp-chip" type="button" data-preset="classical" aria-pressed="false">
-            <span class="t">Classical</span><span class="d">smooth columns, name plate</span></button>
-          <button class="sp-chip" type="button" data-preset="lab" aria-pressed="false">
-            <span class="t">Lab</span><span class="d">slim and plain</span></button>
-          <button class="sp-chip" type="button" data-preset="custom" aria-pressed="true">
-            <span class="t">Custom</span><span class="d">your own settings</span></button>
-        </div>
-
         <!-- Columns and plate are one decision made twice: the two parts of the
              stand you are styling, the way Protein and DNA are the two parts of
              the model you are styling. Same shape of panel, same shape of
@@ -2034,13 +1997,13 @@
                  height, so the difference you see between them is the only
                  thing that actually differs in the part. -->
             <div class="sp-cards" id="sp-shape">
-              <button class="sp-card" type="button" data-s="square" aria-pressed="true">
+              <button class="sp-card" type="button" data-s="square" aria-pressed="false">
                 <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
                   <path d="M13 8.4 16.6 10.2 13 12 9.4 10.2z"/>
                   <path d="M9.4 10.2v20.3"/><path d="M16.6 10.2v20.3"/><path d="M9.4 30.5h7.2"/>
                   <path d="M6 30.5h14v4H6z"/><path d="M4 36.5h18"/>
                 </svg>Square</button>
-              <button class="sp-card" type="button" data-s="round" aria-pressed="false">
+              <button class="sp-card" type="button" data-s="round" aria-pressed="true">
                 <svg viewBox="0 0 26 40" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
                   <path d="M9.5 10.2v20.1"/><path d="M16.5 10.2v20.1"/>
                   <ellipse cx="13" cy="10.2" rx="3.5" ry="1.5"/>
@@ -2070,15 +2033,15 @@
             </div>
             <p class="sp-note" id="sp-col-hint"></p>
 
-            <label class="sp-switch"><input type="checkbox" id="sp-flared" checked><span class="track"></span>Flared foot</label>
+            <label class="sp-switch"><input type="checkbox" id="sp-flared"><span class="track"></span>Flared foot</label>
 
             <div class="sp-slider" data-f="column_diameter">
               <div class="lab"><span class="name" title="How thick each column is at its waist.">Thickness</span><span class="val"></span></div>
-              <input type="range" min="4" max="16" step="0.5" value="8">
+              <input type="range" min="4" max="16" step="0.5" value="7">
             </div>
             <div class="sp-slider" data-f="stand_off">
               <div class="lab"><span class="name" title="Clear air between the underside of the model and the top of the plate.">Float above the plate</span><span class="val"></span></div>
-              <input type="range" min="2" max="24" step="0.5" value="6">
+              <input type="range" min="2" max="24" step="0.5" value="5">
             </div>
            </div>
 
@@ -2086,7 +2049,7 @@
             <p class="grp-h">Base plate</p>
             <div class="sp-slider" data-f="plate_thickness">
               <div class="lab"><span class="name">Thickness</span><span class="val"></span></div>
-              <input type="range" min="2" max="12" step="0.5" value="4">
+              <input type="range" min="2" max="12" step="0.2" value="4">
             </div>
             <div class="sp-slider" data-f="plate_corner">
               <div class="lab"><span class="name" title="A big radius moves the lettering inwards to clear the curve and widens the plate to make room, so nothing runs off the corner.">Corner radius</span><span class="val"></span></div>
@@ -2112,7 +2075,7 @@
                   <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>PDB ID</button>
                 <button class="sp-chip" type="button" data-f="plaque_scalebar" aria-pressed="true">
                   <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Scale bar</button>
-                <button class="sp-chip" type="button" data-f="plaque_legend" aria-pressed="true">
+                <button class="sp-chip" type="button" data-f="plaque_legend" aria-pressed="false">
                   <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>Chain legend</button>
                 <button class="sp-chip" type="button" data-f="plaque_tile" aria-pressed="true">
                   <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>White tile</button>
@@ -2153,8 +2116,8 @@
               <p class="sp-note" id="sp-relief-hint"></p>
 
               <div class="sp-slider" data-f="plaque_text">
-                <div class="lab"><span class="name" title="Height of the capitals on the biggest line. Everything else is sized from it. Below 5 mm the letters have to be thickened to survive printing, and stop looking like the typeface.">Text size</span><span class="val"></span></div>
-                <input type="range" min="5" max="11" step="0.25" value="7">
+                <div class="lab"><span class="name" title="Sets the size of all the lettering. The name is the biggest line, at a little over half of this; everything else is sized from it too. Below 5 mm the letters have to be thickened to survive printing, and stop looking like the typeface.">Text size</span><span class="val"></span></div>
+                <input type="range" min="5" max="11" step="0.25" value="9">
               </div>
               <div class="sp-slider" data-f="apron_rake">
                 <div class="lab"><span class="name" title="Tips the lettering panel up towards you, so you read it standing in front of the stand rather than from above.">Tilt toward you</span><span class="val"></span></div>
@@ -2180,7 +2143,7 @@
           <div class="sp-inner">
             <div class="sp-slider" data-f="plate_margin">
               <div class="lab"><span class="name" title="How far the plate reaches out past the model's silhouette.">Margin round the model</span><span class="val"></span></div>
-              <input type="range" min="2" max="24" step="0.5" value="7">
+              <input type="range" min="2" max="24" step="0.5" value="5">
             </div>
             <div class="sp-slider" data-f="plaque_info_mm">
               <div class="lab"><span class="name" title="How much of the plaque the left block gets. Auto gives it half. The chain names on the right always keep the width they need, so the plate gets wider instead of either side being squeezed.">Width of the left block</span><span class="val"></span></div>
@@ -2313,7 +2276,7 @@
         and shipped as outlines rather than as a font file.</li>
       </ul>
 
-      <p class="m-foot">Like it? <a href="https://ko-fi.com/pdb2print" target="_blank" rel="noopener noreferrer">Buy me a Club-Mate</a>
+      <p class="m-foot">Like it? <a href="https://ko-fi.com/pdb2print" target="_blank" rel="noopener noreferrer">Support the project</a>
       &mdash; it pays for the server. Everything stays free either way.</p>
     </div>
   </div>
@@ -2400,8 +2363,6 @@
       Then lock the view and the settings panel opens on the right, with a live
       sketch of the stand at the top that redraws as you change things.</p>
       <dl>
-        <dt>Presets</dt>
-        <dd><b>Museum</b>, <b>Classical</b> and <b>Lab</b> set every part at once. Touch any control and it becomes Custom.</dd>
         <dt>Columns</dt>
         <dd>Square, round, fluted or tapered, with an optional flared foot. Where they stand is worked out for you: a column can only go where nothing else is underneath it, and they are kept in from the silhouette edge.</dd>
         <dt>Plaque</dt>
@@ -2463,7 +2424,7 @@
       <ul class="new">
         <li><b>Display stands</b> &mdash; after a build, mount the model on a plate with
         carved columns and an engraved plaque: PDB ID, name, scale bar and a
-        colour-matched chain legend. Three column styles and three presets.</li>
+        colour-matched chain legend. Three column styles.</li>
         <li><b>Ligand styles</b> &mdash; hemes, drugs and metals in ball &amp; stick,
         spacefill, surface or sticks, each in its own carved pocket.</li>
       </ul>
@@ -4232,7 +4193,7 @@
   // still has in memory, and the footprint used for the column recommendation.
   let standBuild = null;
   let standColumns = 0;                      // 0 = auto
-  let standShape = 'square';
+  let standShape = 'round';
   let standLocked = false;
   let lockedOrbit = null;
   let standRoll = 0;
@@ -4515,69 +4476,6 @@
     });
   }
 
-  // ---- presets -----------------------------------------------------------
-  // Presets move the visible controls rather than hiding a second set of
-  // values behind a name: the point of picking "Museum" is partly to find out
-  // what museum means here, and a preset you cannot read is a preset you
-  // cannot adjust from.
-  //
-  // Neither the line font nor a column capital is offered any more: no preset
-  // wanted them and neither was anybody's idea of a starting point. The stroke
-  // font itself stays -- it is what the plaque falls back to when fontTools or
-  // mapbox_earcut are missing, and FONT_HINT/CANVAS_FONT still describe it so a
-  // server-side substitution renders and explains itself. It is simply not a
-  // thing you can pick.
-  const STAND_PRESETS = {
-    museum: {
-      shape: 'fluted', flared: true, relief: 'raised', font: 'sans',
-      column_diameter: 9, stand_off: 8, cradle_depth: 4.5,
-      plate_thickness: 5.5, plate_margin: 10, plate_corner: 5,
-      plaque_text: 7.5, apron_rake: 0,
-      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
-    },
-    classical: {
-      shape: 'round', flared: false, relief: 'raised', font: 'serif',
-      column_diameter: 9.5, stand_off: 9, cradle_depth: 4.5,
-      plate_thickness: 6, plate_margin: 11, plate_corner: 3,
-      plaque_text: 7.5, apron_rake: 0,
-      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 1 },
-    },
-    lab: {
-      shape: 'round', flared: false, relief: 'flush', font: 'sans',
-      column_diameter: 6, stand_off: 5, cradle_depth: 3.5,
-      plate_thickness: 3, plate_margin: 5, plate_corner: 2,
-      plaque_text: 5.5, apron_rake: 0,
-      content: { plaque_pdb_id: 1, plaque_scalebar: 1, plaque_legend: 1, plaque_tile: 0 },
-    },
-  };
-
-  function setPreset(name) {
-    const p = STAND_PRESETS[name];
-    document.querySelectorAll('#sp-presets .sp-chip').forEach(b =>
-      b.setAttribute('aria-pressed', b.dataset.preset === name ? 'true' : 'false'));
-    if (!p) return;                           // "Custom" only moves the highlight
-    setShape(p.shape);
-    $('#sp-flared').checked = p.flared;
-    setRelief(p.relief);
-    setFont(p.font);
-    ['column_diameter', 'stand_off', 'cradle_depth', 'plate_thickness',
-     'plate_margin', 'plate_corner', 'plaque_text', 'apron_rake'].forEach(f => {
-      const el = spSlider(f);
-      if (el && p[f] != null) el.value = p[f];
-    });
-    Object.keys(p.content).forEach(f => {
-      const el = document.querySelector(`.sp-chip[data-f="${f}"]`);
-      if (el) el.setAttribute('aria-pressed', p.content[f] ? 'true' : 'false');
-    });
-    refreshSliderLabels();
-    standChanged(true);
-  }
-
-  function markCustom() {
-    document.querySelectorAll('#sp-presets .sp-chip').forEach(b =>
-      b.setAttribute('aria-pressed', b.dataset.preset === 'custom' ? 'true' : 'false'));
-  }
-
   function setShape(shape) {
     standShape = shape;
     document.querySelectorAll('#sp-shape .sp-card').forEach(b =>
@@ -4796,22 +4694,22 @@
     const half = Math.max(naturalHalf, (infoW + legendNeed + spare) / 2);
     const usable0 = Math.max(12, 2 * half - spare);
     const legendW = Math.max(6, usable0 - infoW);
-    if (vals.plaque && vals.plaque_pdb_id) rows.push({ kind: 'text', text: meta.pdb_id || displayId($('#pdb-id').value) || 'PDB', cap_mm: vals.plaque_text, height_mm: vals.plaque_text * 1.6 });
     const title = vals.plaque_title_text || '';
     if (vals.plaque && title) {
       // The real title, wrapped roughly. A preview whose whole job is to show
       // what you get has no business showing the words "Structure name".
-      const cap = vals.plaque_text * 0.46;
+      const cap = vals.plaque_text * 0.56;
       const perLine = Math.max(8, Math.round(infoW / (cap * 0.62)));
       let line = '';
       title.split(/\s+/).forEach(word => {
         if ((line + ' ' + word).trim().length > perLine) {
-          rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: vals.plaque_text * 0.72 });
+          rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: cap * 1.55 });
           line = word;
         } else { line = (line + ' ' + word).trim(); }
       });
-      if (line) rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: vals.plaque_text * 0.72 });
+      if (line) rows.push({ kind: 'text', text: line, cap_mm: cap, height_mm: cap * 1.55 });
     }
+    if (vals.plaque && vals.plaque_pdb_id) rows.push({ kind: 'text', text: 'PDB ID: ' + (meta.pdb_id || displayId($('#pdb-id').value) || 'PDB'), cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.42 * 1.6 });
     if (vals.plaque && vals.plaque_note) rows.push({ kind: 'text', text: vals.plaque_note, cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.67 });
     if (vals.plaque && vals.plaque_scalebar) {
       rows.push({ kind: 'scalebar', text: '50 Å', cap_mm: vals.plaque_text * 0.42, height_mm: vals.plaque_text * 0.97, bar_mm: vals.plaque_text * 2.4 });
@@ -5599,7 +5497,6 @@
   // that is still moving wants — a drag in progress, a title mid-word — where
   // the local half is instant and the server half is not.
   function standChanged(fromPreset, { solve = true } = {}) {
-    if (!fromPreset) markCustom();
     refreshSliderLabels();
     setRelief(spRelief);                       // the hint depends on the tile
     const on = $('#sp-plaque').checked;
@@ -5650,10 +5547,6 @@
       btn.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
     standChanged();
   });
-  $('#sp-presets').addEventListener('click', e => {
-    const btn = e.target.closest('.sp-chip');
-    if (btn) setPreset(btn.dataset.preset);
-  });
   ['#sp-flared', '#sp-plaque', '#sp-pins'].forEach(sel =>
     $(sel).addEventListener('change', () => standChanged()));
   // Typing is a drag by another name: every keystroke re-typesets the plaque
@@ -5688,7 +5581,6 @@
     // once, on release. The plate width and title wrap are briefly the local
     // guess — which is what the sketch has always been labelled as.
     el.addEventListener('input', () => {
-      markCustom();
       refreshSliderLabels();
       drawSketch();
     });

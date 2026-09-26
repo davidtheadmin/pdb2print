@@ -1482,25 +1482,25 @@ def _map_stand(fields: dict) -> StandParams:
         orbit_theta_deg=float(fields.get("orbit_theta", 0.0) or 0.0),
         orbit_phi_deg=float(fields.get("orbit_phi", 75.0) or 75.0),
         roll_deg=float(fields.get("orbit_roll", 0.0) or 0.0),
-        plate_margin_mm=float(fields.get("plate_margin", 7.0) or 7.0),
+        plate_margin_mm=float(fields.get("plate_margin", 5.0) or 5.0),
         plate_thickness_mm=float(fields.get("plate_thickness", 4.0) or 4.0),
         plate_corner_mm=float(fields.get("plate_corner", 4.0) or 4.0),
-        column_diameter_mm=float(fields.get("column_diameter", 8.0) or 8.0),
-        column_flared=_bool(fields.get("column_flared", True)),
+        column_diameter_mm=float(fields.get("column_diameter", 7.0) or 7.0),
+        column_flared=_bool(fields.get("column_flared", False)),
         column_edge_frac=float(fields.get("column_edge_frac", 0.45) or 0.45),
         cradle_clearance_mm=float(fields.get("cradle_clearance", 0.35) or 0.35),
         cradle_depth_mm=float(fields.get("cradle_depth", 4.0) or 4.0),
-        stand_off_mm=float(fields.get("stand_off", 6.0) or 6.0),
+        stand_off_mm=float(fields.get("stand_off", 5.0) or 5.0),
         plaque=_bool(fields.get("plaque", True)),
         plaque_pdb_id=_bool(fields.get("plaque_pdb_id", True)),
         plaque_title_text=str(fields.get("plaque_title_text", "") or "")[:120],
         plaque_note=str(fields.get("plaque_note", "") or "")[:80],
         plaque_scalebar=_bool(fields.get("plaque_scalebar", True)),
-        plaque_legend=_bool(fields.get("plaque_legend", True)),
+        plaque_legend=_bool(fields.get("plaque_legend", False)),
         plaque_legend_labels=str(fields.get("plaque_legend_labels", "") or "")[:2000],
         plaque_tile=_bool(fields.get("plaque_tile", True)),
         plaque_relief=PlaqueRelief(fields.get("plaque_relief", "raised")),
-        plaque_text_mm=float(fields.get("plaque_text", 5.0) or 5.0),
+        plaque_text_mm=float(fields.get("plaque_text", 9.0) or 9.0),
         plaque_font=PlaqueFont(fields.get("plaque_font", "sans")),
         plaque_info_mm=max(0.0, min(200.0,
                                     float(fields.get("plaque_info_mm", 0) or 0))),
@@ -1509,7 +1509,7 @@ def _map_stand(fields: dict) -> StandParams:
         # sketch is a number that gets set wrong.
         plaque_min_stroke_mm=0.45,
         apron_rake_deg=float(fields.get("apron_rake", 0.0) or 0.0),
-        column_shape=_column_shape(fields.get("column_shape", "square")),
+        column_shape=_column_shape(fields.get("column_shape", "round")),
         column_pins=_bool(fields.get("column_pins", False)),
         pin_diameter_mm=float(fields.get("pin_diameter", 4.0) or 4.0),
         pin_depth_mm=float(fields.get("pin_depth", 3.0) or 3.0),
@@ -1574,8 +1574,8 @@ def _backfill_names(objects, source: str) -> None:
     Uploaded structures are skipped -- their file is long deleted and there is
     no id to fetch -- so those keep falling back, as they always have.
     """
-    source = (source or "").strip()
-    if not re.fullmatch(r"[A-Za-z0-9]{4,8}", source):
+    source = canonical_pdb_id(source or "")
+    if source is None:
         return                                  # an upload, not a PDB id
     tmp = None
     try:
