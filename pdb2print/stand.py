@@ -2421,12 +2421,9 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         flush_sink = min(emboss, _layers(tile_h * 0.5)) if tiled else emboss
         # Where the tile sits relative to the face, and therefore what height
         # the lettering on it is measured from.
-        if flush:
-            tile_lo, tile_hi = -tile_h, 0.0
-        elif raised:
-            tile_lo, tile_hi = lift, lift + tile_h
-        else:
-            tile_lo, tile_hi = -sink, tile_h
+        # Raised, the tile stays sunk into the plate as it always was: only
+        # the lettering is lifted onto plinths.
+        tile_lo, tile_hi = (-tile_h, 0.0) if flush else (-sink, tile_h)
         tile_plinth_parts: List = []
 
         info_text: List = []
@@ -2436,9 +2433,6 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
         def _tile(x0, x1, y0, y1):
             """A white field for the lettering — proud of the face, or level with it."""
             r = min(2.2, max(1e-3, (y1 - y0)) * 0.2)
-            if raised:
-                tile_plinth_parts.append(_rounded_slab(
-                    x0, x1, y0, y1, -_PLINTH_OVERLAP_MM, lift, r))
             return _rounded_slab(x0, x1, y0, y1, tile_lo, tile_hi, r)
 
         def _emit(rows, x_left, target, tiled):
@@ -2701,7 +2695,9 @@ def build_stand(built, params: PrintParams, meta: Optional[dict] = None):
     # nothing at all on a one-material one — and not coming loose on a
     # one-material printer is the entire reason engraving is offered.
     for part, solid, on_tile in text_parts:
-        if raised:
+        # Lifted lettering stands on its plinth and needs no recess; the tile
+        # is still sunk into the plate.
+        if raised and part.part != "tile":
             continue
         try:
             if on_tile and tile_solid is not None:

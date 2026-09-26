@@ -108,8 +108,8 @@ Only the stand changed; stands are never cached.
   chain legend off.
 - **Plaque order.** The structure name is the headline; "PDB ID: 1UBQ" sits
   under it, smaller. The PDB ID switch controls only that line.
-- **Raised lettering and the white tile are lifted clear of what they sit on**,
-  onto a 0.4 mm plinth of their own outline in the colour below, so the colour
+- **Raised lettering is lifted clear of what it sits on** (the white tile stays sunk into the plate),
+  onto a 0.4 mm plinth of its own outline in the colour below, so the colour
   change happens on a clean layer instead of inside the surface.
 - **Plaque heights are whole 0.2 mm layers**: plate thickness snaps to 0.2 mm,
   tile 0.6 mm, letters 0.6 mm.
